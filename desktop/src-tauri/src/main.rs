@@ -1,6 +1,7 @@
 mod certs;
 mod dragout;
 mod dropin;
+mod mediaperm;
 #[cfg(any(not(target_os = "macos"), test))]
 mod torchswap;
 
@@ -176,6 +177,15 @@ const MAX_PENDING_SAVES: usize = 16;
 
 struct BackendState {
     inner: Mutex<BackendStateInner>,
+}
+
+/// The URL of the backend this process is running, if any. Read by the media
+/// permission handlers each time a page asks, because a restart can move the
+/// backend to another port.
+fn current_backend_url(app: &tauri::AppHandle) -> Option<String> {
+    let state = app.try_state::<BackendState>()?;
+    let inner = state.inner.lock().ok()?;
+    inner.handles.as_ref().map(|h| h.url.clone())
 }
 
 impl Default for BackendState {
@@ -411,6 +421,12 @@ fn main() {
             // a window the user cannot resize down to fit, and that is not
             // recoverable from inside the app.
             fit_min_size_to_screen(&window);
+
+            // Microphone and camera for the studio page, which records takes
+            // and performance videos. Granted to the running backend's origin
+            // only; see mediaperm.rs for what each webview needs.
+            let handle = app.handle().clone();
+            mediaperm::install(&window, move || current_backend_url(&handle));
 
             let data_dir = match local_data_dir() {
                 Ok(d) => d,
