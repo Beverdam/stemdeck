@@ -440,6 +440,18 @@ export function createAudioEngine(stems, { onTime, onEnded, context } = {}) {
     ctxTimeToSourceTime,
     getScheduleEpoch: () => _epoch,
     isClockReady: () => playing,
+    // The heard-playhead mapping, frozen at one instant, so a recorder can
+    // place a captured frame in song time with the same formula as now():
+    // song = (ctx - startCtxTime - pipelineLatencySeconds) * rate + startOffset.
+    // Read once isClockReady() is true; the epoch says when it stops holding.
+    getOutputMapping: () => ({
+      startCtxTime,
+      startOffset,
+      rate: _playbackRate,
+      pipelineLatencySeconds: pipelineLatencySeconds(),
+      epoch: _epoch,
+      playing,
+    }),
     // The click shares the unpitched input with drums. It still passes through
     // the common tempo stage and master gain.
     getMasterNode: () => buses[ZERO_INPUT],

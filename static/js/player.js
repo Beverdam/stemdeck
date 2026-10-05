@@ -8,8 +8,13 @@ import { showPlaybackError, clearPlaybackError, resolvePlaybackSuccess } from ".
 import {
   STEM_NAMES, TRACK_NAMES, EXTRA_STEM_NAMES, STEM_COLORS, PROGRESS_COLOR,
   LOOP_DEFAULT_START_FRAC, LOOP_DEFAULT_END_FRAC, LANE_VOLUME_MAX,
-  effectiveStemOrder,
+  effectiveStemOrder, STEM_DISPLAY, isTakeName,
 } from "./constants.js";
+import {
+  syncTakeLanes, withTrackPeaks, setTakeFoldersEnabled, takeFolderLanes, takeFolderRowCount,
+  syncTakeFolderOrder, selectTake,
+} from "./capture/takeLanes.js";
+import { laneOrder, takeLaneOrder } from "./capture/takeFolderModel.js";
 import {
   mixerEl, multitrackContainer, bpmChip, keyChip, stemsChip, timeEl,
   titleEl, npThumb, rulerTime, wavesGrid, playBtn,
@@ -95,33 +100,36 @@ const _STEM_ROW_SELECTORS = [
   ".presence-labels span",
 ];
 
-function applyStemSelectionFilter(presentNames) {
-  // The order for THIS job: STEM_NAMES, with "vocals" swapped for
-  // lead_vocals + backing_vocals when the on-demand split (#275) produced
-  // both. Rows for a name outside `order` (the vocals-family row not in
-  // play for this job) are hidden outright, not just grayed "unavailable" --
-  // unlike the base 6, lead_vocals/backing_vocals aren't part of every job's
-  // contract, so there's no "not selected this time" state for them to be in.
-  const order = effectiveStemOrder(presentNames);
-  const isVocalFamily = (s) => s === "vocals" || s === "lead_vocals" || s === "backing_vocals";
+/**
+ * The lanes a loaded job shows, in order: the stems it actually has, in
+ * STEM_NAMES order with "vocals" swapped for lead_vocals + backing_vocals once
+ * the on-demand split (#275) produced both, then its recorded takes.
+ *
+ * Stems that were not extracted get no lane at all, so the ones that were sit
+ * together at the top. They used to keep a greyed, empty row each, which left
+ * a two-stem song spread over six lanes. "original" is not in this list; it
+ * goes first when present.
+ */
+function visibleStemOrder(presentNames) {
+  return effectiveStemOrder(presentNames).filter((name) => presentNames.has(name));
+}
 
-  // Waveform rows: original hides if absent; order rows always show, grayed if absent
+function applyStemSelectionFilter(presentNames) {
+  // The order for THIS job (see visibleStemOrder). Every row outside it is
+  // hidden: a stem that was not extracted, and whichever vocals-family row
+  // the split state does not call for (vocals.wav is never deleted by the
+  // split, so "present" alone cannot decide that one).
+  const order = visibleStemOrder(presentNames);
+  const isVocalFamily = (s) => s === "vocals" || s === "lead_vocals" || s === "backing_vocals";
+  const shown = (stem) => (stem === "original" ? presentNames.has(stem) : order.includes(stem));
+
   for (const el of document.querySelectorAll(".stem-waveform-row[data-stem]")) {
-    const stem = el.dataset.stem;
-    if (stem === "original") {
-      el.classList.toggle("hidden", !presentNames.has(stem));
-      el.classList.remove("unavailable");
-    } else if (isVocalFamily(stem)) {
-      const inOrder = order.includes(stem);
-      el.classList.toggle("hidden", !inOrder);
-      if (inOrder) el.classList.toggle("unavailable", !presentNames.has(stem));
-    } else {
-      el.classList.remove("hidden");
-      el.classList.toggle("unavailable", !presentNames.has(stem));
-    }
+    el.classList.toggle("hidden", !shown(el.dataset.stem));
   }
   const originalRow = presentNames.has("original") ? 1 : 0;
-  const visibleTrackCount = originalRow + order.length;
+  _baseVisibleCount = originalRow + order.length;
+  // The open take folders add their take lanes to the rows that are visible.
+  const visibleTrackCount = _baseVisibleCount + takeFolderRowCount();
   const app = document.querySelector(".app");
   app?.style.setProperty("--visible-track-count", String(visibleTrackCount));
   app?.style.setProperty(
@@ -136,35 +144,24 @@ function applyStemSelectionFilter(presentNames) {
       // given job (#275) -- whichever the split state doesn't call for stays
       // hidden even if presentNames still has it (vocals.wav is never
       // deleted by the split, so "present" alone can't decide this one).
-      const hidden = isVocalFamily(stem) ? !order.includes(stem) : !presentNames.has(stem);
-      el.classList.toggle("hidden", hidden);
+      el.classList.toggle("hidden", !shown(stem));
     }
   }
-  const visibleMixerNames = [];
-  if (presentNames.has("original")) visibleMixerNames.push("original");
-  for (const name of order) {
-    if (presentNames.has(name)) visibleMixerNames.push(name);
-  }
-  const mixerCap = order.length + (presentNames.has("original") ? 1 : 0);
-  for (const name of order) {
-    if (visibleMixerNames.length >= mixerCap) break;
-    if (!visibleMixerNames.includes(name)) visibleMixerNames.push(name);
-  }
-  const visibleMixerSet = new Set(visibleMixerNames);
 
   for (const row of document.querySelectorAll(".mixer-column .lane-header[data-stem]")) {
     const stem = row.dataset.stem;
-    const inOrder = stem === "original" ? presentNames.has("original") : order.includes(stem);
-    const available = presentNames.has(stem);
+    const available = shown(stem);
     // Mixer rows are built once in renderEmptyShell (original, the base 6,
     // then lead_vocals/backing_vocals tacked on at the end) and reused across
     // every job load -- DOM order alone would always put lead_vocals/
     // backing_vocals last. CSS order (.mixer-column is a column flexbox)
     // repositions them to match `order` (right after "original") per job.
-    row.style.order = stem === "original" ? "-1" : String(order.indexOf(stem));
-    row.classList.toggle("hidden", !inOrder || !visibleMixerSet.has(stem));
-    row.classList.toggle("unavailable", !available);
-    row.setAttribute("aria-disabled", String(!available));
+    //
+    // In steps of LANE_ORDER_STEP, so an open take folder's lanes fit between
+    // its track and the next lane (syncTakeFolderOrder, below).
+    row.style.order = stem === "original" ? "-1" : String(laneOrder(order.indexOf(stem)));
+    row.classList.toggle("hidden", !available);
+    row.removeAttribute("aria-disabled");
     for (const el of row.querySelectorAll("button, .lane-knob, .lane-dl")) {
       el.classList.toggle("disabled", !available);
       if (available) {
@@ -178,11 +175,9 @@ function applyStemSelectionFilter(presentNames) {
       if ("disabled" in el) el.disabled = !available;
     }
   }
+  syncTakeFolderOrder();
   for (const row of document.querySelectorAll(".energy-row[data-stem]")) {
-    const stem = row.dataset.stem;
-    const available = presentNames.has(stem);
-    row.classList.toggle("unavailable", !available);
-    row.classList.toggle("hidden", isVocalFamily(stem) ? !order.includes(stem) : false);
+    row.classList.toggle("hidden", !shown(row.dataset.stem));
   }
   // Presence cards, top row of the track header. Only the vocals family moves:
   // the single "Global Vocals" card and the lead/backing pair are alternatives,
@@ -208,11 +203,9 @@ function clearStemSelectionFilter() {
   }
   for (const el of document.querySelectorAll(".stem-waveform-row[data-stem]")) {
     el.classList.remove("hidden");
-    el.classList.remove("unavailable");
   }
   for (const row of document.querySelectorAll(".mixer-column .lane-header[data-stem], .energy-row[data-stem]")) {
     row.classList.remove("hidden");
-    row.classList.remove("unavailable");
     row.removeAttribute("aria-disabled");
   }
 }
@@ -263,6 +256,8 @@ const STEM_VU_FPS = 30;
 const WAVEFORM_LANE_HEIGHT = 70;
 const WAVEFORM_SEPARATOR_HEIGHT = 2;
 let visualRenderToken = 0;
+// Rows in the stack before any take folder opens (stems, original, tracks).
+let _baseVisibleCount = 0;
 let visualAudioContext = null;
 let stemVuRafId = null;
 let _footerWavePeaks = null;
@@ -416,7 +411,11 @@ function renderOverviewWaveformPath(stemName, peaks, norm, color, barCount, orde
     layer.appendChild(row);
   }
   row.style.setProperty("--stem-color", color);
-  row.style.order = String(orderIndex);
+  row.style.order = String(laneOrder(orderIndex));
+  // A recording track's lane keeps one element across redraws for the live
+  // waveform to anchor to (static/js/capture/liveWave.js): the rewrite below
+  // would otherwise replace it on every zoom step.
+  const slot = isTakeName(stemName) ? liveSlot(row, stemName) : null;
   // A row is created for every mixer lane, including stems with no audio (e.g.
   // a subset extraction). The rows are flex-distributed across the lane stack,
   // so they only stay 1:1 with the mixer lanes when their count matches; an
@@ -425,6 +424,7 @@ function renderOverviewWaveformPath(stemName, peaks, norm, color, barCount, orde
   // tracks.
   if (!peaks?.length) {
     row.innerHTML = "";
+    if (slot) row.appendChild(slot);
     return;
   }
   const bars = barCount || overviewBarCount();
@@ -434,6 +434,71 @@ function renderOverviewWaveformPath(stemName, peaks, norm, color, barCount, orde
     </svg>
   `;
   addLaneDragNugget(row, stemName);
+  if (slot) row.appendChild(slot);
+}
+
+/** The live-waveform slot of a track lane, made once per row. */
+function liveSlot(row, trackId) {
+  let slot = row.querySelector(":scope > .take-live-slot");
+  if (!slot) {
+    slot = document.createElement("div");
+    slot.className = "take-live-slot";
+    slot.dataset.trackId = trackId;
+  }
+  return slot;
+}
+
+/**
+ * The lanes of the open take folders: one per take, newest on top, right
+ * under the track's own lane, drawn like any lane and on the same amplitude
+ * scale. The take that plays is marked; a click on another one makes that the
+ * take that plays (takeLanes.selectTake), and the track's lane follows on the
+ * reload.
+ */
+function renderTakeFolderLanes(layer, laneNames, peaksData, norm, bars) {
+  const want = new Set();
+  for (const folder of takeFolderLanes()) {
+    const index = laneNames.indexOf(folder.trackId);
+    let after = layer.querySelector(`.stem-waveform-row[data-stem="${folder.trackId}"]`);
+    if (index < 0 || !after) continue;
+    folder.takes.forEach(({ take, playing }, k) => {
+      want.add(take.id);
+      let row = layer.querySelector(`.take-folder-lane[data-take-id="${take.id}"]`);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "stem-waveform-row take-folder-lane";
+        row.dataset.takeId = take.id;
+        row.dataset.folderOf = folder.trackId;
+        // The waves column starts a seek or a loop drag on pointerdown and
+        // captures the pointer, which would take the click from this lane.
+        // A take lane that does not play is a button, not a place to seek.
+        row.addEventListener("pointerdown", (e) => {
+          if (!row.classList.contains("playing")) e.stopPropagation();
+        });
+        row.addEventListener("click", () => selectTake(row.dataset.folderOf, row.dataset.takeId));
+      }
+      // DOM order follows the stack too, so anything reading rows in document
+      // order (the alignment tests do) sees them where they are drawn.
+      if (after.nextElementSibling !== row) after.after(row);
+      after = row;
+      row.classList.toggle("playing", playing);
+      row.classList.remove("choosing");
+      row.title = playing ? t("rec.folder.playing") : t("rec.folder.laneTitle", { take: take.label || take.id });
+      row.style.setProperty("--stem-color", STEM_COLORS[folder.trackId] || "#a0a0a0");
+      row.style.order = String(takeLaneOrder(index, k));
+      const pts = peaksData?.[take.id];
+      row.innerHTML = pts?.length
+        ? `<svg class="stem-waveform-svg" viewBox="0 0 ${bars} 48" preserveAspectRatio="none" aria-hidden="true">${barsWaveformSvg(pts, norm, bars)}</svg>`
+        : "";
+      const name = document.createElement("span");
+      name.className = "take-folder-lane-name";
+      name.textContent = take.label || take.id;
+      row.appendChild(name);
+    });
+  }
+  for (const row of layer.querySelectorAll(".take-folder-lane")) {
+    if (!want.has(row.dataset.takeId)) row.remove();
+  }
 }
 
 // The handle for dragging this lane's slice of the loop out. One per lane, so
@@ -452,18 +517,16 @@ function addLaneDragNugget(row, stemName) {
   nugget.className = "lane-drag-nugget";
   nugget.dataset.laneDragOut = stemName;
   nugget.draggable = true;
-  nugget.title = t("loop.dragOutStem", { name: t(`stem.${stemName}`) });
+  nugget.title = t("loop.dragOutStem", { name: STEM_DISPLAY[stemName] || stemName });
   row.appendChild(nugget);
 }
 
 // The lane set must mirror the mixer/multitrack lanes (orderedNames in
 // wireUpAudio): "original" plus the stems when an original lane is present,
-// otherwise just the stems. Rendering a row for every lane keeps the overlay
-// aligned even when only a subset of stems was extracted. Swaps "vocals" for
-// lead_vocals + backing_vocals when this job's on-demand split (#275) ran.
+// otherwise just the stems, and only the stems this job has (visibleStemOrder).
 function overviewLaneNames(stems) {
   const present = new Set(stems.map((s) => s.name));
-  const order = effectiveStemOrder(present);
+  const order = visibleStemOrder(present);
   return present.has("original") ? ["original", ...order] : order;
 }
 
@@ -473,6 +536,8 @@ function overviewLaneNames(stems) {
 // with more of them -- redrawing is what keeps the art identical, where
 // stretching the same SVG would smear it.
 let _overviewSource = null;
+// Loudest peak per drawn lane, from the last overview render.
+const _overviewLaneMax = new Map();
 
 function rerenderOverviewWaveforms() {
   if (!_overviewSource) return;
@@ -489,14 +554,18 @@ function renderAllOverviewWaveformsFromPeaks(stems, peaksData) {
   // non-selected lanes just render empty.
   const present = new Set(stems.map((s) => s.name));
   let globalMax = 0;
+  _overviewLaneMax.clear();
   for (const name of laneNames) {
     if (!present.has(name)) continue;
     const pts = peaksData[name];
     if (!pts?.length) continue;
+    let laneMax = 0;
     for (const [mn, mx] of pts) {
-      if (mx > globalMax) globalMax = mx;
-      if (-mn > globalMax) globalMax = -mn;
+      if (mx > laneMax) laneMax = mx;
+      if (-mn > laneMax) laneMax = -mn;
     }
+    _overviewLaneMax.set(name, laneMax);
+    if (laneMax > globalMax) globalMax = laneMax;
   }
   const norm = globalMax > 0 ? 1 / globalMax : 0;
   const bars = overviewBarCount();
@@ -504,6 +573,21 @@ function renderAllOverviewWaveformsFromPeaks(stems, peaksData) {
     const pts = present.has(name) ? peaksData[name] : null;
     renderOverviewWaveformPath(name, pts, norm, STEM_COLORS[name] || "#a0a0a0", bars, i);
   });
+  renderTakeFolderLanes(ensureOverviewWaveformLayer(), laneNames, peaksData, norm, bars);
+  // The live waveform of a take being recorded (capture/liveWave.js) re-reads
+  // its lane's place and hands over to these bars on this event.
+  document.dispatchEvent(new CustomEvent("stemdeck:overview-drawn"));
+}
+
+/**
+ * The loudest peak of every drawn lane except `exclude`: the shared
+ * normalisation a live take waveform needs, so it is drawn at the height the
+ * finished lane will have (capture/liveWave.js).
+ */
+export function overviewPeakMax(exclude) {
+  let max = 0;
+  for (const [name, v] of _overviewLaneMax) if (name !== exclude && v > max) max = v;
+  return max;
 }
 
 // Normalize all stems to a single shared max so the overview waveforms
@@ -924,6 +1008,7 @@ export function renderEmptyShell() {
   document.querySelector(".app")?.classList.remove("is-import");
   document.querySelector(".app")?.classList.add("no-track");
   stopStemVuLoop();
+  syncTakeLanes(null, []); // no track, no takes
   ensureMixerStateDefaults();
   mixerEl.innerHTML = "";
   // lead_vocals/backing_vocals (#275) get rows too, built once here like the
@@ -1056,7 +1141,25 @@ function _watchLaneFit(count) {
   _laneFitObs.observe(panel);
 }
 
+function _syncVisibleCount() {
+  document.querySelector(".app")?.style.setProperty(
+    "--visible-track-count", String(_baseVisibleCount + takeFolderRowCount()),
+  );
+  syncTakeFolderOrder();
+}
+
+// A take folder opened or closed: the stack has more or fewer rows, so both
+// columns are laid out again and the lanes redrawn, without reloading audio.
+document.addEventListener("stemdeck:take-folders-changed", () => {
+  if (!currentJobId) return;
+  _syncVisibleCount();
+  if (_laneCount > 0) _applyLaneHeight(_laneCount);
+  rerenderOverviewWaveforms();
+});
+
 function _applyLaneHeight(count) {
+  // Open take folders are rows like any lane, in both columns.
+  count += takeFolderRowCount();
   const wavePanel = document.querySelector(".daw-wave-panel");
   const panelH = wavePanel?.clientHeight ?? 0;
   // One row is a lane plus its separator, and BOTH columns have to agree on
@@ -1080,6 +1183,10 @@ function _applyLaneHeight(count) {
 
 export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, title = "", peaksPromise = null, hasVideo = false, videoStatus = null) {
   const rawStems = stems.filter((stem) => stem?.name && stem?.url);
+  // Recorded takes ride along in `stems` as lanes named by take id. They must
+  // be registered before the mix state loads, so their volume and mute are
+  // restored with everything else.
+  syncTakeLanes(jobId, stems);
   const app = document.querySelector(".app");
   app?.classList.remove("is-import");
   app?.classList.remove("no-track");
@@ -1150,6 +1257,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   const wantsVocals = selectedStems.has("vocals");
   stems = stems.filter((s) => {
     if (s.name === "original") return true;
+    if (isTakeName(s.name)) return true;
     if (s.name === "vocals") return wantsVocals && !splitDone;
     if (s.name === "lead_vocals" || s.name === "backing_vocals") return wantsVocals && splitDone;
     return selectedStems.has(s.name);
@@ -1181,7 +1289,8 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   // origin window, preventing stem WAV queuing that causes buffer underruns.
   let precomputedPeaks = {};
   const _footerStemName = stems.find((s) => s.name === "original") ? "original" : stems[0]?.name;
-  const _peaksPromise = peaksPromise ?? (jobId
+  // Recording-track lanes borrow their active take's peaks (keyed by take id).
+  const _peaksPromise = (peaksPromise ?? (jobId
     ? (() => {
         const ac = new AbortController();
         const timer = setTimeout(() => ac.abort(), 3000);
@@ -1190,7 +1299,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
           .catch(() => ({}))
           .finally(() => clearTimeout(timer));
       })()
-    : Promise.resolve({}));
+    : Promise.resolve({}))).then(withTrackPeaks);
 
   // Beat grid for the click track. Fetched alongside peaks; a 404 is the
   // normal answer for jobs separated before the beat-grid stage existed, and
@@ -1210,7 +1319,8 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
     const row = mixerEl.querySelector(`.lane-header[data-stem="${stem.name}"]`);
     if (!row) continue;
     const dl = row.querySelector(".lane-dl");
-    if (dl) {
+    // A recording track with no take yet has nothing to download.
+    if (dl && stem.url) {
       dl.href = stem.url;
       dl.download = _stemFilename(stem.name);
     }
@@ -1237,7 +1347,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   // mixer lanes stay aligned -- lead_vocals/backing_vocals in place of vocals
   // when this job's on-demand split (#275) produced them.
   const stemsByName = Object.fromEntries(stems.map((s) => [s.name, s]));
-  const order = effectiveStemOrder(new Set(stems.map((s) => s.name)));
+  const order = visibleStemOrder(new Set(stems.map((s) => s.name)));
   const orderedNames = [...(stemsByName["original"] ? ["original"] : []), ...order];
   setTrackIndex(Object.fromEntries(orderedNames.map((name, i) => [name, i])));
   multitrackContainer.innerHTML = "";
@@ -1258,6 +1368,9 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   // The null-URL multitrack (engine path) has no WaveSurfer canvas, so reveal the
   // SVG overview layer as the visible waveform (CSS hides it on the streaming path).
   document.querySelector(".app")?.classList.toggle("engine-waveforms", useEngine);
+  // Take folders open only where their lanes can be drawn: the SVG overlay.
+  setTakeFoldersEnabled(useEngine);
+  _syncVisibleCount();
   if (engineTooLarge) {
     console.warn(
       `[player] track too large for Web Audio engine `
@@ -1845,6 +1958,8 @@ function _effectiveMixGains() {
   const pitches = [];
   for (const s of _currentStems) {
     if (s.name === "mix") continue;
+    // A recording track with no take has no audio for the server to mix.
+    if (!s.url) continue;
     const m = mixerState[s.name];
     if (!m) continue;
     const g = m.muted ? 0 : (anySolo && !m.soloed ? 0 : m.volume);
@@ -1984,7 +2099,7 @@ export function downloadCurrentVideo(onTransferStart) {
 export function downloadAllStemsZip(format = "wav", onTransferStart) {
   if (!currentJobId) return false;
   // Only the active (selected) stems loaded in the DAW — not all 6.
-  const names = _currentStems.filter((s) => s.name !== "original").map((s) => s.name);
+  const names = _currentStems.filter((s) => s.name !== "original" && s.url).map((s) => s.name);
   if (!names.length) return false;
   const safe = _currentTitle
     .replace(/[^a-zA-Z0-9]+/g, "_")

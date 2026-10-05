@@ -13,6 +13,7 @@ import {
   startQueueStream,
 } from "./queue.js";
 import { fmtTime, isReimportableSource, storeGet, storeSet } from "./utils.js";
+import { takeStemsFromJob } from "./capture/takeLanes.js";
 import { notifyFailure, setReleasePending, dismissFailuresByJobId, dismissFailuresByKind } from "./notifications.js";
 // Aliased (not the bare "t") -- this file already uses "t"/"tr" as local
 // variable names for track objects and table rows in several scopes.
@@ -748,6 +749,8 @@ function stateMetadataToTrack(state, fallbackTrack) {
     stems: state.selected_stems || fallbackTrack.stems,
     selectedStems: state.selected_stems || fallbackTrack.selectedStems,
     audioStems: state.stems || fallbackTrack.audioStems || [],
+    takes: state.takes ?? fallbackTrack.takes ?? [],
+    tracks: state.tracks ?? fallbackTrack.tracks ?? [],
     duration: state.duration || fallbackTrack.duration,
     status: state.status || fallbackTrack.status,
     bpm: state.bpm ?? fallbackTrack.bpm,
@@ -1165,7 +1168,7 @@ async function loadTrackIntoStudio(trackId) {
   setResplitTarget(resplittable ? track : null);
 
   applyTrackInfoToPanel(track);
-  wireUpAudio(trackId, track.audioStems, track.duration || 0, track.thumb, track.mixUrl ?? null, track.title || "", peaksPromise, track.hasVideo ?? false, track.videoStatus ?? null);
+  wireUpAudio(trackId, [...track.audioStems, ...takeStemsFromJob(track.takes, track.tracks)], track.duration || 0, track.thumb, track.mixUrl ?? null, track.title || "", peaksPromise, track.hasVideo ?? false, track.videoStatus ?? null);
   initSections(trackId, track.sections, track.duration || 0);
   // Not awaited: the track is already loading, and the answer arrives as a
   // "tracktags" event.
@@ -3819,6 +3822,28 @@ function settleStaleProcessingTracks() {
 // ─── Settings menu + Library editor ───
 
 let libraryEditor = null;
+// Settings > Recording (static/js/capture/recordingSettings.js), built on first
+// visit. Loaded on demand: the capture modules are only needed once someone
+// opens the tab, and importing them here would tie catalog.js into the
+// transport's module graph at load time.
+let recordingPane = null;
+let recordingPaneToken = 0;
+
+async function enterRecordingPane(overlay) {
+  if (recordingPane) { recordingPane.enter(); return; }
+  const token = ++recordingPaneToken;
+  try {
+    const { buildRecordingPane } = await import("./capture/recordingSettings.js");
+    // Settings closed, or another tab picked, while the module loaded.
+    if (token !== recordingPaneToken || libraryEditor !== overlay) return;
+    recordingPane = buildRecordingPane(overlay.querySelector('[data-pane="recording"]'));
+    if (!overlay.querySelector('.settings-pane[data-pane="recording"]')?.classList.contains("hidden")) {
+      recordingPane.enter();
+    }
+  } catch (e) {
+    console.warn("[catalog] recording settings failed to load:", e);
+  }
+}
 let libraryEditorOnKey = null;
 
 // The settings modal has a lot of server-fetched, dynamically-computed text
@@ -3867,6 +3892,10 @@ function refreshLibrarySyncSummary() {
 }
 
 function closeLibraryEditor() {
+  // Release the microphone and camera the Recording tab may hold.
+  recordingPane?.dispose();
+  recordingPane = null;
+  recordingPaneToken++;
   if (libraryEditorOnKey) {
     document.removeEventListener("keydown", libraryEditorOnKey);
     libraryEditorOnKey = null;
@@ -4810,6 +4839,7 @@ function openLibraryEditor() {
         <button class="settings-tab" type="button" data-tab="details" role="tab" data-i18n="settings.tab.songDetails">Song details</button>
         <button class="settings-tab" type="button" data-tab="network" role="tab" data-i18n="settings.tab.network">Network</button>
         <button class="settings-tab" type="button" data-tab="export" role="tab" data-i18n="settings.tab.export">Export</button>
+        <button class="settings-tab" type="button" data-tab="recording" role="tab" data-i18n="settings.tab.recording">Recording</button>
         <button class="settings-tab" type="button" data-tab="logs" role="tab" data-i18n="settings.tab.logs">Logs</button>
         <button class="settings-tab" type="button" data-tab="registry" role="tab" data-i18n="settings.tab.registry">Registry</button>
       </div>
@@ -5031,6 +5061,8 @@ function openLibraryEditor() {
           </div>
         </div>
       </div>
+      <!-- Filled by static/js/capture/recordingSettings.js the first time the tab opens. -->
+      <div class="settings-pane hidden" data-pane="recording"></div>
       <div class="settings-pane hidden" data-pane="logs">
         <div class="settings-subtabs" role="tablist">
           <button class="settings-subtab active" type="button" data-sub="location" role="tab" data-i18n="settings.logs.locationTab">Location</button>
@@ -5106,6 +5138,9 @@ function openLibraryEditor() {
       overlay.querySelectorAll(".settings-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== name));
       if (name === "registry") loadRegistryView(overlay);
       if (name === "logs") loadLogsView(overlay);
+      // The Recording tab holds the microphone and camera open while it shows.
+      if (name === "recording") enterRecordingPane(overlay);
+      else recordingPane?.leave();
     });
   });
   overlay.querySelector(".settings-registry-refresh:not(.settings-logs-refresh)")
@@ -5259,6 +5294,12 @@ export async function initCatalog() {
   wireSupportersDialog();
   wireReleaseDialog();
   wireSettingsMenu();
+  // A take was kept, nudged, renamed or deleted: the server re-rendered, so
+  // the open job's lanes are rebuilt from fresh state, as after a vocal split.
+  document.addEventListener("stemdeck:takes-changed", (e) => {
+    const id = e.detail?.jobId;
+    if (id && id === _currentTrackId) loadTrackIntoStudio(id);
+  });
   setDisplayedVersion(currentVersion);
   render();
 

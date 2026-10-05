@@ -1103,6 +1103,9 @@ input, textarea { font-family: inherit; }
 .library-editor-empty { color: var(--muted); text-align: center; padding: 22px 10px !important; }
 /* Settings → tabs */
 .settings-tabs { display: flex; gap: 2px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+/* Seven tabs since Recording joined: on a phone-width window the row wraps
+   instead of pushing the last tabs out of the dialog. */
+@media (max-width: 600px) { .settings-tabs { flex-wrap: wrap; } }
 .settings-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); font-family: var(--font-mono); font-size: 12px; font-weight: 600; padding: 5px 12px 9px; cursor: pointer; margin-bottom: -1px; }
 .settings-tab:hover { color: var(--fg-2); }
 .settings-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
@@ -2305,6 +2308,7 @@ input, textarea { font-family: inherit; }
 /* M/S buttons (JS-built) */
 .lane-icon-toggle.mx-btn,
 .ms-btn.mx-btn,
+.track-arm.mx-btn,
 .lane-dl.mx-btn {
   width: 22px; height: 20px;
   background: transparent;
@@ -2323,7 +2327,8 @@ input, textarea { font-family: inherit; }
   opacity: 1;
 }
 .lane-icon-toggle.mx-btn:hover,
-.ms-btn.mx-btn:hover { color: var(--fg); border-color: #3a4550; }
+.ms-btn.mx-btn:hover,
+.track-arm.mx-btn:hover { color: var(--fg); border-color: #3a4550; }
 
 /* Mute button: "active" = NOT muted (normal). Engaged (muted) lights up blue,
    mirroring the solo button's own lit-up treatment below. */
@@ -2337,6 +2342,22 @@ input, textarea { font-family: inherit; }
 /* Solo button: "active" = soloed */
 .ms-btn.mx-btn.active { background: rgba(244,183,64,0.18); color: var(--accent); border-color: rgba(244,183,64,0.4); }
 
+/* Arm (record-enable) on a recording track, the M/S button's twin: a red
+   dot, hollow when idle, filled and glowing when armed. Red is --danger, the
+   Record button's colour, so the two read as one control. */
+.track-arm.mx-btn { color: var(--danger); }
+.track-arm.mx-btn::before {
+  content: "";
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  box-sizing: border-box;
+  transition: background var(--t-fast), box-shadow var(--t-fast);
+}
+.track-arm.mx-btn:hover { color: var(--danger); }
+.track-arm.mx-btn.on { background: rgba(214,90,74,0.14); border-color: rgba(214,90,74,0.35); }
+.track-arm.mx-btn.on::before { background: currentColor; box-shadow: 0 0 6px currentColor; }
+
 /* Download button */
 .lane-dl.mx-btn {
   color: var(--muted);
@@ -2345,9 +2366,6 @@ input, textarea { font-family: inherit; }
 .lane-dl.mx-btn:hover { color: var(--fg); border-color: var(--border); }
 .lane-dl.mx-btn svg { width: 13px; height: 13px; }
 
-/* Unavailable stems — gray entire mixer row and waveform row */
-.lane-header.unavailable { opacity: 0.25; pointer-events: none; }
-.stem-waveform-row.unavailable { opacity: 0.2; pointer-events: none; }
 .mx-fader-input { touch-action: pan-y; }
 
 /* ── Waveform panel (right) ── */
@@ -5549,8 +5567,8 @@ input, textarea { font-family: inherit; }
 /* The click-track options with nothing to act on.
  *
  * They stay on the row and go quiet rather than leaving it, which is how the
- * metronome button beside them and every unavailable lane in the mixer already
- * behave. Half a control strip appearing and vanishing reads as a fault. */
+ * metronome button beside them and the empty studio's placeholder lanes
+ * already behave. Half a control strip appearing and vanishing reads as a fault. */
 .footer-metro-panel.unavailable {
   opacity: 0.4;
   pointer-events: none;

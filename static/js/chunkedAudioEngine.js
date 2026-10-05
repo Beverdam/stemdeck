@@ -833,6 +833,16 @@ export function createChunkedAudioEngine(stems, { onTime, onEnded, context } = {
     // `playing` flips before the async chunk fetch resolves, so the clock is
     // only trustworthy once _audioStarted is set.
     isClockReady: () => playing && _audioStarted,
+    // Same contract as audioEngine.getOutputMapping: the inputs of
+    // _getCurrentTime, frozen at one instant, for placing recorded frames.
+    getOutputMapping: () => ({
+      startCtxTime: _startCtxTime,
+      startOffset: _startOffset,
+      rate: _playbackRate,
+      pipelineLatencySeconds: _pipelineLatencySeconds(),
+      epoch: _epoch,
+      playing: playing && _audioStarted,
+    }),
     getMasterNode: () => buses[ZERO_INPUT],
     /**
      * Put one mixer lane in a given key.
