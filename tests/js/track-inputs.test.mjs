@@ -12,7 +12,7 @@
 
 import {
   channelChoices, defaultChannels, sameDevice, channelsNeeded, friendlyName, inputKind, choicesFor,
-  normaliseDevices, findDevice, resolveInput, pickDefaultDevice,
+  normaliseDevices, findDevice, resolveInput, pickDefaultDevice, needsNameUnlock,
 } from "../../static/js/capture/trackInputs.js";
 
 let pass = 0;
@@ -102,6 +102,23 @@ const r4 = resolveInput(null, devices, "id-mgxu");
 check("resolve: no input of its own is the Settings device", r4.device_id === "id-mgxu" && JSON.stringify(r4.channels) === "[0,1]");
 const r5 = resolveInput({ device_id: "gone", channels: [0] }, [], "");
 check("resolve: no device list yet is not reported missing", !r5.missing);
+
+// The desktop app's page starts every load with nameless devices (its grant
+// is never saved), as Chromium reports them before any getUserMedia.
+const nameless = [
+  { kind: "audioinput", deviceId: "", label: "" },
+  { kind: "videoinput", deviceId: "", label: "" },
+  { kind: "audiooutput", deviceId: "", label: "" },
+];
+const named = [{ kind: "audioinput", deviceId: "id-mgxu", label: "Line (2- MG-XU) (0499:1703)" }];
+check("unlock: nameless inputs in the desktop app open the mic once", needsNameUnlock(nameless, { desktop: true }));
+check("unlock: never in a browser, which would prompt", !needsNameUnlock(nameless, { desktop: false }));
+check("unlock: not twice in one page", !needsNameUnlock(nameless, { desktop: true, tried: true }));
+check("unlock: not when the names are already there", !needsNameUnlock(named, { desktop: true }));
+check(
+  "unlock: not with no input at all",
+  !needsNameUnlock([{ kind: "videoinput", deviceId: "", label: "" }], { desktop: true }) && !needsNameUnlock(null, { desktop: true }),
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

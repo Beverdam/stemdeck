@@ -601,7 +601,9 @@ export function refreshTrackInputs() {
   if (_refreshing) return _refreshing;
   _refreshing = (async () => {
     try {
-      _devices = await listInputDevices();
+      // Names are read (and, in the desktop app, unlocked) only when a
+      // track's picker is on screen: a song with no track never opens the mic.
+      _devices = await listInputDevices({ unlock: _tracks.length > 0 });
       _choiceByValue = new Map();
       for (const select of mixerEl?.querySelectorAll(".track-input") || []) {
         const track = _tracks.find((tr) => tr.id === select.dataset.track);

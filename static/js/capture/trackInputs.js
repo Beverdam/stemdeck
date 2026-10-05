@@ -178,14 +178,54 @@ export function pickDefaultDevice(devices, rememberedId) {
     || devices[0];
 }
 
-/** The input devices, named and classed. Names need microphone permission. */
-export async function listInputDevices() {
-  return normaliseDevices(await listDevices("audioinput"));
+/**
+ * Whether to open the microphone once just to read the device names.
+ *
+ * The desktop app grants its own page the microphone without asking
+ * (desktop/src-tauri/src/mediaperm.rs) but never saves the grant, so every
+ * page load starts with a list of nameless devices with no ids, which
+ * normaliseDevices drops: the track picker read "No input found" until
+ * something opened the microphone. A browser keeps the user's grant per site,
+ * and opening the microphone there would mean a prompt at an unexpected
+ * moment, so only the desktop app does this, and only once per page: a refusal
+ * (the operating system's privacy settings) is not retried on every refresh.
+ */
+export function needsNameUnlock(raw, { desktop = false, tried = false } = {}) {
+  if (!desktop || tried) return false;
+  const inputs = (raw || []).filter((d) => d.kind === "audioinput");
+  return inputs.length > 0 && inputs.every((d) => !d.label);
+}
+
+let _unlockTried = false;
+
+async function unlockInputNames(raw) {
+  const desktop = !!window.__TAURI__?.core?.invoke;
+  if (!needsNameUnlock(raw, { desktop, tried: _unlockTried })) return false;
+  _unlockTried = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    stream.getTracks().forEach((tr) => tr.stop());
+    return true;
+  } catch (e) {
+    console.warn("[rec] could not open the microphone to read the input names:", e);
+    return false;
+  }
+}
+
+/**
+ * The input devices, named and classed. Names need microphone permission.
+ * `unlock` lets the desktop app open the microphone once to read them; pass
+ * it only when an input picker is about to be shown or a track created.
+ */
+export async function listInputDevices({ unlock = false } = {}) {
+  const raw = await listDevices("audioinput");
+  if (unlock && (await unlockInputNames(raw))) return normaliseDevices(await listDevices("audioinput"));
+  return normaliseDevices(raw);
 }
 
 /** The input a new track starts with: the Settings default device, its default channels. */
 export async function defaultTrackInput() {
-  const devices = await listInputDevices();
+  const devices = await listInputDevices({ unlock: true });
   const dev = pickDefaultDevice(devices, getRememberedDevice("audioinput"));
   if (!dev) return null;
   return { device_id: dev.deviceId, device_label: dev.name || null, channels: defaultChannels(dev) };
