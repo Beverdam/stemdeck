@@ -35,7 +35,7 @@ from app.core.takes import take_dir
 from app.pipeline.audio_stats import vocal_envelope
 from app.pipeline.click_render import cache_key as click_cache_key
 from app.pipeline.click_render import count_in_beats, render_click_wav, render_count_in_wav
-from app.pipeline.take_render import EXPORT_LIMITER
+from app.pipeline.take_render import AAC_ENCODE_ARGS, EXPORT_LIMITER_LOSSY, export_limiter
 
 logger = logging.getLogger("stemdeck.api")
 
@@ -74,6 +74,9 @@ _ENCODE_ARGS = {
     "ogg": ["-c:a", "libvorbis", "-q:a", "6"],
 }
 MIXDOWN_CODECS = {ext: [*args, "-f", ext] for ext, args in _ENCODE_ARGS.items()}
+# Mixdowns whose encoder adds peak of its own, so they end in the true-peak
+# limiter (EXPORT_LIMITER_LOSSY) rather than the bit-transparent one.
+_LOSSY_MIXDOWN_EXTS = frozenset({"mp3", "ogg"})
 
 # Containers whose muxer finishes the file by seeking back to a header it wrote
 # earlier, which is impossible on a pipe (#458):
@@ -120,7 +123,10 @@ _MIXDOWN_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
 #
 # "3": every mixdown now ends in the export limiter (EXPORT_LIMITER), so a mix
 # that summed above -1 dBFS renders differently from the cached clipped file.
-_RENDER_CACHE_VERSION = "3"
+#
+# "4": MP3 and OGG mixdowns now end in the true-peak limiter at -1.5 dBTP
+# (EXPORT_LIMITER_LOSSY) instead of the -1 dBFS sample-peak one.
+_RENDER_CACHE_VERSION = "4"
 
 
 def _mixdown_cache_key(
@@ -1307,9 +1313,13 @@ async def get_mixdown(
     # lane skips amix (a 1-input amix is a no-op).
     #
     # Then the export limiter, always. Six stems at unity summed to +0.9 dBFS
-    # on a real song and the encoder clamped 77 samples to full scale; the
-    # limiter holds the peak at -1 dBFS and is bit-transparent below it, so an
-    # export that never reached the ceiling is unchanged (EXPORT_LIMITER).
+    # on a real song and the encoder clamped 77 samples to full scale. For WAV
+    # and FLAC the limiter holds the sample peak at -1 dBFS and is
+    # bit-transparent below it, so an export that never reached the ceiling is
+    # unchanged (EXPORT_LIMITER). MP3 and OGG get the true-peak limiter at
+    # -1.5 dBTP, because their encoders add peak of their own
+    # (EXPORT_LIMITER_LOSSY).
+    limiter = export_limiter(lossy=ext in _LOSSY_MIXDOWN_EXTS)
     filters = []
     for i, lane in enumerate(render_lanes):
         delay = f"adelay={delay_ms}:all=1," if delay_ms > 0 else ""
@@ -1321,9 +1331,9 @@ async def get_mixdown(
     n = stem_count + (1 if click_lane is not None else 0)
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER}[mix]")
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{limiter}[mix]")
     else:
-        filters.append(f"[a0]{EXPORT_LIMITER}[mix]")
+        filters.append(f"[a0]{limiter}[mix]")
     out_label = "[mix]"
     codec = MIXDOWN_CODECS[ext]
     # Resample to the user's chosen export rate (default 44.1 kHz = the stem rate,
@@ -1448,13 +1458,13 @@ async def get_video_mixdown(
         for i, lane in enumerate(render_lanes)
     ]
     n = len(paths)
-    # Same limiter as get_mixdown: this is the same mix, so it must not clip
-    # where the audio export no longer does.
+    # Same limiter as an MP3 or OGG mixdown: this is the same mix, encoded
+    # lossy (AAC), so it must not clip where the audio export no longer does.
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER}[mix]")
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER_LOSSY}[mix]")
     else:
-        filters.append(f"[a0]{EXPORT_LIMITER}[mix]")
+        filters.append(f"[a0]{EXPORT_LIMITER_LOSSY}[mix]")
     out_label = "[mix]"
     cmd += [
         "-filter_complex",
@@ -1465,10 +1475,7 @@ async def get_video_mixdown(
         f"{video_idx}:v",
         "-c:v",
         "copy",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+        *AAC_ENCODE_ARGS,
         "-shortest",
         "-movflags",
         "frag_keyframe+empty_moov",
