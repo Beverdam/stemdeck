@@ -1974,6 +1974,10 @@ function _effectiveMixGains() {
   return { names, gains, pitches };
 }
 
+// The camera take render (static/js/video/videoTake.js) sends the same backing
+// as the mix export, and saves the MP4 through the same desktop/browser split.
+export { _effectiveMixGains as currentMixLanes, _triggerDownload as triggerDownload };
+
 // Click-track export params. The click is synthesised in the browser during
 // playback, so the server can only reproduce it if it is told the rate and
 // accent mode the user was monitoring with. Opt-in: baking a permanent click
