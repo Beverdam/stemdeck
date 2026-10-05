@@ -24,14 +24,18 @@ from app.core.config import (
     JOB_ID_RE,
     JOBS_DIR,
     STEM_NAMES,
+    TAKE_ID_RE,
     TIMEOUT_FFMPEG,
+    TRACK_ID_RE,
     ffmpeg_executable,
 )
 from app.core.registry import get as registry_get
 from app.core.settings import get_export_sample_rate
+from app.core.takes import take_dir
 from app.pipeline.audio_stats import vocal_envelope
 from app.pipeline.click_render import cache_key as click_cache_key
 from app.pipeline.click_render import count_in_beats, render_click_wav, render_count_in_wav
+from app.pipeline.take_render import EXPORT_LIMITER
 
 logger = logging.getLogger("stemdeck.api")
 
@@ -50,6 +54,10 @@ _ALLOWED_NAMES = frozenset(STEM_NAMES) | frozenset(EXTRA_STEM_NAMES) | {"origina
 # endpoint replaces. Gains are linear; the studio caps a lane at 2.0, so this
 # generous bound just rejects abusive values.
 _MIXDOWN_NAMES = frozenset(STEM_NAMES) | frozenset(EXTRA_STEM_NAMES) | {"original"}
+# A recorded take is a lane too, named by its id (^t[0-9a-f]{8}$, never a stem
+# name) and resolved to takes/<take_id>/audio.wav, which is already in the
+# stems' format, aligned to song 0 and the song's length: export applies no
+# offset and no resample to it.
 _MIXDOWN_MAX_GAIN = 4.0
 # lead_vocals/backing_vocals are a decomposition of vocals, not an independent
 # signal -- summing vocals alongside either would double-count the vocal
@@ -109,7 +117,10 @@ _MIXDOWN_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
 # is still reachable, and _prune_mixdown_cache evicts by age rather than
 # validity -- so without this a user who exported before upgrading would be
 # handed the same broken file back for the same parameters indefinitely.
-_RENDER_CACHE_VERSION = "2"
+#
+# "3": every mixdown now ends in the export limiter (EXPORT_LIMITER), so a mix
+# that summed above -1 dBFS renders differently from the cached clipped file.
+_RENDER_CACHE_VERSION = "3"
 
 
 def _mixdown_cache_key(
@@ -121,6 +132,7 @@ def _mixdown_cache_key(
     end: float | None,
     click_lane: tuple[Path, float] | None = None,
     pitches: list[int] | None = None,
+    lane_versions: list[str] | None = None,
 ) -> str:
     """Every render input is in the key, so a different mixer state, region,
     or a Settings change (export sample rate) misses cleanly -- never a stale
@@ -145,6 +157,10 @@ def _mixdown_cache_key(
             # export made before #592 keeps the exact key it already had and
             # the cache survives the change.
             "" if not (pitches and any(pitches)) else "p" + ",".join(str(p) for p in pitches),
+            # A take is not immutable like a stem: a nudge re-renders its
+            # audio.wav under the same name. Its size and mtime pin the file
+            # the render read, so a nudged take misses the cache.
+            ",".join(lane_versions or []),
         ]
     )
     # Cache key, not a security context -- usedforsecurity=False documents
@@ -190,6 +206,60 @@ def _prune_mixdown_cache(cache_dir: Path, keep: Path | None = None) -> None:
             oldest.unlink()
         except OSError:
             logger.debug("mixdown cache prune: could not remove %s", oldest, exc_info=True)
+
+
+def _is_recorded_lane(name: str) -> bool:
+    """A take id or a recording track id: lanes resolved to a take's file."""
+    return bool(TAKE_ID_RE.match(name) or TRACK_ID_RE.match(name))
+
+
+def _lane_take_id(job_id: str, name: str) -> str:
+    """The take a recorded lane plays: a take id is itself, a track id is its
+    active take. A track with no take yet is a 422, like an unknown name."""
+    if not JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    job = registry_get(job_id)
+    if job is None or job.status != "done":
+        raise HTTPException(status_code=404, detail="job not ready")
+    if TRACK_ID_RE.match(name):
+        track = next((t for t in job.tracks if t.get("id") == name), None)
+        if track is None:
+            raise HTTPException(status_code=422, detail="unknown stem requested")
+        if not track.get("active_take_id"):
+            raise HTTPException(status_code=422, detail="track has no take")
+        return str(track["active_take_id"])
+    return name
+
+
+def _take_lane_path(job_id: str, name: str) -> Path:
+    """A take or track lane's audio.wav, with the same guards as a stem. Only
+    a finished take (one listed in job.takes) is a lane; anything else is the
+    same 422 as an unknown stem name."""
+    name = _lane_take_id(job_id, name)
+    job = registry_get(job_id)
+    if not TAKE_ID_RE.match(name) or not any(t.get("id") == name for t in job.takes):
+        raise HTTPException(status_code=422, detail="unknown stem requested")
+    folder = take_dir(job_id, name, JOBS_DIR)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="stem not found")
+    path = (folder / "audio.wav").resolve()
+    if not path.is_file() or not path.is_relative_to(JOBS_DIR.resolve()):
+        raise HTTPException(status_code=404, detail="stem not found")
+    return path
+
+
+def _take_versions(job_id: str, names: list[str]) -> list[str]:
+    """Cache-key fragments for the recorded lanes in `names`, the only lanes
+    whose file can change in place. A track's fragment names its active take,
+    so switching the active take misses the cache."""
+    out: list[str] = []
+    for name in names:
+        if not _is_recorded_lane(name):
+            continue
+        take_id = _lane_take_id(job_id, name)
+        st = _take_lane_path(job_id, name).stat()
+        out.append(f"{name}={take_id}@{st.st_size}:{st.st_mtime_ns}")
+    return out
 
 
 def _validate_stem_path(job_id: str, name: str):
@@ -514,7 +584,7 @@ def _parse_lane_gains(stems: str, gains: str) -> tuple[list[str], list[float]]:
         raise HTTPException(status_code=422, detail="gains must be numbers") from None
     if any(g < 0 or g > _MIXDOWN_MAX_GAIN for g in parsed_gains):
         raise HTTPException(status_code=422, detail="gain out of range")
-    if not set(names) <= _MIXDOWN_NAMES:
+    if not all(n in _MIXDOWN_NAMES or _is_recorded_lane(n) for n in names):
         raise HTTPException(status_code=422, detail="unknown stem requested")
     if "vocals" in names and _VOCAL_DECOMPOSITION_NAMES & set(names):
         raise HTTPException(
@@ -567,6 +637,9 @@ def _expand_render_lanes(
         # never produced would 404 untransposed and be synthesised from
         # components when transposed, so the same URL was valid or not
         # depending on the pitch attached to it.
+        if _is_recorded_lane(name):
+            lanes.append(_RenderLane(_take_lane_path(job_id, name), gain, pitch))
+            continue
         path = _validate_stem_path(job_id, name)
         if name != "original" or pitch == 0:
             lanes.append(_RenderLane(path, gain, pitch))
@@ -1184,7 +1257,15 @@ async def get_mixdown(
         groups=_parse_groups(click_groups, click_accent),
     )
     cache_key = _mixdown_cache_key(
-        job_id, ext, names, parsed_gains, start, end, click_lane, parsed_pitches
+        job_id,
+        ext,
+        names,
+        parsed_gains,
+        start,
+        end,
+        click_lane,
+        parsed_pitches,
+        _take_versions(job_id, names),
     )
     cache_path = _MIXDOWN_CACHE_DIR / f"{cache_key}.{ext}"
     if cache_path.is_file():
@@ -1224,6 +1305,11 @@ async def get_mixdown(
     # sum with amix (normalize=0 keeps levels faithful, matching collect.py). The
     # click lane is never delayed -- its lead-in is baked in. A single audible
     # lane skips amix (a 1-input amix is a no-op).
+    #
+    # Then the export limiter, always. Six stems at unity summed to +0.9 dBFS
+    # on a real song and the encoder clamped 77 samples to full scale; the
+    # limiter holds the peak at -1 dBFS and is bit-transparent below it, so an
+    # export that never reached the ceiling is unchanged (EXPORT_LIMITER).
     filters = []
     for i, lane in enumerate(render_lanes):
         delay = f"adelay={delay_ms}:all=1," if delay_ms > 0 else ""
@@ -1235,10 +1321,10 @@ async def get_mixdown(
     n = stem_count + (1 if click_lane is not None else 0)
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0[mix]")
-        out_label = "[mix]"
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER}[mix]")
     else:
-        out_label = "[a0]"
+        filters.append(f"[a0]{EXPORT_LIMITER}[mix]")
+    out_label = "[mix]"
     codec = MIXDOWN_CODECS[ext]
     # Resample to the user's chosen export rate (default 44.1 kHz = the stem rate,
     # so a no-op unless changed). Applies to every audio container -- some hardware
@@ -1362,12 +1448,14 @@ async def get_video_mixdown(
         for i, lane in enumerate(render_lanes)
     ]
     n = len(paths)
+    # Same limiter as get_mixdown: this is the same mix, so it must not clip
+    # where the audio export no longer does.
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0[mix]")
-        out_label = "[mix]"
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER}[mix]")
     else:
-        out_label = "[a0]"
+        filters.append(f"[a0]{EXPORT_LIMITER}[mix]")
+    out_label = "[mix]"
     cmd += [
         "-filter_complex",
         ";".join(filters),
@@ -1463,9 +1551,13 @@ async def get_all_stems_zip(
         raise HTTPException(status_code=404, detail="job not ready")
 
     # Resolve the requested subset (whitelisted) or fall back to all stems.
+    # Takes go in only when asked for by id: "all stems" means the separation.
     all_names = (*STEM_NAMES, *EXTRA_STEM_NAMES)
+    take_names: list[str] = []
     if stems:
         requested = {s for s in stems.split(",") if s}
+        take_names = sorted(n for n in requested if _is_recorded_lane(n))
+        requested -= set(take_names)
         if not requested <= set(all_names):
             raise HTTPException(status_code=422, detail="unknown stem requested")
         if "vocals" in requested and _VOCAL_DECOMPOSITION_NAMES & requested:
@@ -1487,6 +1579,15 @@ async def get_all_stems_zip(
         p = (stems_dir / f"{name}.wav").resolve()
         if p.is_file() and p.is_relative_to(jobs_root):
             sources.append((name, p))
+    labels = {t.get("id"): t.get("label") for t in job.takes}
+    labels.update({t.get("id"): t.get("name") for t in job.tracks})
+    for lane in take_names:
+        path = _take_lane_path(job_id, lane)
+        # Named for the label (take) or name (track) the user gave it, with
+        # the id to keep two called "Take 1" apart. _title_slug keeps it to
+        # [A-Za-z0-9_].
+        label = _title_slug(labels.get(lane))
+        sources.append((f"{label}_{lane}" if label else lane, path))
     if not sources:
         raise HTTPException(status_code=404, detail="no stems found")
 

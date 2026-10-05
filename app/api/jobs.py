@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, StrictBool, field_validator
 
+from app.api.takes import cancel_job_renders
 from app.core.config import (
     DISCOGS_LOOKUP_BUDGET_SEC,
     JOB_ID_RE,
@@ -1855,6 +1856,8 @@ def delete_job(job_id: str) -> dict[str, str]:
         if not wait_run_ended(job_id, RETIME_DELETE_WAIT_SEC):
             logger.warning("[%s] lyrics timing still stopping; removing files anyway", job_id)
     forget_run(job_id)
+    # A video render of one of its takes writes into the folder about to go.
+    cancel_job_renders(job_id)
     # A fingerprint of its audio may still have a file open (Windows).
     release_source(job_id)
     removed = _rmtree_job(job_id)

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.core.config import DEMUCS_MODEL, EXTRA_STEM_NAMES, JOB_ID_RE, LYRICS_FILE, STEM_NAMES
 from app.core.models import Job, clean_artist, clean_audio_tags, clean_identity, clean_work
+from app.core.takes import reconcile_tracks, recover_takes
 
 logger = logging.getLogger("stemdeck.registry")
 
@@ -254,6 +255,9 @@ def restore(jobs_dir: Path) -> None:
                         changed = True
                         if recovered.status in _RESUMABLE:
                             resume.append(recovered)
+            for job in to_add.values():
+                if _sync_tracks(job, jobs_dir / job.id):
+                    changed = True
             with _lock:
                 _jobs.update(to_add)
             # The user's order first, then oldest first. queue_position is
@@ -289,6 +293,7 @@ def restore(jobs_dir: Path) -> None:
                 continue
             recovered = _recover_done_job(job_dir)
             if recovered is not None:
+                _sync_tracks(recovered, job_dir)
                 with _lock:
                     _jobs[recovered.id] = recovered
                 changed = True
@@ -363,6 +368,20 @@ def take_pending_resume() -> list[str]:
     return ids
 
 
+def _sync_tracks(job: Job, job_dir: Path) -> bool:
+    """Reconcile a loaded job's recording tracks with its takes on disk, so
+    takes recorded before tracks existed come back as a track each. Never
+    fatal: restore() runs at import time."""
+    if not job.takes and not job.tracks and not (job_dir / "takes").is_dir():
+        return False
+    try:
+        job.tracks, job.takes, changed = reconcile_tracks(job_dir, job.tracks, job.takes)
+    except Exception:
+        logger.warning("could not reconcile tracks for %s", job.id, exc_info=True)
+        return False
+    return changed
+
+
 def _recover_done_job(job_dir: Path) -> Job | None:
     stems_dir = job_dir / "stems"
     if not stems_dir.is_dir():
@@ -433,6 +452,9 @@ def _recover_done_job(job_dir: Path) -> Job | None:
         # The file is the record: metadata.json predates it for most jobs.
         has_lyrics=(job_dir / LYRICS_FILE).is_file(),
         vocal_split=vocal_split,
+        # Takes are files first: their folders survive whatever the registry
+        # lost, so the lanes come back with the job.
+        takes=recover_takes(job_dir),
     )
 
 
