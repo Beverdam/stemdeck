@@ -22,6 +22,14 @@
 //!   in `Info.plist` and, once the app is signed with the hardened runtime, the
 //!   entitlements in `Entitlements.plist`. No Rust is involved.
 //!
+//! Checked in the real Windows app (WebView2 154, over CDP): the backend page
+//! gets both with no prompt, `http://localhost:<port>` and another port are
+//! refused at once, and the profile's `media_stream_mic` and
+//! `media_stream_camera` stay empty after either answer. Because nothing is
+//! saved, every page load starts with nameless devices until something calls
+//! `getUserMedia`; the track input picker opens the microphone once for that
+//! (`needsNameUnlock` in static/js/capture/trackInputs.js).
+//!
 //! Only one origin is ever granted: the loopback backend this process started,
 //! scheme, host and port all equal. The port is read when the request
 //! arrives, not when the window opens, because the backend can restart on a
@@ -221,6 +229,17 @@ mod tests {
         assert!(!origin_allowed("http://localhost:8123/", BACKEND));
         assert!(!origin_allowed("http://192.168.1.10:8123/", BACKEND));
         assert!(!origin_allowed("http://example.com:8123/", BACKEND));
+    }
+
+    #[test]
+    fn other_loopback_spellings_are_refused() {
+        // Each is another origin string to the webview, so a grant to one
+        // would be a grant the page never asked for under its own name.
+        assert!(!origin_allowed("http://[::1]:8123/", BACKEND));
+        assert!(!origin_allowed("http://127.0.0.2:8123/", BACKEND));
+        assert!(!origin_allowed("http://0.0.0.0:8123/", BACKEND));
+        // Case is not a different origin: the URL parser lowers it.
+        assert!(origin_allowed("HTTP://127.0.0.1:8123/", BACKEND));
     }
 
     #[test]
