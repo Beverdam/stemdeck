@@ -378,12 +378,21 @@ TAKE_CAMERA_MAX_BYTES_PER_SEC = 20_000_000 // 8  # 20 Mbit/s, 2.5x the 8 Mbit/s 
 # 5-minute 1080p30 encode runs about 1x to 3x realtime on a desktop CPU.
 TIMEOUT_VIDEO_RENDER = _env_int("STEMDECK_TIMEOUT_VIDEO_RENDER", 3600)
 
-# Ceiling of the limiter at the end of every mixdown (export clipping fix).
+# Ceilings of the limiter at the end of every mixdown (export clipping fix).
 # Stems summed at unity measured +0.9 dBFS with 77 clipped samples on a real
-# song (docs/plans 01-mastering 3.3). -1 dBFS is the "Prevent clipping"
-# ceiling the mastering plan uses, and leaves room for the 0.7 dB a lossy
-# encoder adds on top (same document, 4.1). Below it the limiter is idle.
+# song (docs/plans 01-mastering 3.3).
+#
+# Lossless exports (WAV, FLAC): a sample-peak limit at -1 dBFS, idle and
+# bit-identical below it. Measured on two real songs with +6 dB boosts, a
+# hot take, transpose and click: sample peak -1.0 dBFS, true peak -0.6 dBTP
+# at worst, no sample at full scale, also after resampling to 48 kHz.
 EXPORT_LIMIT_DBFS = -1.0
+# Lossy exports (MP3, OGG, the AAC in an MP4): the encoder adds peak on top
+# of its input (MP3 measured +0.7 dB in the same document, 4.1), so the
+# limit is a true-peak one (4x oversampled) and lower. Measured on the same
+# songs: decoded peaks -0.9 to -1.3 dBTP, where the -1 dBFS sample limit
+# left -0.4 dBTP for MP3 and OGG and +0.4 dBFS (clipped) for AAC.
+EXPORT_LIMIT_LOSSY_DBTP = -1.5
 
 # Reading an upload's tags (artist, title, album, lyrics) with ffprobe for the
 # Lyrics tab and the artist box (#699). Tags are a nicety, so a probe that

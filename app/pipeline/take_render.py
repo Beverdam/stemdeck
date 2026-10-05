@@ -27,7 +27,12 @@ from typing import NamedTuple
 
 import soundfile as sf
 
-from app.core.config import EXPORT_LIMIT_DBFS, TIMEOUT_FFMPEG, ffmpeg_executable
+from app.core.config import (
+    EXPORT_LIMIT_DBFS,
+    EXPORT_LIMIT_LOSSY_DBTP,
+    TIMEOUT_FFMPEG,
+    ffmpeg_executable,
+)
 
 logger = logging.getLogger("stemdeck.takes")
 
@@ -43,8 +48,36 @@ TAKE_CHANNELS = 2
 # keeps its timing to the sample. Measured on the bundled ffmpeg 8.1: with a
 # signal under the limit the output is bit-identical to the input, same
 # length; two 0.7 sines summed (52152 samples at full scale without it) peak
-# at exactly -1.0 dBFS with none at full scale.
+# at exactly -1.0 dBFS with none at full scale. This one is for lossless
+# exports (WAV, FLAC), where bit-identical below the ceiling matters.
 EXPORT_LIMITER = f"alimiter=limit={10 ** (EXPORT_LIMIT_DBFS / 20):.6f}:level=disabled:latency=1"
+
+# Lossy exports (MP3, OGG, AAC) limit the true peak instead: alimiter at the
+# stem rate only sees the samples, and the peaks between them (up to 0.5 dB
+# over, measured) plus what the encoder adds reached -0.4 dBTP after
+# decoding (MP3, OGG) and +0.4 dBFS with clipped samples (AAC). At 4x the samples are the true peak (the ffmpeg docs recommend
+# 2x to 4x before alimiter), and the lower ceiling leaves the encoder room.
+# The round trip through 176.4 kHz is not bit-identical, which only matters
+# for a lossless file: a lossy encoder rewrites every sample anyway. Cost:
+# 3.7 s per 10 minutes of song, measured.
+EXPORT_LIMITER_LOSSY = (
+    f"aresample={4 * TAKE_RATE},"
+    f"alimiter=limit={10 ** (EXPORT_LIMIT_LOSSY_DBTP / 20):.6f}:level=disabled:latency=1,"
+    f"aresample={TAKE_RATE}"
+)
+
+# AAC as every MP4 export writes it. Intensity stereo is off: with it on (the
+# encoder's default) the native encoder sent single blocks of a song up to
+# 2.7 dB over its input, so a mix limited to -2 dBTP decoded at +0.7 dBFS.
+# Without it the encoder stayed within 0.5 dB of its input on every song
+# measured.
+# A low-bitrate tool; at 192 kbps it saves nothing worth a click.
+AAC_ENCODE_ARGS = ["-c:a", "aac", "-b:a", "192k", "-aac_is", "0"]
+
+
+def export_limiter(lossy: bool) -> str:
+    """The limiter that ends an export's audio graph, for its encoder."""
+    return EXPORT_LIMITER_LOSSY if lossy else EXPORT_LIMITER
 
 
 class TakeRenderError(RuntimeError):
@@ -294,7 +327,7 @@ def build_video_render_cmd(
     """One ffmpeg command: backing mix + take audio + one camera tile -> MP4.
 
     The audio graph is the export's (per-lane pitch and gain, amix with
-    normalize=0, the export limiter), with the take as one more lane at no
+    normalize=0, the lossy export limiter), with the take as one more lane at no
     offset: audio.wav is already aligned to song 0. The output has no path;
     the caller appends -progress and the destination."""
     width, height = CANVAS_SIZES[canvas]
@@ -312,9 +345,9 @@ def build_video_render_cmd(
     n = take_idx + 1
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER}[aout]")
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER_LOSSY}[aout]")
     else:
-        filters.append(f"[a0]{EXPORT_LIMITER}[aout]")
+        filters.append(f"[a0]{EXPORT_LIMITER_LOSSY}[aout]")
 
     filters.append(f"color=c=black:s={width}x{height}:r={VIDEO_FPS}:d={duration_sec:.6f}[bg]")
     filters.append(camera_filter(camera_start_sec, width, height, fit, mirror, f"[{cam_idx}:v]"))
@@ -338,10 +371,7 @@ def build_video_render_cmd(
         "yuv420p",
         "-r",
         str(VIDEO_FPS),
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
+        *AAC_ENCODE_ARGS,
         "-ar",
         str(audio_rate),
         "-t",

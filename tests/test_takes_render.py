@@ -226,7 +226,7 @@ def test_command_has_the_agreed_encode_settings(tmp_path):
     for part in ("-c:v libx264", "-crf 20", "-pix_fmt yuv420p", "-r 30", "-c:a aac", "+faststart"):
         assert part in joined
     graph = cmd[cmd.index("-filter_complex") + 1]
-    assert "amix=inputs=2:normalize=0,alimiter" in graph
+    assert "amix=inputs=2:normalize=0,aresample=176400,alimiter" in graph
     assert "[1:a]volume=0.800000[a1]" in graph
     assert "s=1920x1080" in graph and "overlay=eof_action=pass" in graph
     assert cmd[cmd.index("-t") + 1] == "3.000000"
