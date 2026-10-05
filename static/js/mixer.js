@@ -1,5 +1,5 @@
 import {
-  STEM_NAMES, TRACK_NAMES, EXTRA_STEM_NAMES, STEM_COLORS, STEM_DISPLAY, LANE_VOLUME_MAX,
+  STEM_NAMES, TRACK_NAMES, EXTRA_STEM_NAMES, TAKE_NAMES, STEM_COLORS, STEM_DISPLAY, LANE_VOLUME_MAX,
 } from "./constants.js";
 
 // Every lane name this session might ever need mixer state for, including
@@ -10,7 +10,8 @@ import {
 // syncStemNamesFromAPI() resolves -- a const array here would freeze the
 // fallback values from before that happens.
 function allTrackNames() {
-  return [...TRACK_NAMES, ...EXTRA_STEM_NAMES];
+  // TAKE_NAMES: the open job's recorded takes, which mix like any stem.
+  return [...TRACK_NAMES, ...EXTRA_STEM_NAMES, ...TAKE_NAMES];
 }
 import {
   mixerState, mixerEl, stemListEl, currentJobId, multitrack, trackIndex,
@@ -471,7 +472,7 @@ const PREVIEW_FONT = '700 30px system-ui, -apple-system, "Segoe UI", sans-serif'
 
 export function laneDragIcon(stemName) {
   try {
-    const label = t(`stem.${stemName}`) || stemName;
+    const label = STEM_DISPLAY[stemName] || stemName;
     const canvas = document.createElement("canvas");
     let ctx = canvas.getContext("2d");
     ctx.font = PREVIEW_FONT;

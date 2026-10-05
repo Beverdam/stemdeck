@@ -9,6 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/css/variables.css" />
     <link rel="stylesheet" href="/css/waves.css" />
+    <link rel="stylesheet" href="/css/recording.css" />
     <link rel="stylesheet" href="/css/daw.css" />
   </head>
   <body>
@@ -601,7 +602,11 @@
           <div class="daw-wave-header">
             <div class="daw-wave-label">
               <span class="daw-label-title" data-i18n="mixer.title">Mixer</span>
+              <!-- A recording track: its own row and lane, armed to record into
+                   (static/js/capture/takeLanes.js). -->
+              <button class="add-track-btn" id="addTrackBtn" type="button" disabled title="Add a recording track" aria-label="Add a recording track" data-i18n-title="rec.track.addTitle" data-i18n-aria-label="rec.track.addTitle"><span aria-hidden="true">+</span> <span data-i18n="rec.track.add">Track</span></button>
               <span class="uplabel daw-label-sub" data-i18n="mixer.hint">Drag fader · M/S</span>
+              <p class="track-note" id="trackNote" role="status" aria-live="polite" hidden></p>
             </div>
             <div class="daw-ruler-area">
               <div class="lanes-ruler" data-position="top">
@@ -836,6 +841,18 @@
                 </svg>
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" class="pause-icon" aria-hidden="true" style="display:none">
                   <rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/>
+                </svg>
+              </button>
+              <!-- Record a take over the song (static/js/capture/recordUi.js).
+                   The arrow beside it opens the recording panel below. -->
+              <button class="daw-iconbtn btn-transport rec-btn" id="t-rec" type="button" title="Record a take over the song" aria-label="Record" aria-pressed="false" data-i18n-title="rec.recordTitle" data-i18n-aria-label="rec.record">
+                <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="7" fill="currentColor"/>
+                </svg>
+              </button>
+              <button class="rec-opts-btn" id="t-rec-opts" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="recPanel" title="Recording options" aria-label="Recording options" data-i18n-title="rec.optionsTitle" data-i18n-aria-label="rec.optionsTitle">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                  <path d="M6 15l6-6 6 6"/>
                 </svg>
               </button>
             </div>
@@ -1244,6 +1261,36 @@
 
     <!-- First, so its handlers are installed before main.js is evaluated and
          can report a failure to parse, resolve an import, or wire the UI. -->
+    <!-- Recording panel, opened from the arrow beside Record. A popover over
+         the footer, so it lives outside it. -->
+    <div class="rec-panel" id="recPanel" role="dialog" aria-labelledby="recPanelTitle" hidden>
+      <div class="rec-panel-head">
+        <span class="rec-panel-title" id="recPanelTitle" data-i18n="rec.panelTitle">Record a take</span>
+        <!-- Input, camera and the latency test are set once, in Settings. -->
+        <button class="rec-link" id="recSettingsLink" type="button" data-i18n="rec.settingsLink">Input and camera settings</button>
+      </div>
+      <div class="rec-permission" id="recPermission" hidden></div>
+      <div class="rec-meter" aria-hidden="true"><div class="rec-meter-fill" id="recMeterFill"></div></div>
+      <label class="rec-check">
+        <input type="checkbox" id="recMonitor">
+        <span data-i18n="rec.monitor">Hear myself through StemDeck</span>
+      </label>
+      <p class="rec-note rec-monitor-delay" id="recMonitorDelay"></p>
+      <p class="rec-note" data-i18n="rec.headphonesNote">Use headphones. With speakers the song bleeds into the take, and hearing yourself can feed back.</p>
+      <fieldset class="rec-mute">
+        <legend data-i18n="rec.muteDuring">Mute while recording</legend>
+        <div class="rec-mute-list" id="recMuteList"></div>
+      </fieldset>
+      <div class="rec-review" id="recReview" hidden>
+        <p class="rec-review-text" id="recReviewText"></p>
+        <div class="rec-actions">
+          <button class="rec-small-btn primary" id="recKeep" type="button" data-i18n="rec.review.keep">Keep</button>
+          <button class="rec-small-btn" id="recDiscard" type="button" data-i18n="rec.review.discard">Discard</button>
+        </div>
+      </div>
+      <p class="rec-status" id="recStatus" role="status" aria-live="polite"></p>
+    </div>
+
     <script type="module" src="/js/boot-diagnostics.js"></script>
     <script type="module" src="/js/main.js"></script>
     <script type="module" src="/js/ui-chrome.js"></script>

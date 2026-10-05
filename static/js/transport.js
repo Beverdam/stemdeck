@@ -32,6 +32,7 @@ import { computeCountIn, defaultGrouping, normaliseGrouping } from "./metronome.
 import { t, onLanguageChange } from "./i18n.js";
 import { pitchBlockedKey } from "./pitchBus.js";
 import { refitFooter } from "./footerFit.js";
+import { initRecordUi } from "./capture/recordUi.js";
 
 // Zoom range. 1 is the whole track fitted to the panel; there is nothing below
 // it to show, so it is the floor rather than a soft default.
@@ -960,6 +961,7 @@ export function wireTransportButtons() {
   wireSpeedControl();
   wireMetronomeControl();
   wirePitchControl();
+  initRecordUi();
 }
 
 // Three buttons rather than a dial -- practice speeds for slowing a part
