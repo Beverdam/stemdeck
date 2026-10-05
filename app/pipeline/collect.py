@@ -249,7 +249,12 @@ def compute_stem_peaks(stems_dir: Path, stem_names: list[str]) -> dict[str, floa
     return rms_values
 
 
-def merge_stem_peaks(stems_dir: Path, new_names: list[str]) -> dict[str, float]:
+def merge_stem_peaks(
+    stems_dir: Path,
+    new_names: list[str],
+    sources: dict[str, Path] | None = None,
+    remove: list[str] | None = None,
+) -> dict[str, float]:
     """Add peaks/RMS for newly-produced stems (e.g. the on-demand lead/backing
     vocal split, #275) into the existing peaks.json instead of recomputing
     every stem. Best-effort, same as compute_stem_peaks: a failure here only
@@ -257,7 +262,12 @@ def merge_stem_peaks(stems_dir: Path, new_names: list[str]) -> dict[str, float]:
 
     Returns each scanned stem's RMS, from the same pass, so the caller can
     extend stem presence without decoding anything twice (see
-    presence_for_split)."""
+    presence_for_split).
+
+    `sources` maps a name to a WAV outside stems_dir: a recorded take lives in
+    takes/<take_id>/audio.wav but its waveform is served from the same
+    peaks.json as the stems, so the chunked engine needs no fallback. `remove`
+    drops entries, for a deleted take."""
     path = stems_dir / "peaks.json"
     peaks: dict[str, list[list[float]]] = {}
     rms_values: dict[str, float] = {}
@@ -267,8 +277,11 @@ def merge_stem_peaks(stems_dir: Path, new_names: list[str]) -> dict[str, float]:
         except (OSError, json.JSONDecodeError):
             logger.warning("could not read existing peaks.json in %s", stems_dir, exc_info=True)
 
+    for name in remove or []:
+        peaks.pop(name, None)
+
     for name in new_names:
-        wav = stems_dir / f"{name}.wav"
+        wav = (sources or {}).get(name) or stems_dir / f"{name}.wav"
         if not wav.is_file():
             continue
         try:

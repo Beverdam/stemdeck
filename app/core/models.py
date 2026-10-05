@@ -250,6 +250,14 @@ class Job:
     sections_source: Literal["automatic", "manual"] | None = None
     tags: list[str] | None = None  # YouTube tags + categories, lowercased, max 8
     stems: list[dict[str, str]] = field(default_factory=list)
+    # Recorded takes, finished ones only, in creation order: the lanes the
+    # studio adds after the stems. Each is app.core.takes.take_entry's shape.
+    # The take itself (raw capture, sidecar, camera) stays in
+    # takes/<take_id>/ beside the stems; this is the index the UI reads.
+    takes: list[dict[str, Any]] = field(default_factory=list)
+    # Recording tracks, sorted by order: each a mixer lane that plays its
+    # active take. Mirrors takes/tracks.json (app.core.takes).
+    tracks: list[dict[str, Any]] = field(default_factory=list)
     # Subset of stems the user chose at submit. The pipeline produces all
     # 6 regardless (Demucs htdemucs_6s is fixed), but after collect we
     # mix down only the selected ones into mix.wav so the user can
@@ -389,6 +397,8 @@ class Job:
             "sections_source": self.sections_source,
             "tags": self.tags,
             "stems": self.stems,
+            "takes": self.takes,
+            "tracks": self.tracks,
             "selected_stems": self.selected_stems,
             "mix_url": self.mix_url,
             "source_url": self.source_url,

@@ -352,6 +352,39 @@ TIMEOUT_VOCAL_SPLIT = _env_int("STEMDECK_TIMEOUT_VOCAL_SPLIT", 1800)
 # so it gets its own, larger budget.
 TIMEOUT_BEATGRID = _env_int("STEMDECK_TIMEOUT_BEATGRID", 300)
 
+# Recorded takes (docs: audio capture). A take is a folder under
+# jobs/<job_id>/takes/<take_id>/ and lives and dies with the job folder.
+TAKE_ID_RE = re.compile(r"^t[0-9a-f]{8}$")
+TAKES_DIRNAME = "takes"
+# One job can hold this many takes, finished or not. A bound on disk use by a
+# client that creates takes in a loop, not a musical limit.
+TAKE_MAX_PER_JOB = 50
+# Recording tracks (DAW-style): a track is one mixer lane that owns takes and
+# plays its active one. Stored in takes/tracks.json beside the take folders.
+TRACK_ID_RE = re.compile(r"^k[0-9a-f]{8}$")
+TRACKS_FILE = "tracks.json"
+TRACK_MAX_PER_JOB = 32
+# A part body is capped by the 4 MB JSON body middleware in app/main.py; the
+# route checks the same number while it streams the body, because the header
+# can be absent or wrong.
+TAKE_PART_MAX_BYTES = 4 * 1024 * 1024
+TAKE_MAX_SEQ = 100_000
+# Total size per kind is bounded by the song: its duration plus this much
+# slack (count-in, pickup notes, a late Stop), at the largest capture format.
+TAKE_SLACK_SEC = 120
+TAKE_AUDIO_MAX_BYTES_PER_SEC = 48000 * 2 * 4  # float32 stereo at 48 kHz
+TAKE_CAMERA_MAX_BYTES_PER_SEC = 20_000_000 // 8  # 20 Mbit/s, 2.5x the 8 Mbit/s recorder
+# Video render of a take (libx264 + AAC). Slower than any audio export: a
+# 5-minute 1080p30 encode runs about 1x to 3x realtime on a desktop CPU.
+TIMEOUT_VIDEO_RENDER = _env_int("STEMDECK_TIMEOUT_VIDEO_RENDER", 3600)
+
+# Ceiling of the limiter at the end of every mixdown (export clipping fix).
+# Stems summed at unity measured +0.9 dBFS with 77 clipped samples on a real
+# song (docs/plans 01-mastering 3.3). -1 dBFS is the "Prevent clipping"
+# ceiling the mastering plan uses, and leaves room for the 0.7 dB a lossy
+# encoder adds on top (same document, 4.1). Below it the limiter is idle.
+EXPORT_LIMIT_DBFS = -1.0
+
 # Reading an upload's tags (artist, title, album, lyrics) with ffprobe for the
 # Lyrics tab and the artist box (#699). Tags are a nicety, so a probe that
 # takes longer than this is abandoned and the upload goes ahead without them.
