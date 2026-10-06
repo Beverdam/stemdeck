@@ -1,6 +1,6 @@
 // The Bass EQ and Guitar EQ panels (and, with another layout, the Keys EQ):
 // an original pedal-like faceplate of knobs with a small live response curve
-// beside it. The controls and their ranges follow the reference pedals'
+// beside it, over the lane's live spectrum. The controls and their ranges follow the reference pedals'
 // published manuals (eqPedalMath.js has the sources and the mapping); the
 // artwork, names and layout are StemDeck's own.
 //
@@ -20,7 +20,7 @@ import {
 import { controlPresets } from "./eqPresets.js";
 import { createSuggest } from "./eqSuggest.js";
 import {
-  el, containKeys, createEditState, buildToolbar, bindUndoKeys, createMiniCurve,
+  el, containKeys, createEditState, buildToolbar, bindUndoKeys, createMiniCurve, createLiveSpectrum,
 } from "./eqPanelCommon.js";
 
 const round1 = (v) => Math.round(v * 10) / 10;
@@ -138,6 +138,10 @@ export function mountPanel({ lane, kind, body, controls }) {
   body.append(root);
   containKeys(body);
   const curve = createMiniCurve(curveCv, lane);
+  const spectrum = createLiveSpectrum(lane, {
+    columns: () => curveCv.clientWidth,
+    onFrame: (vals) => { curve.setSpectrum(vals); curve.draw(); },
+  });
 
   // ─── Mixer side ───
   const toolbar = buildToolbar(controls, state, {
@@ -235,6 +239,7 @@ export function mountPanel({ lane, kind, body, controls }) {
     suggest,
     destroy() {
       suggest.destroy();
+      spectrum.destroy();
       offChange();
       ro?.disconnect();
       if (queued) cancelAnimationFrame(queued);

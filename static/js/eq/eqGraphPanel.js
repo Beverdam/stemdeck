@@ -22,16 +22,11 @@ import {
 } from "./eqGraphMath.js";
 import {
   el, button, readColors, containKeys, createEditState, buildToolbar, bindUndoKeys, exportRateDiffers,
+  ANALYZER_MODES, SPEC_FALL_DB, readAnalyzerMode, saveAnalyzerMode,
 } from "./eqPanelCommon.js";
 import { graphPresets } from "./eqPresets.js";
 import { createSuggest } from "./eqSuggest.js";
 
-const ANALYZER_KEY = "stemdeck.eqAnalyzer";
-const ANALYZER_MODES = ["off", "pre", "post"];
-// The spectrum falls back this many dB per frame at most (about 18 dB/s at
-// 60 frames a second): a separated drum stem is near silence between hits,
-// and a faster fall made it flicker out of sight.
-const SPEC_FALL_DB = 0.3;
 // One option per type, cuts once per slope: the list's single type menu.
 const TYPE_OPTIONS = [
   ["bell", 12], ["lowshelf", 12], ["highshelf", 12],
@@ -39,24 +34,6 @@ const TYPE_OPTIONS = [
   ["highcut", 12], ["highcut", 24], ["highcut", 36], ["highcut", 48],
   ["notch", 12], ["bandpass", 12], ["tilt", 12],
 ];
-
-function readAnalyzerMode() {
-  try {
-    const v = localStorage.getItem(ANALYZER_KEY);
-    return ANALYZER_MODES.includes(v) ? v : "post";
-  } catch (e) {
-    console.warn("[eq] reading the analyser choice failed:", e);
-    return "post";
-  }
-}
-
-function saveAnalyzerMode(v) {
-  try {
-    localStorage.setItem(ANALYZER_KEY, v);
-  } catch (e) {
-    console.warn("[eq] saving the analyser choice failed:", e);
-  }
-}
 
 function typeLabel(band) {
   const name = t(`eq.type.${band.type}`);

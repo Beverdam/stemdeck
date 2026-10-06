@@ -1,13 +1,42 @@
 // What every EQ panel shares: the edit state of one lane (undo and redo, A/B
 // compare, presets, reset), the toolbar in the panel's mixer-side row, a
-// small response curve, the canvas colours from the design tokens, and the
+// small response curve with the lane's live spectrum behind it, the analyser
+// choice, the canvas colours from the design tokens, and the
 // keyboard containment that keeps panel keys away from the studio's global
 // shortcuts (Space plays, Delete moves the song to the Trash).
 
 import * as eq from "../eqEngine.js";
 import { eqResponseDb } from "../eqMath.js";
 import { t } from "../i18n.js";
-import { createHistory, fmtDb } from "./eqGraphMath.js";
+import {
+  createHistory, fmtDb, SPEC_MIN_DB, SPEC_MAX_DB, SPEC_TILT_DB_OCT, columnBins, spectrumFrame,
+} from "./eqGraphMath.js";
+
+const ANALYZER_KEY = "stemdeck.eqAnalyzer";
+export const ANALYZER_MODES = ["off", "pre", "post"];
+// The spectrum falls back this many dB per frame at most (about 18 dB/s at
+// 60 frames a second): a separated drum stem is near silence between hits,
+// and a faster fall made it flicker out of sight.
+export const SPEC_FALL_DB = 0.3;
+
+/** The analyser choice (Off, Pre, Post), one for every panel; "post" when none is saved. */
+export function readAnalyzerMode() {
+  try {
+    const v = localStorage.getItem(ANALYZER_KEY);
+    return ANALYZER_MODES.includes(v) ? v : "post";
+  } catch (e) {
+    console.warn("[eq] reading the analyser choice failed:", e);
+    return "post";
+  }
+}
+
+export function saveAnalyzerMode(v) {
+  try {
+    localStorage.setItem(ANALYZER_KEY, v);
+  } catch (e) {
+    console.warn("[eq] saving the analyser choice failed:", e);
+  }
+}
 
 export function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -224,17 +253,20 @@ export function bindUndoKeys(root, state, after) {
 
 /**
  * A small response curve (pedal and keys panels): the lane's EQ drawn from
- * the descriptor at the live rate, with a +-15 dB scale. Not animated: it is
- * drawn when the EQ changes.
+ * the descriptor at the live rate, with a +-15 dB scale, over the lane's
+ * live spectrum when one is given (createLiveSpectrum redraws it each frame).
  */
 export function createMiniCurve(canvas, lane) {
   const freqs = new Float64Array(160);
   for (let i = 0; i < freqs.length; i++) freqs[i] = 20 * 1000 ** (i / (freqs.length - 1));
   let colors = null;
   let ghost = null;
+  let spectrum = null;
   return {
     /** A descriptor to draw dashed over the lane's curve (a suggestion), or null. */
     setGhost(d) { ghost = d; },
+    /** dB per pixel column across the width (createLiveSpectrum), or null for none. */
+    setSpectrum(vals) { spectrum = vals; },
     draw() {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
@@ -257,6 +289,22 @@ export function createMiniCurve(canvas, lane) {
       for (const f of [100, 1000, 10000]) {
         const x = Math.round((Math.log(f / 20) / Math.log(1000)) * w) + 0.5;
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      }
+      if (spectrum?.length > 1) {
+        const span = SPEC_MAX_DB - SPEC_MIN_DB;
+        const step = w / (spectrum.length - 1);
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        for (let c = 0; c < spectrum.length; c++) {
+          const v = (spectrum[c] - SPEC_MIN_DB) / span;
+          ctx.lineTo(c * step, h - Math.max(0, Math.min(1, v)) * h);
+        }
+        ctx.lineTo(w, h);
+        ctx.closePath();
+        ctx.fillStyle = colors.spectrum;
+        ctx.fill();
+        ctx.strokeStyle = colors.spectrumLine;
+        ctx.stroke();
       }
       ctx.strokeStyle = colors.zero;
       ctx.beginPath(); ctx.moveTo(0, Math.round(h / 2) + 0.5); ctx.lineTo(w, Math.round(h / 2) + 0.5); ctx.stroke();
@@ -296,6 +344,72 @@ export function createMiniCurve(canvas, lane) {
         ctx.setLineDash([]);
       }
       canvas.setAttribute("aria-label", t("eq.curveAria", { out: fmtDb(cur.params.out) }));
+    },
+  };
+}
+
+/**
+ * The lane's live spectrum for a mini curve: one dB value per pixel column
+ * from 20 Hz to 20 kHz, handed to `onFrame` every animation frame while the
+ * page is visible. It follows the analyser choice of the graph panels (Off,
+ * Pre, Post) and draws nothing when that is Off. `columns()` is the curve's
+ * width in px. The analyser tap is taken lazily, retried once a second until
+ * the audio engine is up, and given back on destroy.
+ */
+export function createLiveSpectrum(lane, { columns, onFrame }) {
+  const mode = readAnalyzerMode();
+  let node = null;
+  let data = null;
+  let smooth = null;
+  let bins = null;
+  let rate = 0;
+  let raf = 0;
+  let lastTry = -1e9;
+  let destroyed = false;
+
+  function frame(ts) {
+    raf = 0;
+    if (destroyed || document.hidden) return;
+    if (!node && ts - lastTry > 1000) {
+      lastTry = ts;
+      node = eq.getAnalyser(lane, mode, { fftSize: 8192, smoothing: 0.8 });
+      if (node) { data = new Float32Array(node.frequencyBinCount); bins = null; }
+    }
+    const cols = Math.round(columns());
+    if (node && cols > 1) {
+      if (!bins || bins.lo.length !== cols || rate !== node.context.sampleRate) {
+        rate = node.context.sampleRate;
+        bins = columnBins(cols, node.frequencyBinCount, rate, { x: 0, y: 0, w: cols, h: 1 }, SPEC_TILT_DB_OCT);
+        smooth = new Float32Array(cols).fill(SPEC_MIN_DB);
+      }
+      node.getFloatFrequencyData(data);
+      onFrame(spectrumFrame(bins, data, smooth, SPEC_FALL_DB));
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  function start() {
+    if (raf || destroyed || mode === "off" || document.hidden) return;
+    raf = requestAnimationFrame(frame);
+  }
+
+  const onVisibility = () => {
+    if (document.hidden) { cancelAnimationFrame(raf); raf = 0; } else start();
+  };
+  document.addEventListener("visibilitychange", onVisibility);
+  // A song (re)load rebuilt the engine: its analyser taps are new.
+  const offChange = eq.onChange(({ laneId }) => { if (laneId === null) node = null; });
+  start();
+
+  return {
+    destroy() {
+      destroyed = true;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      document.removeEventListener("visibilitychange", onVisibility);
+      offChange();
+      if (node) eq.releaseAnalyser(lane, mode);
+      node = null;
     },
   };
 }
