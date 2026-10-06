@@ -36,13 +36,13 @@ function rampTo(param, value, ctx, immediate, time = PARAM_RAMP) {
     param.value = value;
     return;
   }
-  if (typeof param.cancelAndHoldAtTime === "function") {
-    param.cancelAndHoldAtTime(now);
-  } else {
-    const current = param.value;
-    param.cancelScheduledValues?.(now);
-    param.setValueAtTime?.(current, now);
-  }
+  // Not cancelAndHoldAtTime: measured in Chromium, holding a ramp that is
+  // still running and starting the next from it clicked on every knob step
+  // (a 0.22 jump against 0.001 for the same sweep this way). The value the
+  // param has now is where the next ramp starts.
+  const current = param.value;
+  param.cancelScheduledValues?.(now);
+  param.setValueAtTime?.(current, now);
   if (typeof param.linearRampToValueAtTime === "function") {
     param.linearRampToValueAtTime(value, now + time);
   } else {
