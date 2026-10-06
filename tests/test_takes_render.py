@@ -234,11 +234,78 @@ def test_command_has_the_agreed_encode_settings(tmp_path):
 
 def test_camera_filter_places_and_fits():
     late = camera_filter(1.25, 1080, 1920, "contain", True, "[2:v]")
-    assert "setpts=PTS-STARTPTS+1.250000/TB" in late
+    assert "setpts=PTS-STARTPTS+(1.250000)/TB" in late
+    assert "trim" not in late
     assert "pad=1080:1920" in late and "hflip" in late
     early = camera_filter(-0.5, 1920, 1080, "cover", False, "[2:v]")
-    assert "trim=start=0.500000" in early and "crop=1920:1080" in early
+    # Shifted first, cut after: the kept frames keep their own timestamps.
+    assert "setpts=PTS-STARTPTS+(-0.500000)/TB,trim=start=0," in early
+    assert "crop=1920:1080" in early
     assert "hflip" not in early
+
+
+def test_command_cuts_every_lane_at_the_span_start(tmp_path):
+    cmd = build_video_render_cmd(
+        [
+            AudioLane(tmp_path / "drums.wav", 1.0, "rubberband=pitch=1.1:"),
+        ],
+        tmp_path / "audio.wav",
+        1.0,
+        tmp_path / "camera.webm",
+        12.5,
+        4.0,
+        "16:9",
+        "cover",
+        False,
+        44100,
+        start_sec=10.0,
+    )
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    # Cut before the pitch shift, and the take at the same instant.
+    assert "[0:a]atrim=start=10.000000,asetpts=PTS-STARTPTS,rubberband=" in graph
+    assert "[1:a]atrim=start=10.000000,asetpts=PTS-STARTPTS,volume=" in graph
+    # The camera's song time 12.5 s is 2.5 s into the video.
+    assert "setpts=PTS-STARTPTS+(2.500000)/TB" in graph
+    assert "d=4.000000" in graph and cmd[cmd.index("-t") + 1] == "4.000000"
+    whole = build_video_render_cmd(
+        [], tmp_path / "audio.wav", 1.0, tmp_path / "c.mp4", 0.0, 3.0, "16:9", "cover", False, 44100
+    )
+    assert "atrim" not in whole[whole.index("-filter_complex") + 1]
+
+
+def _sidecar(first, start=None, count_in=None, end=None, nudge_ms=0.0):
+    timeline = {"first_sample_song_sec": first}
+    if start is not None:
+        timeline["start_song_sec"] = start
+    if count_in is not None:
+        timeline["count_in_sec"] = count_in
+    if end is not None:
+        timeline["end_song_sec"] = end
+    return {"timeline": timeline, "latency": {"user_nudge_ms": nudge_ms}}
+
+
+@pytest.mark.parametrize(
+    ("sidecar", "span", "expected"),
+    [
+        # From the count-in (10 s minus 2 s) to the last sample.
+        (_sidecar(7.9, start=10.0, count_in=2.0, end=20.0), "take", (8.0, 12.0)),
+        # A nudge moves the take, so its end moves with it.
+        (_sidecar(7.9, start=10.0, count_in=2.0, end=20.0, nudge_ms=500), "take", (8.0, 11.5)),
+        # A count-in before song 0 starts the video at 0: no backing before it.
+        (_sidecar(-2.1, start=0.0, count_in=2.0, end=30.0), "take", (0.0, 30.0)),
+        # Recorded past the end: clamped to the song.
+        (_sidecar(150.0, start=152.0, count_in=0.0, end=170.0), "take", (152.0, 13.0)),
+        # Stopped at once: still one second of picture.
+        (_sidecar(40.0, start=40.0, count_in=0.0, end=40.2), "take", (40.0, 1.0)),
+        # An older sidecar with only the first sample: from there to the song end.
+        (_sidecar(5.0), "take", (5.0, 160.0)),
+        (_sidecar(7.9, start=10.0, count_in=2.0, end=20.0), "song", (0.0, 165.0)),
+    ],
+)
+def test_render_span(sidecar, span, expected):
+    start, duration = takes_mod._render_span(sidecar, 165.0, span)
+    assert start == pytest.approx(expected[0], abs=1e-9)
+    assert duration == pytest.approx(expected[1], abs=1e-9)
 
 
 # ─── Endpoint ────────────────────────────────────────────────────────────
@@ -406,3 +473,344 @@ async def test_cancel_stops_a_real_render(jobs_dir, client, tmp_path, monkeypatc
         )
     leftovers = list((jobs_dir / JOB / "takes" / tid).glob(".render.mp4.*"))
     assert leftovers == []
+
+
+# ─── Sync, measured in the rendered file ─────────────────────────────────
+
+
+def _flash_camera(path, flash_frame=30, seconds=2.0) -> bytes:
+    """Black 30 fps clip with one white frame, as H.264 in MP4."""
+    subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c=black:s=320x240:r=30:d={seconds},"
+            f"drawbox=c=white:t=fill:enable='eq(n,{flash_frame})'",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+        timeout=60,
+    )
+    return path.read_bytes()
+
+
+def _frame_means(path) -> np.ndarray:
+    out = subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-vf",
+            "scale=16:16,format=gray",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    return np.frombuffer(out, dtype=np.uint8).reshape(-1, 256).mean(axis=1)
+
+
+def _decoded_audio(path) -> np.ndarray:
+    out = subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-ac",
+            "1",
+            "-ar",
+            str(SR),
+            "-f",
+            "f32le",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    return np.frombuffer(out, dtype=np.float32)
+
+
+def _onsets(x: np.ndarray, threshold=0.1) -> list[int]:
+    """First sample of each burst over the threshold after 0.3 s of quiet."""
+    loud = np.flatnonzero(np.abs(x) > threshold)
+    if not len(loud):
+        return []
+    keep = [int(loud[0])]
+    keep += [int(b) for a, b in zip(loud[:-1], loud[1:], strict=True) if b - a > 0.3 * SR]
+    return keep
+
+
+async def _flash_take(c, tmp_path, *, first_frame_ms, timeline=None, beep_at=None) -> str:
+    """A take whose camera flashes at its frame 30 (1.0 s into the clip) and
+    whose audio, captured at 44.1 kHz from song 0, has a 1 kHz burst at
+    `beep_at` seconds."""
+    track = (await c.post(f"/api/jobs/{JOB}/tracks", json={})).json()["id"]
+    tid = (await c.post(f"/api/jobs/{JOB}/takes", json={"track_id": track})).json()["take_id"]
+    audio = np.zeros(int(SR * SONG_SEC), dtype="<f4")
+    if beep_at is not None:
+        i = int(round(beep_at * SR))
+        n = int(0.04 * SR)
+        audio[i : i + n] = 0.5 * np.sin(2 * np.pi * 1000 * np.arange(n) / SR)
+    assert (
+        await c.put(f"/api/jobs/{JOB}/takes/{tid}/parts/audio?seq=0", content=audio.tobytes())
+    ).status_code == 200
+    cam = _flash_camera(tmp_path / f"flash-{tid}.mp4")
+    assert (
+        await c.put(f"/api/jobs/{JOB}/takes/{tid}/parts/camera?seq=0", content=cam)
+    ).status_code == 200
+    body = {
+        "v": 1,
+        "timeline": {"first_sample_song_sec": 0.0, "tempo": 1.0, **(timeline or {})},
+        "capture": {"rate": SR, "channels": 1},
+        "video": {"mime": "video/mp4", "firstFrameAtMs": first_frame_ms},
+    }
+    r = await c.post(f"/api/jobs/{JOB}/takes/{tid}/finish", json=body)
+    assert r.status_code == 200, r.text
+    return tid
+
+
+async def _render(c, tid, **body) -> None:
+    r = await c.post(f"/api/jobs/{JOB}/takes/{tid}/render", json=body)
+    assert r.status_code == 202, r.text
+    assert (await _wait(c, tid))["status"] == "done"
+
+
+@pytest.mark.parametrize(
+    ("first_frame_ms", "offset_ms", "flash_frame"),
+    [
+        # Camera frame 0 at song -5 ms: the flash (clip 1.000 s) is at song
+        # 0.995 s, nearest video frame 30. Cutting the front first and
+        # restarting at 0 put it at frame 29 (0.967 s): 33 ms early.
+        (-5.0, 0, 30),
+        # +120 ms (video late, subtract): 0.875 s, frame 26.25 -> 26.
+        (-5.0, 120, 26),
+        # -120 ms: 1.115 s, frame 33.45 -> 33.
+        (-5.0, -120, 33),
+        # Camera starting after song 0: 1.250 s, frame 37.5 -> 38 (or 37).
+        (250.0, 0, 38),
+    ],
+)
+async def test_the_flash_lands_on_the_nearest_video_frame(
+    jobs_dir, client, tmp_path, first_frame_ms, offset_ms, flash_frame
+):
+    _needs_x264()
+    _make_job(jobs_dir)
+    async with client as c:
+        tid = await _flash_take(c, tmp_path, first_frame_ms=first_frame_ms)
+        await _render(c, tid, camera_offset_ms=offset_ms)
+    means = _frame_means(jobs_dir / JOB / "takes" / tid / "render.mp4")
+    bright = np.flatnonzero(means > 128)
+    assert len(bright) == 1, means
+    if flash_frame == 38:
+        assert int(bright[0]) in (37, 38)  # exactly half a frame: either is nearest
+    else:
+        assert int(bright[0]) == flash_frame
+
+
+async def test_the_take_span_keeps_the_take_on_its_sample(jobs_dir, client, tmp_path):
+    """A take from song 1.0 s (count-in 0.5 s from 1.5 s) to 2.6 s: the video
+    is 1.0 s to 2.6 s, the take's burst at song 1.8 s is at 0.8 s in the file
+    to the sample, and the camera's flash (song 0.995 s, before the span)
+    is not in it."""
+    _needs_x264()
+    _make_job(jobs_dir)
+    async with client as c:
+        tid = await _flash_take(
+            c,
+            tmp_path,
+            first_frame_ms=-5.0,
+            timeline={"start_song_sec": 1.5, "count_in_sec": 0.5, "end_song_sec": 2.6},
+            beep_at=1.8,
+        )
+        await _render(c, tid)
+        folder = jobs_dir / JOB / "takes" / tid
+        out = folder / "render.mp4"
+        # The playable take has the burst where it was captured (song 1.8 s);
+        # the same onset detector runs on both files, so they compare exactly.
+        playable, rate = sf.read(folder / "audio.wav", dtype="float32")
+        assert rate == SR
+        (at,) = _onsets(playable[:, 0])
+        # The sine starts at 0 and passes the threshold on its third sample.
+        assert at == round(1.8 * SR) + 2
+        info = _probe(out)
+        assert abs(float(info["format"]["duration"]) - 1.6) < 0.05
+        onsets = _onsets(_decoded_audio(out))
+        assert len(onsets) == 1
+        assert abs(onsets[0] - (at - SR)) <= 1, onsets[0] - (at - SR)
+        assert (_frame_means(out) < 20).all()  # flash is before the span
+
+        # The whole song on request: 3 s, burst at 1.8 s, flash at frame 30.
+        await _render(c, tid, span="song")
+        assert abs(float(_probe(out)["format"]["duration"]) - SONG_SEC) < 0.05
+        onsets = _onsets(_decoded_audio(out))
+        assert len(onsets) == 1 and abs(onsets[0] - at) <= 1
+        assert int(np.argmax(_frame_means(out))) == 30
+
+        r = await c.post(f"/api/jobs/{JOB}/takes/{tid}/render", json={"span": "half"})
+        assert r.status_code == 422
+
+
+# ─── Framing, measured in the rendered file ──────────────────────────────
+
+
+def _chart_camera(path) -> bytes:
+    """A 16:9 chart, 640x360: red top-left, green top-right, grey elsewhere."""
+    subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=gray:s=640x360:r=30:d=2,"
+            "drawbox=x=0:y=0:w=160:h=90:c=red:t=fill,"
+            "drawbox=x=480:y=0:w=160:h=90:c=lime:t=fill",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        check=True,
+        timeout=60,
+    )
+    return path.read_bytes()
+
+
+def _rgb_frame(path, t=1.0) -> np.ndarray:
+    info = next(s for s in _probe(path)["streams"] if s["codec_type"] == "video")
+    out = subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(t),
+            "-i",
+            str(path),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    return np.frombuffer(out, np.uint8).reshape(info["height"], info["width"], 3).astype(int)
+
+
+def _colour(px) -> str:
+    r, g, b = px
+    if max(r, g, b) < 40:
+        return "black"
+    if r > 150 and g < 100 and b < 100:
+        return "red"
+    if g > 150 and r < 100 and b < 100:
+        return "green"
+    return "grey"
+
+
+@pytest.mark.parametrize(
+    ("canvas", "fit", "mirror", "expect"),
+    [
+        # Not mirrored by default: red stays top-left.
+        ("16:9", "cover", False, {(100, 60): "red", (1820, 60): "green", (960, 540): "grey"}),
+        # mirror=true flips it.
+        ("16:9", "cover", True, {(100, 60): "green", (1820, 60): "red"}),
+        # Portrait, contain: the picture is 1080x608 in the middle, black above
+        # and below; its corners are the chart's.
+        (
+            "9:16",
+            "contain",
+            False,
+            {(540, 300): "black", (540, 1600): "black", (60, 700): "red", (1020, 700): "green"},
+        ),
+        # Portrait, cover: the middle third of the width fills the canvas, so
+        # the corner blocks are cropped away and there is no black band.
+        ("9:16", "cover", False, {(540, 30): "grey", (30, 30): "grey", (1050, 30): "grey"}),
+    ],
+)
+async def test_framing(jobs_dir, client, tmp_path, canvas, fit, mirror, expect):
+    _needs_x264()
+    _make_job(jobs_dir)
+    async with client as c:
+        track = (await c.post(f"/api/jobs/{JOB}/tracks", json={})).json()["id"]
+        tid = (await c.post(f"/api/jobs/{JOB}/takes", json={"track_id": track})).json()["take_id"]
+        audio = np.zeros(SR, dtype="<f4").tobytes()
+        await c.put(f"/api/jobs/{JOB}/takes/{tid}/parts/audio?seq=0", content=audio)
+        cam = _chart_camera(tmp_path / "chart.mp4")
+        await c.put(f"/api/jobs/{JOB}/takes/{tid}/parts/camera?seq=0", content=cam)
+        body = {
+            "v": 1,
+            "timeline": {"first_sample_song_sec": 0.0},
+            "capture": {"rate": SR, "channels": 1},
+            "video": {"mime": "video/mp4", "firstFrameAtMs": 0, "mirrorPreview": True},
+        }
+        assert (await c.post(f"/api/jobs/{JOB}/takes/{tid}/finish", json=body)).status_code == 200
+        await _render(c, tid, canvas=canvas, fit=fit, mirror=mirror)
+    img = _rgb_frame(jobs_dir / JOB / "takes" / tid / "render.mp4")
+    assert img.shape[:2] == ((1080, 1920) if canvas == "16:9" else (1920, 1080))
+    got = {xy: _colour(img[xy[1], xy[0]]) for xy in expect}
+    assert got == expect
+
+
+@pytest.mark.parametrize(("sent", "kept"), [(1, True), (2, False), (None, True)])
+async def test_a_take_missing_camera_parts_keeps_its_sound_only(
+    jobs_dir, client, tmp_path, sent, kept
+):
+    """One camera part on the server. The video block says how many were
+    sent: when that is more, the end of the recording is missing, and the
+    take is kept without its video instead of with a short one."""
+    skip_without_ffmpeg()
+    _make_job(jobs_dir)
+    async with client as c:
+        track = (await c.post(f"/api/jobs/{JOB}/tracks", json={})).json()["id"]
+        tid = (await c.post(f"/api/jobs/{JOB}/takes", json={"track_id": track})).json()["take_id"]
+        audio = np.zeros(4800, dtype="<f4").tobytes()
+        await c.put(f"/api/jobs/{JOB}/takes/{tid}/parts/audio?seq=0", content=audio)
+        cam = _white_camera(tmp_path / "cam.mp4")
+        await c.put(f"/api/jobs/{JOB}/takes/{tid}/parts/camera?seq=0", content=cam)
+        video = {"mime": "video/mp4", "firstFrameAtMs": 0}
+        if sent is not None:
+            video["parts"] = sent
+        body = {
+            "v": 1,
+            "timeline": {"first_sample_song_sec": 0.0},
+            "capture": {"rate": 48000, "channels": 1},
+            "video": video,
+        }
+        r = await c.post(f"/api/jobs/{JOB}/takes/{tid}/finish", json=body)
+        assert r.status_code == 200, r.text
+        assert r.json()["has_camera"] is kept
+    folder = jobs_dir / JOB / "takes" / tid
+    assert (folder / "camera.mp4").is_file() is kept
+    assert not (folder / "camera.part").exists()
+    assert ("video" in json.loads((folder / "take.json").read_text())) is kept

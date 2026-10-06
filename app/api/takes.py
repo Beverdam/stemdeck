@@ -24,6 +24,11 @@ re-render from the raw capture:
 
 Positive means late, subtract: the same sign as every latency in the capture
 layer.
+
+Render length (RenderBody.span): "take" (the default) covers the take's own
+span, from its count-in to where it stopped, clamped to the song; "song"
+covers the whole song. The backing plays across the whole render either way;
+the camera shows where it filmed and the canvas is black elsewhere.
 """
 
 from __future__ import annotations
@@ -1055,6 +1060,8 @@ class RenderBody(BaseModel):
     canvas: Literal["16:9", "9:16"] = "16:9"
     fit: Literal["cover", "contain"] = "cover"
     mirror: StrictBool = False
+    # "take": from the take's count-in to where it stopped; "song": all of it.
+    span: Literal["take", "song"] = "take"
 
     @field_validator("stems")
     @classmethod
@@ -1090,6 +1097,38 @@ def _render_lanes(job_id: str, take_id: str, body: RenderBody) -> list[AudioLane
         )
     lanes, _unpitched = stems_api._expand_render_lanes(job_id, names, gains, pitches)
     return [AudioLane(lane.path, lane.gain, stems_api._pitch_filter(lane.pitch)) for lane in lanes]
+
+
+# The shortest take-span video: a take stopped right after its count-in
+# still gets a second of picture rather than an empty file.
+_SPAN_MIN_SEC = 1.0
+
+
+def _render_span(sidecar: dict[str, Any], song_sec: float, span: str) -> tuple[float, float]:
+    """(start, duration) of the video in song time.
+
+    The take's span starts where its count-in started (start_song_sec minus
+    count_in_sec; the take's first sample when an older sidecar has neither)
+    and ends at its last sample, nudge included, both clamped to the song:
+    before song 0 there is no backing and audio.wav starts at 0."""
+    if span == "song" or song_sec <= 0:
+        return 0.0, song_sec
+    timeline = sidecar.get("timeline") or {}
+    placement = _placement_sec(sidecar)
+    first = float(timeline.get("first_sample_song_sec") or 0.0)
+    start_song = timeline.get("start_song_sec")
+    if isinstance(start_song, (int, float)):
+        start = float(start_song) - float(timeline.get("count_in_sec") or 0.0)
+    else:
+        start = placement
+    end_song = timeline.get("end_song_sec")
+    end = placement + (float(end_song) - first) if isinstance(end_song, (int, float)) else song_sec
+    start = min(max(0.0, start), song_sec)
+    end = min(max(start, end), song_sec)
+    if end - start < _SPAN_MIN_SEC:
+        end = min(song_sec, start + _SPAN_MIN_SEC)
+        start = max(0.0, end - _SPAN_MIN_SEC)
+    return start, end - start
 
 
 async def _render_task(
@@ -1168,7 +1207,7 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
         _placement_sec(sidecar) + float(video.get("firstFrameAtMs") or 0.0) / 1000.0
     ) - offset_ms / 1000.0
     frames = await asyncio.to_thread(_song_frames, job_id)
-    duration = frames / TAKE_RATE
+    start, duration = _render_span(sidecar, frames / TAKE_RATE, body.span)
     cmd = build_video_render_cmd(
         lanes,
         folder / "audio.wav",
@@ -1180,13 +1219,22 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
         body.fit,
         body.mirror,
         get_export_sample_rate(),
+        start_sec=start,
     )
     run = _RenderRun()
     _renders[(job_id, take_id)] = run
     task = asyncio.create_task(_render_task(run, job, cmd, folder / _RENDER_FILE, duration))
     _render_tasks.add(task)
     task.add_done_callback(_render_tasks.discard)
-    logger.info("[%s] take %s video render queued (%d lanes)", job_id, take_id, len(lanes))
+    logger.info(
+        "[%s] take %s video render queued (%d lanes, %s span %.3f s + %.3f s)",
+        job_id,
+        take_id,
+        len(lanes),
+        body.span,
+        start,
+        duration,
+    )
     return JSONResponse(_render_view(job_id, take_id, folder), status_code=202)
 
 

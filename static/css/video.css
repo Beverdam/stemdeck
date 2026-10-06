@@ -22,6 +22,7 @@
 
 .vid-toggle,
 .vid-make,
+.vid-stop,
 .vid-download,
 .vid-step {
   display: inline-flex;
@@ -39,14 +40,17 @@
 }
 .vid-toggle:hover:not(:disabled),
 .vid-make:hover:not(:disabled),
+.vid-stop:hover:not(:disabled),
 .vid-download:hover,
 .vid-step:hover:not(:disabled) { background: var(--panel-3); color: var(--fg); border-color: var(--border-strong); }
 .vid-toggle:disabled,
 .vid-make:disabled,
+.vid-stop:disabled,
 .vid-step:disabled { opacity: 0.5; cursor: default; }
 .vid-toggle.on { color: var(--accent); border-color: var(--accent); }
 .vid-toggle:focus-visible,
 .vid-make:focus-visible,
+.vid-stop:focus-visible,
 .vid-download:focus-visible,
 .vid-step:focus-visible,
 .vid-select:focus-visible,
@@ -54,6 +58,7 @@
 .vid-step { width: 28px; padding: 0; justify-content: center; }
 .vid-make { color: var(--fg); }
 .vid-download[hidden],
+.vid-stop[hidden],
 .vid-progress[hidden] { display: none; }
 
 .vid-select,
@@ -117,8 +122,11 @@
 }
 .vid-take-name { color: var(--fg); min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
 .vid-nudge { display: inline-flex; align-items: center; gap: 4px; }
+.vid-span { display: inline-flex; align-items: center; gap: 4px; }
 .vid-nudge-label,
+.vid-span-label,
 .vid-unit { color: var(--muted); }
+.vid-select:disabled { opacity: 0.5; }
 .vid-progress { width: 120px; accent-color: var(--accent); }
 .vid-state { color: var(--muted); }
 .vid-note { margin: 0; color: var(--muted-2); font-size: 11px; }

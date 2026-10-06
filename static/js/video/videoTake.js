@@ -27,9 +27,35 @@ import {
   cameraConstraints, QUALITY, DEFAULT_QUALITY, clampOffsetMs, takeHasVideo,
   OFFSET_MIN_MS, OFFSET_MAX_MS, FRAME_RATE,
 } from "./videoCodec.js";
-import { saveCameraOffset, requestRender, renderStatus, waitForRender, renderDownloadUrl } from "./videoRender.js";
+import {
+  saveCameraOffset, requestRender, renderStatus, waitForRender, renderDownloadUrl, cancelRender,
+} from "./videoRender.js";
 
 const FRAME_MS = Math.round(1000 / FRAME_RATE);
+
+// How long the video is: the take's own span (the default) or the whole song.
+// Remembered per browser, as a convenience only: the server's default is
+// "take" when nothing is sent.
+const SPAN_KEY = "stemdeck:video:span";
+const SPANS = ["take", "song"];
+
+function _storedSpan() {
+  try {
+    const v = window.localStorage.getItem(SPAN_KEY);
+    return SPANS.includes(v) ? v : "take";
+  } catch (err) {
+    console.warn("[video] reading the video length choice failed:", err);
+    return "take";
+  }
+}
+
+function _storeSpan(value) {
+  try {
+    window.localStorage.setItem(SPAN_KEY, value);
+  } catch (err) {
+    console.warn("[video] saving the video length choice failed:", err);
+  }
+}
 
 const ui = {};
 let stream = null;
@@ -306,10 +332,29 @@ function _takeRow(jobId, take, signal, songTitle) {
   unit.textContent = t("video.ms");
   nudge.append(nudgeLabel, minus, input, unit, plus);
 
+  const spanWrap = _el("label", "vid-span", { "data-i18n-title": "video.spanTitle" });
+  spanWrap.title = t("video.spanTitle");
+  const spanLabel = _el("span", "vid-span-label", { "data-i18n": "video.span" });
+  spanLabel.textContent = t("video.span");
+  const span = _el("select", "vid-select vid-span-select", { "data-i18n-aria-label": "video.span" });
+  span.setAttribute("aria-label", t("video.span"));
+  for (const value of SPANS) {
+    const key = value === "take" ? "video.spanTake" : "video.spanSong";
+    const opt = _el("option", "", { value, "data-i18n": key });
+    opt.textContent = t(key);
+    span.appendChild(opt);
+  }
+  span.value = _storedSpan();
+  span.addEventListener("change", () => _storeSpan(span.value));
+  spanWrap.append(spanLabel, span);
+
   const make = _el("button", "vid-make", { type: "button", "data-i18n": "video.make" });
   make.textContent = t("video.make");
   const progress = _el("progress", "vid-progress", { max: "1", value: "0", hidden: true, "data-i18n-aria-label": "video.progressAria" });
   const state = _el("span", "vid-state", { "aria-live": "polite" });
+  // A whole-song render of a long take runs for minutes: it can be stopped.
+  const stop = _el("button", "vid-stop", { type: "button", hidden: true, "data-i18n": "video.stop" });
+  stop.textContent = t("video.stop");
   const download = _el("button", "vid-download", { type: "button", hidden: true, "data-i18n": "video.download" });
   download.textContent = t("video.download");
 
@@ -319,8 +364,12 @@ function _takeRow(jobId, take, signal, songTitle) {
   input.addEventListener("change", () => { input.value = String(clampOffsetMs(input.value)); });
 
   let doneStatus = null;
+  let stoppedByUser = false;
   const setBusy = (busy) => {
+    stop.hidden = !busy;
+    stop.disabled = false;
     make.disabled = busy;
+    span.disabled = busy;
     input.disabled = busy;
     minus.disabled = busy;
     plus.disabled = busy;
@@ -335,6 +384,7 @@ function _takeRow(jobId, take, signal, songTitle) {
   const follow = async () => {
     setBusy(true);
     download.hidden = true;
+    stoppedByUser = false;
     try {
       const st = await waitForRender(jobId, take.id, {
         signal,
@@ -343,9 +393,16 @@ function _takeRow(jobId, take, signal, songTitle) {
           state.textContent = p > 0 ? t("video.making", { percent: Math.round(p * 100) }) : t("video.queued");
         },
       });
-      showDone(st);
+      // Stopped: the server may still hold an earlier video, but it is not
+      // the one just asked for, so nothing is offered.
+      if (stoppedByUser) state.textContent = t("video.stopped");
+      else showDone(st);
     } catch (err) {
       if (err?.name === "AbortError") return;
+      if (stoppedByUser) {
+        state.textContent = t("video.stopped");
+        return;
+      }
       console.warn("[video] render failed:", err);
       state.textContent = t("video.failed", { reason: String(err?.message || err) });
     } finally {
@@ -383,7 +440,9 @@ function _takeRow(jobId, take, signal, songTitle) {
         gains.push(Number(lanes.gains[i].toFixed(3)));
         pitches.push(lanes.pitches?.[i] ?? 0);
       });
-      await requestRender(jobId, take.id, { cameraOffsetMs: offset, mix: { names, gains, pitches }, takeGain });
+      await requestRender(jobId, take.id, {
+        cameraOffsetMs: offset, mix: { names, gains, pitches }, takeGain, span: span.value,
+      });
     } catch (err) {
       console.warn("[video] render request failed:", err);
       state.textContent = t("video.failed", { reason: String(err?.message || err) });
@@ -394,12 +453,24 @@ function _takeRow(jobId, take, signal, songTitle) {
     await follow();
   });
 
+  stop.addEventListener("click", async () => {
+    stop.disabled = true;
+    stoppedByUser = true;
+    try {
+      await cancelRender(jobId, take.id);
+    } catch (err) {
+      console.warn("[video] stopping the render failed:", err);
+      stoppedByUser = false;
+      stop.disabled = false;
+    }
+  });
+
   download.addEventListener("click", () => {
     const name = [_slug(songTitle), _slug(take.label)].filter(Boolean).join("_") || "take";
     triggerDownload(renderDownloadUrl(jobId, take.id, doneStatus), `${name}.mp4`);
   });
 
-  row.append(name, nudge, make, progress, state, download);
+  row.append(name, nudge, spanWrap, make, progress, stop, state, download);
 
   // A render started earlier (or before a reload) is picked up where it is.
   renderStatus(jobId, take.id).then((st) => {

@@ -30,10 +30,13 @@ export async function saveCameraOffset(jobId, takeId, cameraOffsetMs) {
 
 /**
  * Ask for a render. `mix` is the backing as heard: { names, gains, pitches } with the
- * take itself left out, and `takeGain` the take lane's own level. Resolves the
- * server's status object ({status, progress, error, url}).
+ * take itself left out, and `takeGain` the take lane's own level. `span` is
+ * "take" (from the count-in to where the take stopped) or "song" (all of it).
+ * Resolves the server's status object ({status, progress, error, url}).
  */
-export async function requestRender(jobId, takeId, { cameraOffsetMs, mix, takeGain = 1, canvas = "16:9", mirror = false }) {
+export async function requestRender(jobId, takeId, {
+  cameraOffsetMs, mix, takeGain = 1, canvas = "16:9", mirror = false, span = "take",
+}) {
   const body = {
     stems: mix?.names || [],
     gains: mix?.gains || [],
@@ -42,6 +45,7 @@ export async function requestRender(jobId, takeId, { cameraOffsetMs, mix, takeGa
     canvas,
     fit: "cover",
     mirror: Boolean(mirror),
+    span: span === "song" ? "song" : "take",
   };
   // Omitted when nothing is transposed, so a build without rubberband can
   // still render an untransposed song.
@@ -51,6 +55,13 @@ export async function requestRender(jobId, takeId, { cameraOffsetMs, mix, takeGa
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  if (!res.ok) throw Object.assign(new Error(await _detail(res)), { status: res.status });
+  return res.json();
+}
+
+/** Stop a render that is queued or running. The server kills its ffmpeg. */
+export async function cancelRender(jobId, takeId) {
+  const res = await fetch(`${_base(jobId, takeId)}/render/cancel`, { method: "POST" });
   if (!res.ok) throw Object.assign(new Error(await _detail(res)), { status: res.status });
   return res.json();
 }

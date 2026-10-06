@@ -291,15 +291,20 @@ def camera_filter(
     start_sec: float, width: int, height: int, fit: str, mirror: bool, label_in: str
 ) -> str:
     """Scale, crop or letterbox one camera into the canvas and place it in
-    song time. `start_sec` is the song time of the camera's first frame: when
-    negative, the front is cut; when positive, the frames are shifted later
-    and the canvas shows black until they arrive."""
-    chain: list[str] = []
+    render time. `start_sec` is the render time of the camera's first frame:
+    when positive, the frames are shifted later and the canvas shows black
+    until they arrive; when negative, the frames before render time 0 are cut.
+
+    The frames are shifted first and cut after, so every kept frame keeps its
+    own timestamp. Cutting first and then restarting the timestamps at 0
+    (trim, then setpts=PTS-STARTPTS) moved the whole camera earlier by the
+    distance between the cut and the next frame: 0 to 33 ms at 30 fps,
+    measured 25 ms on a recorded take. The overlay then shows each frame on
+    the nearest frame of the 30 fps grid (measured), so a frame is never off
+    by more than half a frame."""
+    chain = [f"setpts=PTS-STARTPTS+({start_sec:.6f})/TB"]
     if start_sec < 0:
-        chain.append(f"trim=start={-start_sec:.6f}")
-        chain.append("setpts=PTS-STARTPTS")
-    else:
-        chain.append(f"setpts=PTS-STARTPTS+{start_sec:.6f}/TB")
+        chain.append("trim=start=0")
     if fit == "contain":
         chain.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
         chain.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
@@ -323,14 +328,27 @@ def build_video_render_cmd(
     fit: str,
     mirror: bool,
     audio_rate: int,
+    start_sec: float = 0.0,
 ) -> list[str]:
     """One ffmpeg command: backing mix + take audio + one camera tile -> MP4.
 
     The audio graph is the export's (per-lane pitch and gain, amix with
     normalize=0, the lossy export limiter), with the take as one more lane at no
     offset: audio.wav is already aligned to song 0. The output has no path;
-    the caller appends -progress and the destination."""
+    the caller appends -progress and the destination.
+
+    `start_sec` is the song time where the video starts (0 for the whole
+    song, the count-in for the take's own span) and `duration_sec` its length.
+    Every lane is cut at the same whole sample, before any pitch shift, so the
+    take stays on its sample against the backing; `camera_start_sec` is song
+    time and is moved into the video's time here."""
     width, height = CANVAS_SIZES[canvas]
+    start_sample = max(0, int(round(start_sec * TAKE_RATE)))
+    start_sec = start_sample / TAKE_RATE
+    # In seconds, not samples, so a lane at another rate is cut at the same
+    # instant; at 44.1 kHz this is exactly start_sample (atrim rounds to the
+    # nearest sample, and a sample is 22.7 microseconds).
+    cut = f"atrim=start={start_sec:.6f},asetpts=PTS-STARTPTS," if start_sample else ""
     cmd: list[str] = [ffmpeg_executable(), "-nostdin", "-loglevel", "error"]
     for lane in lanes:
         cmd += ["-i", str(lane.path)]
@@ -339,9 +357,10 @@ def build_video_render_cmd(
     cmd += ["-i", str(take_audio), "-i", str(camera)]
 
     filters = [
-        f"[{i}:a]{lane.pitch_filter}volume={lane.gain:.6f}[a{i}]" for i, lane in enumerate(lanes)
+        f"[{i}:a]{cut}{lane.pitch_filter}volume={lane.gain:.6f}[a{i}]"
+        for i, lane in enumerate(lanes)
     ]
-    filters.append(f"[{take_idx}:a]volume={take_gain:.6f}[a{take_idx}]")
+    filters.append(f"[{take_idx}:a]{cut}volume={take_gain:.6f}[a{take_idx}]")
     n = take_idx + 1
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
@@ -350,9 +369,11 @@ def build_video_render_cmd(
         filters.append(f"[a0]{EXPORT_LIMITER_LOSSY}[aout]")
 
     filters.append(f"color=c=black:s={width}x{height}:r={VIDEO_FPS}:d={duration_sec:.6f}[bg]")
-    filters.append(camera_filter(camera_start_sec, width, height, fit, mirror, f"[{cam_idx}:v]"))
+    filters.append(
+        camera_filter(camera_start_sec - start_sec, width, height, fit, mirror, f"[{cam_idx}:v]")
+    )
     # eof_action=pass: once the camera ends the black canvas carries on, so
-    # the video is always the song's length and never freezes on a last frame.
+    # the video always has its full length and never freezes on a last frame.
     filters.append(
         f"[bg][cam]overlay=eof_action=pass:shortest=0,fps={VIDEO_FPS},format=yuv420p[vout]"
     )
