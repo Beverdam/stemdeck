@@ -28,6 +28,9 @@ import { loadCalibration } from "./latencyCalibration.js";
 
 const WORKLET_URL = "/js/capture/recorder-worklet.js";
 const _loaded = new WeakMap(); // AudioContext -> Promise of addModule
+// How long Stop waits for the worklet's last batch. A running one answers in
+// a few milliseconds; a suspended context (a background tab) can take longer.
+const STOP_ANSWER_MS = 3000;
 
 function loadWorklet(ctx) {
   let p = _loaded.get(ctx);
@@ -219,11 +222,29 @@ export async function openCapture(engine, { deviceId = "", channelCount = 2 } = 
           node.port.postMessage({ type: "start" });
         });
       },
-      /** Stop; resolves once every batch has been delivered. */
+      /**
+       * Stop; resolves once every batch has been delivered. A closed context
+       * runs no worklet and so never answers: what it delivered before it
+       * closed is all there is, and Stop must not wait for more. It used to
+       * wait forever, leaving the take on "Saving" with its audio unsaved.
+       */
       stop() {
         return new Promise((resolve) => {
-          waitStopped = (m) => { onBatch = null; resolve(m); };
+          let timer = 0;
+          const done = (m) => {
+            clearTimeout(timer);
+            waitStopped = null;
+            onBatch = null;
+            resolve(m);
+          };
+          if (ctx.state === "closed") { done({ type: "stopped", dropped: 0, contextClosed: true }); return; }
+          waitStopped = done;
           node.port.postMessage({ type: "stop" });
+          // A running worklet answers within one render quantum.
+          timer = setTimeout(() => {
+            console.warn("[capture] the recorder did not answer Stop; keeping what it delivered");
+            done({ type: "stopped", dropped: 0, timedOut: true });
+          }, STOP_ANSWER_MS);
         });
       },
       dispose() {

@@ -569,6 +569,16 @@ export function createChunkedAudioEngine(stems, { onTime, onEnded, context } = {
       const offset = Math.max(0, Math.min(startSecs, buf.duration - 0.001));
       node.start(when, offset);
       stem.activeNodes.push(node);
+      // A played node lets go of itself, and so of its five second buffer.
+      // The list was only emptied by pause, seek and destroy, so one buffer
+      // per stem stayed alive for every chunk played since Play: 2.1 MB/s on
+      // a six stem song, 1.3 GB over ten minutes, all of it freed at once on
+      // Stop. Stopped nodes end too; by then _stopNodes has emptied the list.
+      node.onended = () => {
+        const i = stem.activeNodes.indexOf(node);
+        if (i >= 0) stem.activeNodes.splice(i, 1);
+        try { node.disconnect(); } catch { /* already disconnected */ }
+      };
       playDur = Math.max(playDur, buf.duration - offset);
     }
     return playDur;
@@ -830,6 +840,8 @@ export function createChunkedAudioEngine(stems, { onTime, onEnded, context } = {
     sourceTimeToCtxTime,
     ctxTimeToSourceTime,
     getScheduleEpoch: () => _epoch,
+    // A take recording into this engine stops when it goes (takeRecorder.js).
+    isDestroyed: () => destroyed,
     // `playing` flips before the async chunk fetch resolves, so the clock is
     // only trustworthy once _audioStarted is set.
     isClockReady: () => playing && _audioStarted,

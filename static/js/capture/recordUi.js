@@ -466,11 +466,55 @@ function tracksToRecord() {
   return null;
 }
 
+// How long Record waits for the engine of a song that is still opening.
+const ENGINE_WAIT_MS = 15_000;
+
+/**
+ * The engine a take records into: the current one, once it is ready. A song
+ * that has just opened may have no engine yet, or can still replace it (the
+ * streaming engine falls back to the full decode when it cannot read a
+ * stem), and a take bound to the engine being replaced records into a
+ * context that closes under it. Null when no engine comes up in time.
+ */
+async function settledEngine(jobId) {
+  const until = Date.now() + ENGINE_WAIT_MS;
+  for (let i = 0; i < 4; i++) {
+    while (!audioEngine && currentJobId === jobId && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const eng = audioEngine;
+    if (!eng || currentJobId !== jobId) return null;
+    let ok = false;
+    try {
+      ok = await eng.ready;
+    } catch (e) {
+      console.warn("[rec] the audio engine did not start:", e);
+    }
+    if (audioEngine === eng) return ok && !eng.isDestroyed?.() ? eng : null;
+  }
+  return null;
+}
+
+// Set while a press of Record waits for the engine or the input, so a second
+// press in that moment does not start a second set of takes.
+let recordPending = false;
+
 async function onRecordClick() {
   if (isRecording()) { stopRecording(); return; }
-  if (groupState() === "stopping") return;
-  const eng = audioEngine;
-  const block = recordBlockReason({ hasEngine: !!eng && !!currentJobId, rate: playbackSpeed });
+  if (groupState() === "stopping" || recordPending) return;
+  recordPending = true;
+  try {
+    await startRecording();
+  } finally {
+    recordPending = false;
+  }
+}
+
+async function startRecording() {
+  const first = audioEngine;
+  const jobId = currentJobId;
+  // An open song whose engine is still coming up counts: Record waits for it.
+  const block = recordBlockReason({ hasEngine: !!jobId, rate: playbackSpeed });
   if (block) {
     setStatus(block === "tempo" ? "rec.status.tempo" : "rec.status.noEngine");
     openPanel();
@@ -484,8 +528,19 @@ async function onRecordClick() {
   }
   // The context must be running before the first await: Safari and WebKit
   // only allow resume() inside the user's gesture.
-  const ctx = eng.audioContext;
+  const ctx = first?.audioContext;
   if (ctx?.state === "suspended") ctx.resume().catch((e) => console.warn("[rec] resume failed:", e));
+  if (!first) setStatus("rec.status.waitingSong");
+  const eng = await settledEngine(jobId);
+  if ($("recStatus")?.textContent === t("rec.status.waitingSong")) setStatus("");
+  if (!eng) {
+    setStatus("rec.status.noEngine");
+    openPanel();
+    return;
+  }
+  if (eng !== first && eng.audioContext?.state === "suspended") {
+    eng.audioContext.resume().catch((e) => console.warn("[rec] resume failed:", e));
+  }
 
   const tracks = tracksToRecord();
   if (!tracks) return;
@@ -542,11 +597,17 @@ function beginTakes(eng, c, tracks, inputs) {
       trackId: track.id,
       recorder,
       primary: first,
+      startSongSec: startPos,
       // The transport starts once, from the first track's frame 0; every
       // take stamps its own frame 0, so the others are placed exactly too.
       startPlayback: first ? () => { if (!eng.isPlaying()) togglePlayPause(); renderRecButton(); } : () => {},
       stopPlayback: first ? () => { if (audioEngine === eng && eng.isPlaying()) togglePlayPause(); } : () => {},
-      onAutoStop: () => renderRecButton(),
+      onAutoStop: (why) => {
+        // The engine went away under the take (the song reloaded): whatever
+        // plays now is not being recorded, so it stops too.
+        if (why === "engine" && audioEngine && audioEngine !== eng && audioEngine.isPlaying()) togglePlayPause();
+        renderRecButton();
+      },
     });
   });
   group = { sessions, recorders, jobId, tracks };
@@ -616,7 +677,12 @@ function onGroupDone(g, eng) {
   const failed = g.sessions.filter((s) => s.state === "failed");
   if (saved.length) {
     reviewSessions = saved.map((s, i) => Object.assign(s, { trackName: g.tracks[g.sessions.indexOf(s)]?.name || "" }));
-    setStatus(failed.length ? "rec.status.someFailed" : "");
+    // Something went wrong but the audio is saved: say what, and what to do.
+    const note = failed.length ? "rec.status.someFailed"
+      : saved.some((s) => s.placement === "estimated") ? "rec.status.unplaced"
+        : saved.some((s) => s.engineLost) ? "rec.status.engineLost"
+          : "";
+    setStatus(note);
     renderReview();
     openPanel();
     // Each take is its track's active take now; reload so it can be heard

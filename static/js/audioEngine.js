@@ -439,6 +439,8 @@ export function createAudioEngine(stems, { onTime, onEnded, context } = {}) {
     sourceTimeToCtxTime,
     ctxTimeToSourceTime,
     getScheduleEpoch: () => _epoch,
+    // A take recording into this engine stops when it goes (takeRecorder.js).
+    isDestroyed: () => destroyed,
     isClockReady: () => playing,
     // The heard-playhead mapping, frozen at one instant, so a recorder can
     // place a captured frame in song time with the same formula as now():
