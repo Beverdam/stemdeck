@@ -212,6 +212,10 @@ const dbAt = (eq, f) => eqResponseDb(eq, [f], 44100)[0];
   spectrumFrame(bins, data, out, 0.6);
   const after = Math.max(...out.slice(Math.max(0, c1k - 2), c1k + 3));
   check("a peak falls back slowly (peak smoothing)", near(after, -12.6, 1e-5), String(after));
+  const tilted = columnBins(cols, 4096, 48000, r, 4.5);
+  const cTop = cols - 1;
+  check("display tilt: +4.5 dB per octave above 1 kHz", near(tilted.tilt[cTop], 4.5 * Math.log2(Math.sqrt(xToFreq(r.x + (cTop / cols) * r.w, r) * xToFreq(r.x + r.w, r)) / 1000), 1e-4) && tilted.tilt[cTop] > 13);
+  check("display tilt: negative below 1 kHz", tilted.tilt[0] < -20);
   check("curve frequencies span 20 Hz to 20 kHz", near(curveFreqs(r)[0], 20, 1e-9) && near(curveFreqs(r).at(-1), 20000, 1e-6));
 }
 

@@ -9,9 +9,19 @@ export const F_MIN = 20;
 export const F_MAX = 20000;
 /** The graph shows +-DB_RANGE dB; a drag keeps a band's gain inside it. */
 export const DB_RANGE = 18;
-/** The spectrum's floor and top, dBFS. */
-export const SPEC_MIN_DB = -96;
-export const SPEC_MAX_DB = -6;
+/**
+ * The spectrum's floor and top, in dB per FFT bin. An 8192-point FFT spreads
+ * a stem's energy thinly: measured on a real song, a drum stem at -36 dBFS
+ * RMS peaks around -64 dB per bin and its body sits near -80.
+ */
+export const SPEC_MIN_DB = -115;
+export const SPEC_MAX_DB = -35;
+/**
+ * The spectrum is drawn tilted up by this many dB per octave around 1 kHz,
+ * as analysers in mixing EQs commonly do: music falls off towards the top,
+ * and without the tilt everything above a few kHz sits on the floor.
+ */
+export const SPEC_TILT_DB_OCT = 4.5;
 
 const LOG_SPAN = Math.log(F_MAX / F_MIN);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -254,12 +264,14 @@ export function createHistory(limit = 100) {
 
 /**
  * For each pixel column of the plot, the FFT bins it covers: lo[c]..hi[c]
- * (inclusive). Columns narrower than a bin (the lows) get the one bin under
- * them. Built once per size; drawing a frame then allocates nothing.
+ * (inclusive), and the display tilt at its frequency (`tiltDbOct` dB per
+ * octave around 1 kHz). Columns narrower than a bin (the lows) get the one
+ * bin under them. Built once per size; drawing a frame then allocates nothing.
  */
-export function columnBins(columns, binCount, sampleRate, r) {
+export function columnBins(columns, binCount, sampleRate, r, tiltDbOct = 0) {
   const lo = new Int32Array(columns);
   const hi = new Int32Array(columns);
+  const tilt = new Float32Array(columns);
   const binHz = sampleRate / 2 / binCount;
   for (let c = 0; c < columns; c++) {
     const f0 = xToFreq(r.x + (c / columns) * r.w, r);
@@ -270,8 +282,9 @@ export function columnBins(columns, binCount, sampleRate, r) {
     b = clamp(b, a, binCount - 1);
     lo[c] = a;
     hi[c] = b;
+    tilt[c] = tiltDbOct * Math.log2(Math.sqrt(f0 * f1) / 1000);
   }
-  return { lo, hi };
+  return { lo, hi, tilt };
 }
 
 /**
@@ -279,10 +292,11 @@ export function columnBins(columns, binCount, sampleRate, r) {
  * a column jumps up at once and falls back at most `fall` dB per frame.
  */
 export function spectrumFrame(bins, data, out, fall) {
-  const { lo, hi } = bins;
+  const { lo, hi, tilt } = bins;
   for (let c = 0; c < out.length; c++) {
     let m = -Infinity;
     for (let i = lo[c]; i <= hi[c]; i++) if (data[i] > m) m = data[i];
+    m += tilt[c];
     if (!(m > SPEC_MIN_DB)) m = SPEC_MIN_DB;
     const prev = out[c];
     out[c] = m >= prev ? m : Math.max(m, prev - fall);

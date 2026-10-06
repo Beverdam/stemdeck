@@ -15,7 +15,7 @@ import * as eq from "../eqEngine.js";
 import { EQ_LIMITS, bandResponseDb, eqResponseDb, normalizeBand } from "../eqMath.js";
 import { t } from "../i18n.js";
 import {
-  DB_RANGE, SPEC_MIN_DB, SPEC_MAX_DB, GRID_FREQS, gridDbs,
+  DB_RANGE, SPEC_MIN_DB, SPEC_MAX_DB, SPEC_TILT_DB_OCT, GRID_FREQS, gridDbs,
   plotRect, freqToX, xToFreq, dbToY, yToDb, nodeXY, hitTest, dragBand, wheelQ,
   defaultBandAt, resetBand, retypeBand, soloEq, keyStep, hasGain, hasQ, hasSlope,
   fmtFreq, fmtDb, fmtQ, parseFreq, parseNumber, columnBins, spectrumFrame, curveFreqs,
@@ -27,8 +27,10 @@ import { graphPresets } from "./eqPresets.js";
 
 const ANALYZER_KEY = "stemdeck.eqAnalyzer";
 const ANALYZER_MODES = ["off", "pre", "post"];
-// The spectrum falls back this many dB per frame at most (about 36 dB/s).
-const SPEC_FALL_DB = 0.6;
+// The spectrum falls back this many dB per frame at most (about 18 dB/s at
+// 60 frames a second): a separated drum stem is near silence between hits,
+// and a faster fall made it flicker out of sight.
+const SPEC_FALL_DB = 0.3;
 // One option per type, cuts once per slope: the list's single type menu.
 const TYPE_OPTIONS = [
   ["bell", 12], ["lowshelf", 12], ["highshelf", 12],
@@ -805,7 +807,7 @@ export function mountPanel({ lane, kind, body, controls }) {
     const cols = Math.max(2, Math.round(r.w));
     if (!spec.bins || spec.bins.lo.length !== cols || spec.rate !== node.context.sampleRate) {
       spec.rate = node.context.sampleRate;
-      spec.bins = columnBins(cols, node.frequencyBinCount, spec.rate, r);
+      spec.bins = columnBins(cols, node.frequencyBinCount, spec.rate, r, SPEC_TILT_DB_OCT);
       analyzer.smooth = new Float32Array(cols).fill(SPEC_MIN_DB);
     }
     node.getFloatFrequencyData(analyzer.data);
@@ -891,6 +893,6 @@ export function mountPanel({ lane, kind, body, controls }) {
       document.removeEventListener("visibilitychange", onVisibility);
     },
     // For measurements (tests): mean time per spectrum frame, in ms.
-    stats() { return { frames: analyzer.frames, msPerFrame: analyzer.frames ? analyzer.ms / analyzer.frames : 0 }; },
+    stats() { return { frames: analyzer.frames, msPerFrame: analyzer.frames ? analyzer.ms / analyzer.frames : 0, peakDb: analyzer.smooth ? Math.max(...analyzer.smooth) : null }; },
   };
 }
