@@ -542,8 +542,25 @@ async function startRecording() {
     eng.audioContext.resume().catch((e) => console.warn("[rec] resume failed:", e));
   }
 
-  const tracks = tracksToRecord();
-  if (!tracks) return;
+  const armed = tracksToRecord();
+  if (!armed) return;
+  // A video track records first: the camera films the first track's take.
+  const tracks = [...armed].sort((a, b) => (b.kind === "video") - (a.kind === "video"));
+  if (tracks[0].kind === "video") {
+    // The camera's preview and its REC badge are in the panel.
+    openPanel();
+    let cameraReady = false;
+    try {
+      cameraReady = await (await import("../video/videoTake.js")).ensureCameraOn();
+    } catch (e) {
+      console.warn("[rec] opening the camera failed:", e);
+    }
+    if (!cameraReady) {
+      setStatus("rec.status.cameraFailed");
+      return;
+    }
+    if (audioEngine !== eng) return;
+  }
   const inputs = tracks.map(trackInput);
   // A track's device is not connected: say which, rather than record from
   // whatever the browser would open instead.

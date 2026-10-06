@@ -831,6 +831,9 @@ class CreateTrackBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = Field(default=None, max_length=_LABEL_MAX * 4)
     input: TrackInput | None = None
+    # A video track films its takes with the camera as well as recording
+    # sound. Only stored for the UI, like the input.
+    kind: Literal["audio", "video"] | None = None
 
     @field_validator("name")
     @classmethod
@@ -849,7 +852,7 @@ def _track_view(job: Job, track_id: str) -> dict[str, Any]:
 
 @router.post("/{job_id}/tracks", status_code=201)
 async def create_track(job_id: str, request: Request) -> dict[str, Any]:
-    """Add a recording track: {} or {"name"?, "input"?}."""
+    """Add a recording track: {} or {"name"?, "input"?, "kind"?}."""
     job = _job_or_404(job_id)
     root = (JOBS_DIR / job_id / TAKES_DIRNAME).resolve()
     if not root.is_relative_to(JOBS_DIR.resolve()):
@@ -869,6 +872,7 @@ async def create_track(job_id: str, request: Request) -> dict[str, Any]:
         body.name or f"Track {n}",
         len(job.tracks),
         body.input.model_dump() if body.input else None,
+        body.kind or "audio",
     )
     _commit(job, list(job.takes), [*job.tracks, track])
     logger.info("[%s] track %s created", job_id, track_id)
@@ -893,6 +897,8 @@ async def patch_track(job_id: str, track_id: str, request: Request) -> dict[str,
         track["name"] = body.name
     if "input" in fields:
         track["input"] = body.input.model_dump() if body.input else None
+    if "kind" in fields:
+        track["kind"] = body.kind or "audio"
     if "active_take_id" in fields:
         take = next(
             (

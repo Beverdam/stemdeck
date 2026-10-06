@@ -107,6 +107,7 @@ async def test_create_lists_and_persists_tracks(jobs_dir, client):
         state = await _state(c)
     assert a["name"] == "Track 1" and a["order"] == 0 and a["active_take_id"] is None
     assert a["input"] is None and takes_mod.TRACK_ID_RE.match(a["id"])
+    assert a["kind"] == "audio" and b["kind"] == "audio"
     assert b["name"] == "Guitar" and b["order"] == 1
     assert b["input"] == {"device_id": "abc", "device_label": None, "channels": [2, 3]}
     assert state["tracks"] == [a, b]
@@ -127,6 +128,8 @@ async def test_create_lists_and_persists_tracks(jobs_dir, client):
         {"input": {"channels": [64]}},
         {"input": {"channels": [0], "device_id": "x" * 257}},
         {"input": {"channels": [0], "gain": 2}},
+        {"kind": "midi"},
+        {"kind": 1},
     ],
 )
 async def test_create_refuses_bad_bodies(jobs_dir, client, body):
@@ -179,6 +182,22 @@ async def test_patch_renames_sets_input_and_reorders(jobs_dir, client):
         assert (await c.patch(url, json={})).status_code == 422
         assert (await c.patch(url, json={"name": None})).status_code == 422
         assert (await c.patch(url, json={"order": -1})).status_code == 422
+
+
+async def test_a_track_can_be_a_video_track(jobs_dir, client):
+    _make_job(jobs_dir)
+    async with client as c:
+        v = await _track(c, kind="video")
+        assert v["kind"] == "video"
+        url = f"/api/jobs/{JOB}/tracks/{v['id']}"
+        r = await c.patch(url, json={"kind": "audio"})
+        assert r.status_code == 200 and r.json()["kind"] == "audio"
+        r = await c.patch(url, json={"kind": None})
+        assert r.json()["kind"] == "audio"  # cleared means the default
+        assert (await c.patch(url, json={"kind": "midi"})).status_code == 422
+        r = await c.patch(url, json={"kind": "video"})
+        state = await _state(c)
+    assert [t["kind"] for t in state["tracks"]] == ["video"]
 
 
 # ─── Takes on tracks ─────────────────────────────────────────────────────

@@ -606,9 +606,13 @@
             <div class="daw-wave-label">
               <span class="daw-label-title" data-i18n="mixer.title">Mixer</span>
               <!-- A recording track: its own row and lane, armed to record into
-                   (static/js/capture/takeLanes.js). The button is moved to the
-                   end of the mixer's lanes once a song is open. -->
-              <button class="add-track-btn" id="addTrackBtn" type="button" disabled hidden><span aria-hidden="true">+</span> <span data-i18n="rec.track.addTitle">Add a recording track</span></button>
+                   (static/js/capture/takeLanes.js). An audio track records
+                   sound; a video track also films with the camera. The row is
+                   moved under the last extracted stem once a song is open. -->
+              <div class="add-track-row" id="addTrackRow" hidden>
+                <button class="add-track-btn" id="addTrackBtn" type="button" disabled title="Add a track that records sound" data-i18n-title="rec.track.addAudioTitle"><span aria-hidden="true">+</span> <span data-i18n="rec.track.addAudio">Audio track</span></button>
+                <button class="add-track-btn add-track-video" id="addVideoTrackBtn" type="button" disabled title="Add a track that films with the camera and records sound" data-i18n-title="rec.track.addVideoTitle"><span aria-hidden="true">+</span> <svg class="add-track-cam" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg> <span data-i18n="rec.track.addVideo">Video track</span></button>
+              </div>
               <span class="uplabel daw-label-sub" data-i18n="mixer.hint">Drag fader · M/S</span>
               <p class="track-note" id="trackNote" role="status" aria-live="polite" hidden></p>
             </div>

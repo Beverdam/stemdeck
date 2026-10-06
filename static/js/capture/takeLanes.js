@@ -49,10 +49,11 @@ export const NUDGE_MAX_MS = 2000;
 
 let _jobId = null;
 let _tracks = [];
-// The add-track box at the end of the mixer's lanes. Held here because a
-// song load empties the mixer, and the button with its listener goes back in
-// on every sync.
-let _addBtn = null;
+// The add-track row (Audio track, Video track) in the mixer's lanes. Held
+// here because a song load empties the mixer, and the row with its listeners
+// goes back in on every sync.
+let _addRow = null;
+let _addBtns = [];
 // Its place in the stack: right after the last extracted stem, before the
 // tracks (player.js placeAddTrackRow sets it).
 let _addOrder = "";
@@ -60,7 +61,11 @@ let _addOrder = "";
 /** The CSS order of the add-track box, the same as its spacer in the waveform column. */
 export function setAddTrackOrder(order) {
   _addOrder = String(order);
-  if (_addBtn) _addBtn.style.order = _addOrder;
+  if (_addRow) _addRow.style.order = _addOrder;
+}
+
+function setAddEnabled(on) {
+  for (const b of _addBtns) b.disabled = !on;
 }
 const _armed = new Set();
 let _devices = [];
@@ -210,14 +215,14 @@ export function syncTakeLanes(jobId, stems) {
   setTakeLanes(_tracks.map((tr) => ({ id: tr.id, label: tr.name })));
   ensureMixerStateDefaults();
   closeTakeMenu();
-  if (_addBtn) _addBtn.disabled = !jobId;
+  setAddEnabled(!!jobId);
   if (!mixerEl) return;
   for (const row of mixerEl.querySelectorAll(".lane-header[data-take], .take-folder-row")) row.remove();
   for (const track of _tracks) mixerEl.appendChild(buildRow(track));
-  if (_addBtn) {
-    _addBtn.hidden = !jobId;
-    _addBtn.style.order = _addOrder;
-    mixerEl.appendChild(_addBtn);
+  if (_addRow) {
+    _addRow.hidden = !jobId;
+    _addRow.style.order = _addOrder;
+    mixerEl.appendChild(_addRow);
   }
   renderFolderRows();
   renderArmButtons();
@@ -229,6 +234,7 @@ function buildRow(track) {
   row.dataset.take = track.id;
   row.classList.add("take-lane", "track-lane");
   row.classList.toggle("track-empty", !track.url);
+  row.classList.toggle("track-video", track.kind === "video");
   // A recorded part is not transposed per lane, so the key stepper goes, and
   // so does the dB readout: the row's width goes to the fader and the picker.
   row.querySelector(".lane-key")?.remove();
@@ -277,6 +283,16 @@ function buildRow(track) {
   picker.append(input);
   row.querySelector(".mx-actions")?.append(arm, picker);
   row.querySelector(".mx-head")?.append(menuBtn);
+  // A video track: a camera beside the name, so it reads as one at a glance.
+  if (track.kind === "video") {
+    const cam = document.createElement("span");
+    cam.className = "track-kind-icon";
+    cam.title = t("rec.track.videoBadge");
+    cam.setAttribute("role", "img");
+    cam.setAttribute("aria-label", t("rec.track.videoBadge"));
+    cam.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/></svg>';
+    row.querySelector(".mx-swatch")?.after(cam);
+  }
   row.insertBefore(buildFolderToggle(track), row.querySelector(".mx-icon"));
   return row;
 }
@@ -668,15 +684,19 @@ async function onInputChange(track, select) {
   document.dispatchEvent(new CustomEvent("stemdeck:tracks-armed"));
 }
 
-/** Create an empty track on the default input and show it. */
-export async function addTrack() {
+/**
+ * Create an empty track on the default input and show it. `kind` "video"
+ * makes a video track: Record films its takes with the camera as well.
+ */
+export async function addTrack(kind = "audio") {
   const jobId = _jobId || currentJobId;
   if (!jobId) return null;
-  const btn = _addBtn;
-  if (btn) btn.disabled = true;
+  setAddEnabled(false);
   try {
     const input = await defaultTrackInput();
-    const track = await createTrack(jobId, input ? { input } : {});
+    const fields = input ? { input } : {};
+    if (kind === "video") fields.kind = "video";
+    const track = await createTrack(jobId, fields);
     requestTakesReload(jobId);
     return track;
   } catch (e) {
@@ -684,15 +704,22 @@ export async function addTrack() {
     showError(t(e?.status === 409 ? "rec.track.tooMany" : "rec.track.failed"));
     return null;
   } finally {
-    if (btn) btn.disabled = !_jobId;
+    setAddEnabled(!!_jobId);
   }
 }
 
 export function initTrackControls() {
-  _addBtn = document.getElementById("addTrackBtn");
-  _addBtn?.addEventListener("click", (e) => {
+  _addRow = document.getElementById("addTrackRow");
+  const audio = document.getElementById("addTrackBtn");
+  const video = document.getElementById("addVideoTrackBtn");
+  _addBtns = [audio, video].filter(Boolean);
+  audio?.addEventListener("click", (e) => {
     e.stopPropagation();
-    addTrack();
+    addTrack("audio");
+  });
+  video?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    addTrack("video");
   });
   navigator.mediaDevices?.addEventListener?.("devicechange", () => { refreshTrackInputs(); });
 }

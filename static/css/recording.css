@@ -242,17 +242,28 @@
 
 /* ── Recording tracks (static/js/capture/takeLanes.js) ── */
 /* "+ Track" in the mixer header. */
-/* The add-track box: a dashed box under the last extracted stem, above the
-   recording tracks (player.js placeAddTrackRow sets its CSS order; the
-   default keeps it last until then). 28px plus 6px above and below:
-   player.js ADD_TRACK_ROW_HEIGHT counts these 40px into the stack, and the
-   waveform column has an empty row as tall at the same place. */
-.add-track-btn {
+/* The add-track row: two dashed boxes, Audio track and Video track, under
+   the last extracted stem, above the recording tracks (player.js
+   placeAddTrackRow sets its CSS order; the default keeps it last until
+   then). 28px plus 6px above and below: player.js ADD_TRACK_ROW_HEIGHT
+   counts these 40px into the stack, and the waveform column has an empty row
+   as tall at the same place. */
+.add-track-row {
   order: 2147483000;
   flex: 0 0 28px;
   height: 28px;
   margin: 6px 12px;
-  padding: 0 10px;
+  display: flex;
+  gap: 6px;
+}
+.add-track-row[hidden] { display: none; }
+.add-track-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -271,6 +282,13 @@
 .add-track-btn:hover:not(:disabled) { background: var(--panel-2); color: var(--fg); border-color: var(--muted-2); }
 .add-track-btn:disabled { opacity: 0.4; cursor: default; }
 .add-track-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.add-track-cam { flex-shrink: 0; }
+/* A video track's camera mark, beside its name. */
+.track-kind-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--lane-color, var(--muted));
+}
 /* Why other tracks were disarmed: a short note under the mixer header,
    placed by takeLanes.showTrackNote. */
 .track-note {

@@ -124,7 +124,15 @@ def new_track_id(existing: set[str]) -> str:
             return track_id
 
 
-def make_track(track_id: str, name: str, order: int, input_: dict | None = None) -> dict[str, Any]:
+def make_track(
+    track_id: str,
+    name: str,
+    order: int,
+    input_: dict | None = None,
+    kind: str = "audio",
+) -> dict[str, Any]:
+    """A new track. `kind` is "audio" or "video": a video track films its
+    takes with the camera as well (static/js/video/videoTake.js)."""
     return {
         "id": track_id,
         "name": name,
@@ -132,6 +140,7 @@ def make_track(track_id: str, name: str, order: int, input_: dict | None = None)
         "created_at": time.time(),
         "active_take_id": None,
         "input": input_,
+        "kind": kind,
     }
 
 

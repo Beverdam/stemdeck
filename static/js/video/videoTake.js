@@ -197,6 +197,17 @@ function cameraOn() {
   return Boolean(stream && stream.getVideoTracks().some((tr) => tr.readyState === "live"));
 }
 
+/**
+ * Record calls this before a video track's take: the camera on, ready to
+ * film. True when it is live; false when it could not open (the camera box
+ * in the panel then says why).
+ */
+export async function ensureCameraOn() {
+  if (!ui.toggle) return false;
+  if (cameraOn()) return true;
+  return _startStream();
+}
+
 // ── Take lifecycle ──────────────────────────────────────────────────────
 
 function _onTake(ev) {
