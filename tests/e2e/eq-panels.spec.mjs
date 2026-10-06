@@ -6,8 +6,9 @@
 // lane's signal before and after its EQ, read from the engine's own taps,
 // against the response the maths gives for the saved EQ at that tone.
 //
-// 1. Every lane has a tab; each opens its own kind of panel as a row under
-//    the lane in both columns, and the columns stay aligned within 1 px with
+// 1. Every lane has a tab, in its header in the mixer column (never on the
+//    waveform lane); each opens its own kind of panel as a row under the
+//    lane in both columns, and the columns stay aligned within 1 px with
 //    panels open, closed, several at once, at other window heights, zoomed
 //    and scrolled, and with a recording track's take folder open.
 // 2. The graphical EQ: a click adds a band, a drag changes the curve and the
@@ -69,6 +70,10 @@ async function expectAligned(page, label) {
 async function play(page) {
   await page.locator("#t-play").click();
   await expect.poll(() => page.evaluate(async () => (await import("/js/state.js")).audioEngine?.isClockReady?.() === true), { timeout: 15000 }).toBe(true);
+  // The waveform column's loading cover stays up for a moment after the
+  // engine starts; a click at a point of a panel would land on it. (With the
+  // tab on the lane, clicking the tab waited for it without saying so.)
+  await expect(page.locator("#waveLoadingOverlay")).toBeHidden();
 }
 
 /**
@@ -120,7 +125,14 @@ async function graphPoint(page, lane, hz, db) {
 test("every lane has an EQ tab that opens its own panel, and the columns stay aligned", async ({ page }) => {
   const errors = watchErrors(page);
   await openStudio(page);
-  for (const lane of ["vocals", "drums", "bass", "other"]) await expect(tab(page, lane)).toBeVisible();
+  for (const lane of ["vocals", "drums", "bass", "other"]) {
+    await expect(tab(page, lane)).toBeVisible();
+    // In the lane's own header, on the fader's line, before the fader.
+    await expect(page.locator(`.mixer-column .lane-header[data-stem="${lane}"] .mx-line-a > .mx-eq-slot > .eq-tab`)).toHaveAttribute("data-eq-lane", lane);
+  }
+  // The waveform lanes carry only their waveforms.
+  await expect(page.locator(".waves-column .eq-tab")).toHaveCount(0);
+  const tabBefore = await tab(page, "other").boundingBox();
   await expectAligned(page, "all closed");
 
   const kinds = { vocals: "voice", drums: "drum", bass: "bass", other: "graph" };
@@ -169,12 +181,15 @@ test("every lane has an EQ tab that opens its own panel, and the columns stay al
     const scroll = document.getElementById("wave-scroll").getBoundingClientRect();
     const body = document.querySelector('.eq-panel-lane[data-eq-lane="bass"] .eq-panel-body').getBoundingClientRect();
     const t = document.querySelector('.eq-tab[data-eq-lane="other"]').getBoundingClientRect();
-    return { scrollLeft: scroll.left, scrollW: document.getElementById("wave-scroll").clientWidth, bodyLeft: body.left, bodyW: body.width, tabLeft: t.left };
+    const col = document.querySelector(".daw-stems-panel").getBoundingClientRect();
+    return { scrollLeft: scroll.left, scrollW: document.getElementById("wave-scroll").clientWidth, bodyLeft: body.left, bodyW: body.width, tabLeft: t.left, tabRight: t.right, colLeft: col.left, colRight: col.right };
   });
   expect(Math.abs(pos.bodyLeft - pos.scrollLeft)).toBeLessThanOrEqual(1);
   expect(Math.abs(pos.bodyW - pos.scrollW)).toBeLessThanOrEqual(1);
-  expect(pos.tabLeft - pos.scrollLeft).toBeGreaterThanOrEqual(0);
-  expect(pos.tabLeft - pos.scrollLeft).toBeLessThan(20);
+  // The tab is in the mixer column: zoom and scroll leave it where it was.
+  expect(pos.tabLeft).toBeGreaterThanOrEqual(pos.colLeft);
+  expect(pos.tabRight).toBeLessThanOrEqual(pos.colRight);
+  expect(Math.abs(pos.tabLeft - tabBefore.x)).toBeLessThanOrEqual(1);
   // Wheel over a panel does not zoom the lanes.
   const box = await waveRow(page, "vocals").boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
