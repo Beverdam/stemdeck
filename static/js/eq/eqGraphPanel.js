@@ -24,6 +24,7 @@ import {
   el, button, readColors, containKeys, createEditState, buildToolbar, bindUndoKeys, exportRateDiffers,
 } from "./eqPanelCommon.js";
 import { graphPresets } from "./eqPresets.js";
+import { createSuggest } from "./eqSuggest.js";
 
 const ANALYZER_KEY = "stemdeck.eqAnalyzer";
 const ANALYZER_MODES = ["off", "pre", "post"];
@@ -93,6 +94,16 @@ export function mountPanel({ lane, kind, body, controls }) {
   const toolbar = buildToolbar(controls, state, {
     presets: graphPresets(kind).map((p) => ({ key: p.key, apply: () => applyPreset(p) })),
     onChange: () => paintSide(),
+  });
+  // Suggest: a card in place of the band list, the proposal as a ghost curve.
+  let ghost = null;
+  const suggest = createSuggest({
+    lane, kind, state,
+    toolbar: controls.querySelector(".eq-toolbar"),
+    cardHost: root,
+    onShow: (on) => { root.classList.toggle("is-suggesting", on); },
+    onGhost: (d) => { ghost = d; scheduleRedraw(); },
+    onApplied: () => { selected = -1; paintSide(); },
   });
   const outRow = el("label", "eq-out");
   const outName = el("span", "eq-out-name");
@@ -305,6 +316,22 @@ export function mountPanel({ lane, kind, body, controls }) {
     ctx.fillStyle = colors.curveFill;
     ctx.fill();
     ctx.globalAlpha = 1;
+
+    // A suggestion under review: its whole curve, dashed, over the current one.
+    if (ghost) {
+      const gdb = eqResponseDb(ghost, freqs, rate);
+      ctx.beginPath();
+      for (let i = 0; i < freqs.length; i++) {
+        const x = freqToX(freqs[i], r);
+        const y = clampY(dbToY(gdb[i], r));
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = colors.ghost;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     // Handles.
     ctx.font = `bold 8px ${colors.font}`;
@@ -553,6 +580,7 @@ export function mountPanel({ lane, kind, body, controls }) {
       b.title = t("eq.analyzer.title");
     }
     toolbar.relabel();
+    suggest.relabel();
     buildListHead();
     listSig = "";
     paintSide();
@@ -878,8 +906,10 @@ export function mountPanel({ lane, kind, body, controls }) {
   return {
     refresh() { paintSide(); },
     relabel,
+    suggest,
     destroy() {
       destroyed = true;
+      suggest.destroy();
       stopLoop();
       stopSolo();
       release();

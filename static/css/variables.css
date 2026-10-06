@@ -83,6 +83,8 @@
   --eq-spectrum:   rgba(148,163,184,0.20);
   --eq-spectrum-line: rgba(148,163,184,0.42);
   --eq-curve-fill: rgba(244,183,64,0.10);
+  /* A suggested EQ under review, drawn dashed over the current curve. */
+  --eq-ghost:      rgba(125,211,252,0.90);
   --eq-plate:      #161d23;
   --eq-plate-edge: #26313a;
   --eq-knob:       #222c34;

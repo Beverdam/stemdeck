@@ -140,6 +140,8 @@ export function getPlanState() { return planState; }
 
 /** player.js tells the master how to describe the current mix. */
 export function setMixSource(fn) { mixSource = fn; }
+/** The current mix as the export describes it ({jobId, query}), or null. */
+export function currentMixSource() { return mixSource?.() || null; }
 
 function signature() {
   const src = mixSource?.();
