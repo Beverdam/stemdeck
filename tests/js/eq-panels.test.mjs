@@ -61,6 +61,9 @@ const dbAt = (eq, f) => eqResponseDb(eq, [f], 44100)[0];
   const tight = laneLayout(500, 6, 304, 72);
   check("lanes never shrink under the minimum (the stack scrolls)", tight.rowH === 72 && tight.stackH === 6 * 72 + 304);
   check("no panel: the old rule (floor of panel / count)", laneLayout(901, 5, 0, 72).rowH === 180);
+  const capped = laneLayout(901, 5, 0, 72, 90);
+  check("a cap keeps rows compact on a tall panel", capped.rowH === 90 && capped.stackH === 450, JSON.stringify(capped));
+  check("the cap never lifts a row over what fits", laneLayout(400, 5, 0, 72, 90).rowH === 80);
 }
 
 // ─── Remembered open state ───

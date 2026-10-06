@@ -49,6 +49,19 @@ export const NUDGE_MAX_MS = 2000;
 
 let _jobId = null;
 let _tracks = [];
+// The add-track box at the end of the mixer's lanes. Held here because a
+// song load empties the mixer, and the button with its listener goes back in
+// on every sync.
+let _addBtn = null;
+// Its place in the stack: right after the last extracted stem, before the
+// tracks (player.js placeAddTrackRow sets it).
+let _addOrder = "";
+
+/** The CSS order of the add-track box, the same as its spacer in the waveform column. */
+export function setAddTrackOrder(order) {
+  _addOrder = String(order);
+  if (_addBtn) _addBtn.style.order = _addOrder;
+}
 const _armed = new Set();
 let _devices = [];
 // Take folders need the SVG lane overlay (player.js, the Web Audio engine
@@ -197,11 +210,15 @@ export function syncTakeLanes(jobId, stems) {
   setTakeLanes(_tracks.map((tr) => ({ id: tr.id, label: tr.name })));
   ensureMixerStateDefaults();
   closeTakeMenu();
-  const add = document.getElementById("addTrackBtn");
-  if (add) add.disabled = !jobId;
+  if (_addBtn) _addBtn.disabled = !jobId;
   if (!mixerEl) return;
   for (const row of mixerEl.querySelectorAll(".lane-header[data-take], .take-folder-row")) row.remove();
   for (const track of _tracks) mixerEl.appendChild(buildRow(track));
+  if (_addBtn) {
+    _addBtn.hidden = !jobId;
+    _addBtn.style.order = _addOrder;
+    mixerEl.appendChild(_addBtn);
+  }
   renderFolderRows();
   renderArmButtons();
   refreshTrackInputs();
@@ -249,21 +266,17 @@ function buildRow(track) {
     openTrackMenu(menuBtn, track);
   });
 
-  // The stem rows' two lines (mixer.js renderMixerRow), with a track's own
-  // controls in them, all the same size as M and S. The first line: the EQ
-  // tab, the fader, the track menu and arm, where a stem shows its level.
-  // The second: the input picker, then M, S and download, in the same
-  // columns as the stems' M, S and download above. On a row tall enough the
-  // picker takes a line of its own under the buttons (recording.css), so
-  // "MG-XU · Input 1+2" or a microphone's name reads in full. The wrapper
-  // draws the chevron, so the select stays a native, keyboard-friendly
-  // control.
+  // The stem rows' side-rail card (mixer.js renderMixerRow), with a track's
+  // own controls in it: the arm button and the input picker on the card's
+  // bottom line, the track menu at the end of the name's line. The key column
+  // stays, empty, so the fader and the rail line up with the stems'. The
+  // wrapper draws the picker's chevron, so the select stays a native,
+  // keyboard-friendly control.
   const picker = document.createElement("span");
   picker.className = "track-input-wrap";
   picker.append(input);
-  row.querySelector(".mx-val")?.remove();
-  row.querySelector(".mx-line-a")?.append(menuBtn, arm);
-  row.querySelector(".mx-line-b")?.prepend(picker);
+  row.querySelector(".mx-actions")?.append(arm, picker);
+  row.querySelector(".mx-head")?.append(menuBtn);
   row.insertBefore(buildFolderToggle(track), row.querySelector(".mx-icon"));
   return row;
 }
@@ -659,7 +672,7 @@ async function onInputChange(track, select) {
 export async function addTrack() {
   const jobId = _jobId || currentJobId;
   if (!jobId) return null;
-  const btn = document.getElementById("addTrackBtn");
+  const btn = _addBtn;
   if (btn) btn.disabled = true;
   try {
     const input = await defaultTrackInput();
@@ -676,7 +689,8 @@ export async function addTrack() {
 }
 
 export function initTrackControls() {
-  document.getElementById("addTrackBtn")?.addEventListener("click", (e) => {
+  _addBtn = document.getElementById("addTrackBtn");
+  _addBtn?.addEventListener("click", (e) => {
     e.stopPropagation();
     addTrack();
   });

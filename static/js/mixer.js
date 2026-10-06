@@ -145,10 +145,10 @@ export function refreshLaneKeyVisual(name) {
   if (!wrap) return;
   const n = mixerState[name]?.pitch ?? 0;
   const signed = n > 0 ? `+${n}` : String(n);
-  const valueEl = wrap.querySelector(".lane-key-value");
-  // "K" while the lane is in its own key, so the control reads as a label
-  // until it is doing something, and as a number the moment it is.
-  if (valueEl) valueEl.textContent = n === 0 ? "K" : signed;
+  // The number beside the "KEY" label: 0 in the lane's own key, the signed
+  // offset once it is moved.
+  const numEl = wrap.querySelector(".lane-key-num");
+  if (numEl) numEl.textContent = n === 0 ? "0" : signed;
   wrap.classList.toggle("active", n !== 0);
 
   const locked = wrap.classList.contains("locked");
@@ -231,7 +231,12 @@ export function updateLaneKnobVisual(knobEl, v) {
   const val = knobEl.closest(".lane-header")?.querySelector(".mx-val");
   if (val) {
     const db = v <= 0 ? "-∞" : (20 * Math.log10(v)).toFixed(1);
-    val.textContent = db === "-∞" ? "-∞" : `${parseFloat(db) > 0 ? "+" : ""}${db}`;
+    const text = db === "-∞" ? "-∞" : `${parseFloat(db) > 0 ? "+" : ""}${db}`;
+    // The side-rail header keeps the unit in its own span; other rows (the
+    // recording tracks) still carry the bare number.
+    const num = val.querySelector(".mx-val-num");
+    if (num) num.textContent = text;
+    else val.textContent = text;
   }
 }
 
@@ -245,7 +250,31 @@ export function setLaneVolume(name, v) {
   saveMix();
 }
 
+/**
+ * What the ear hears, shown on both columns: a muted lane fades, and while
+ * any lane is soloed every lane that is not fades darker and blurs. The
+ * mixer row and the lane's waveform row get the same two classes (daw.css).
+ * The waveform rows are redrawn on their own schedule, so this runs again on
+ * every "stemdeck:overview-drawn".
+ */
+function paintLaneSilence() {
+  const names = allTrackNames();
+  const anySolo = names.some((n) => trackIndex[n] !== undefined && mixerState[n]?.soloed);
+  for (const name of names) {
+    const state = mixerState[name];
+    if (!state) continue;
+    const dimmed = anySolo && !state.soloed && !state.muted;
+    const sel = `[data-stem="${CSS.escape(name)}"]`;
+    for (const node of document.querySelectorAll(`.lane-header.mx-row${sel}, .stem-waveform-row${sel}`)) {
+      node.classList.toggle("lane-muted", state.muted);
+      node.classList.toggle("solo-dimmed", dimmed);
+    }
+  }
+}
+document.addEventListener("stemdeck:overview-drawn", paintLaneSilence);
+
 export function refreshMixerVisuals() {
+  paintLaneSilence();
   for (const name of allTrackNames()) {
     const state = mixerState[name];
     if (!state) continue;
@@ -565,13 +594,19 @@ export function renderMixerRow(stem) {
   const vu = document.createElement("div");
   vu.className = "lane-vu mx-meter";
   vu.dataset.stem = stem.name;
-  vu.innerHTML = '<div class="lane-vu-bar mx-meter-fill"></div><div class="lane-vu-bar"></div>';
+  // Two thin bars under the fader: the level, and its peak hold (the loop in
+  // player.js already sets --vu-level and --vu-peak). The analysers are mono,
+  // so the second bar is the hold, not a right channel.
+  vu.innerHTML =
+    '<div class="mx-meter-track"><div class="lane-vu-bar mx-meter-fill"></div></div>' +
+    '<div class="mx-meter-track"><div class="lane-vu-bar mx-meter-hold"></div></div>';
 
-  // Col 5: value label
+  // Col 5: value label, the number and its unit
   const val = document.createElement("span");
   val.className = "mx-val";
+  val.innerHTML = '<span class="mx-val-num"></span><span class="mx-val-unit">dB</span>';
   const initFrac = Math.max(0, Math.min(1, (state?.volume ?? 1) / LANE_VOLUME_MAX));
-  val.textContent = String(Math.round(initFrac * 100));
+  val.querySelector(".mx-val-num").textContent = String(Math.round(initFrac * 100));
 
   // Col 6: this lane's key, just left of the mute button: minus, the
   // reading, plus, along the line like M and S beside it.
@@ -603,32 +638,46 @@ export function renderMixerRow(stem) {
   dl.title = t("aria.download", { name: display });
   dl.appendChild(downloadIcon());
 
-  // Wrap name + VU in a column so VU appears below the name
-  const nameVuCol = document.createElement("div");
-  nameVuCol.className = "lane-name-vu";
-  nameVuCol.append(nameEl, vu);
+  // The side-rail header (#776: readable from across a room, in the same
+  // 300px column and the same row height). A card on the left: the name with
+  // the lane's colour swatch, the fader and the level it sets, the meter under
+  // the fader, and a line for a recording track's own controls
+  // (capture/takeLanes.js). On the right two columns the full height of the
+  // row: the key (+, KEY and the offset, minus) and the rail of mute, solo,
+  // the EQ tab (eq/eqRows.js fills the slot) and download, so they sit in the
+  // same place on every row.
+  const swatch = document.createElement("span");
+  swatch.className = "mx-swatch";
+  swatch.setAttribute("aria-hidden", "true");
+  const head = document.createElement("div");
+  head.className = "mx-head";
+  head.append(swatch, nameEl);
 
-  // The controls, on two lines beside the name (#776: large enough to read
-  // from across a room, in the same 300px column and the same row height).
-  // The first line is the signal path, left to right: the EQ tab
-  // (eq/eqRows.js puts it in the slot), the fader, the level it sets. The
-  // second is the lane's switches: key, mute, solo, download. The two lines
-  // are centred on the row's middle, which is where the name sits, level
-  // with its waveform.
+  const faderLine = document.createElement("div");
+  faderLine.className = "mx-faderline";
+  faderLine.append(fader, val);
+
   const eqSlot = document.createElement("div");
   eqSlot.className = "mx-eq-slot";
   eqSlot.dataset.stem = stem.name;
-  const lineA = document.createElement("div");
-  lineA.className = "mx-line mx-line-a";
-  lineA.append(eqSlot, fader, val);
-  const lineB = document.createElement("div");
-  lineB.className = "mx-line mx-line-b";
-  lineB.append(key, muteBtn, soloBtn, dl);
-  const strip = document.createElement("div");
-  strip.className = "mx-strip";
-  strip.append(lineA, lineB);
+  const actions = document.createElement("div");
+  actions.className = "mx-actions";
 
-  row.append(iconCell, nameVuCol, strip);
+  const card = document.createElement("div");
+  card.className = "mx-card";
+  card.append(head, faderLine, vu, actions);
+
+  const keyRail = document.createElement("div");
+  keyRail.className = "mx-keyrail";
+  keyRail.append(key);
+
+  const rail = document.createElement("div");
+  rail.className = "mx-rail";
+  rail.append(muteBtn, soloBtn, eqSlot, dl);
+
+  row.classList.add("mx-row-rail");
+  row.style.setProperty("--lane-color", color);
+  row.append(iconCell, card, keyRail, rail);
 
   muteBtn.addEventListener("click", () => toggleStemMute(stem.name));
   soloBtn.addEventListener("click", () => toggleStemSolo(stem.name));
@@ -661,9 +710,17 @@ function makeLaneKey(stemName, display) {
   up.textContent = "+";
   up.setAttribute("aria-label", t("aria.laneKeyUp", { name: display }));
 
+  // The middle cell: a small "KEY" label and the lane's offset in semitones.
   const valueEl = document.createElement("span");
   valueEl.className = "lane-key-value";
-  valueEl.textContent = "K";
+  const keyLabel = document.createElement("span");
+  keyLabel.className = "lane-key-label";
+  keyLabel.dataset.i18n = "mixer.key.label";
+  keyLabel.textContent = t("mixer.key.label");
+  const keyNum = document.createElement("span");
+  keyNum.className = "lane-key-num";
+  keyNum.textContent = "0";
+  valueEl.append(keyLabel, keyNum);
 
   const down = document.createElement("button");
   down.type = "button";

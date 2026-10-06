@@ -606,8 +606,9 @@
             <div class="daw-wave-label">
               <span class="daw-label-title" data-i18n="mixer.title">Mixer</span>
               <!-- A recording track: its own row and lane, armed to record into
-                   (static/js/capture/takeLanes.js). -->
-              <button class="add-track-btn" id="addTrackBtn" type="button" disabled title="Add a recording track" aria-label="Add a recording track" data-i18n-title="rec.track.addTitle" data-i18n-aria-label="rec.track.addTitle"><span aria-hidden="true">+</span> <span data-i18n="rec.track.add">Track</span></button>
+                   (static/js/capture/takeLanes.js). The button is moved to the
+                   end of the mixer's lanes once a song is open. -->
+              <button class="add-track-btn" id="addTrackBtn" type="button" disabled hidden><span aria-hidden="true">+</span> <span data-i18n="rec.track.addTitle">Add a recording track</span></button>
               <span class="uplabel daw-label-sub" data-i18n="mixer.hint">Drag fader · M/S</span>
               <p class="track-note" id="trackNote" role="status" aria-live="polite" hidden></p>
             </div>

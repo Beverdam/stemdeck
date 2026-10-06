@@ -11,7 +11,7 @@ import {
   effectiveStemOrder, STEM_DISPLAY, isTakeName,
 } from "./constants.js";
 import {
-  syncTakeLanes, withTrackPeaks, setTakeFoldersEnabled, takeFolderLanes, takeFolderRowCount,
+  syncTakeLanes, withTrackPeaks, setAddTrackOrder, setTakeFoldersEnabled, takeFolderLanes, takeFolderRowCount,
   syncTakeFolderOrder, selectTake,
 } from "./capture/takeLanes.js";
 import { laneOrder, takeLaneOrder } from "./capture/takeFolderModel.js";
@@ -183,6 +183,7 @@ function applyStemSelectionFilter(presentNames) {
   }
   syncTakeFolderOrder();
   syncEqRowOrder();
+  placeAddTrackRow(laneOrder(order.filter((n) => !isTakeName(n)).length) - 1);
   for (const row of document.querySelectorAll(".energy-row[data-stem]")) {
     row.classList.toggle("hidden", !shown(row.dataset.stem));
   }
@@ -262,6 +263,14 @@ const OVERVIEW_WAVE_POINTS = 1500;
 const STEM_VU_FPS = 30;
 const WAVEFORM_LANE_HEIGHT = 70;
 const WAVEFORM_SEPARATOR_HEIGHT = 2;
+// The tallest a row grows: the mixer's rail of four 22px cells (M, S, EQ,
+// download) plus the separator. A tall window ends the stack early rather
+// than stretching every row.
+const LANE_ROW_MAX_HEIGHT = 4 * 22 + WAVEFORM_SEPARATOR_HEIGHT;
+// The add-track box under the last lane (takeLanes.js, daw.css .add-track-btn
+// in the mixer): its height with its margins. The stack counts it in both
+// columns, so the two scroll the same distance.
+const ADD_TRACK_ROW_HEIGHT = 40;
 let visualRenderToken = 0;
 // Rows in the stack before any take folder opens (stems, original, tracks).
 let _baseVisibleCount = 0;
@@ -308,6 +317,29 @@ function ensureOverviewWaveformLayer() {
     multitrackContainer.parentElement?.appendChild(layer);
   }
   return layer;
+}
+
+// The add-track box sits after the last extracted stem and above the
+// recording tracks, so new tracks land under it. The mixer has the box
+// (takeLanes.js) and the waveform column an empty row of the same height at
+// the same place, so the lanes under it stay level in both columns.
+let _addTrackRowOrder = "";
+function placeAddTrackRow(order) {
+  _addTrackRowOrder = String(order);
+  setAddTrackOrder(order);
+  ensureAddTrackSpacer();
+}
+
+function ensureAddTrackSpacer() {
+  const layer = ensureOverviewWaveformLayer();
+  let spacer = layer.querySelector(":scope > .add-track-spacer");
+  if (!spacer) {
+    spacer = document.createElement("div");
+    spacer.className = "add-track-spacer";
+    spacer.setAttribute("aria-hidden", "true");
+    layer.appendChild(spacer);
+  }
+  spacer.style.order = _addTrackRowOrder;
 }
 
 // Standard DAW-style waveform: track min and max raw sample values per
@@ -581,6 +613,7 @@ function renderAllOverviewWaveformsFromPeaks(stems, peaksData) {
     renderOverviewWaveformPath(name, pts, norm, STEM_COLORS[name] || "#a0a0a0", bars, i);
   });
   renderTakeFolderLanes(ensureOverviewWaveformLayer(), laneNames, peaksData, norm, bars);
+  ensureAddTrackSpacer();
   // The EQ tabs live in the lane rows just rewritten, and an open EQ panel
   // goes right under its lane.
   syncEqRows();
@@ -1192,12 +1225,13 @@ function _applyLaneHeight(count) {
   // separator short. Two pixels over six lanes, which is why a stem name and
   // its waveform ended up on different lines by the bottom of the mixer.
   //
-  // So the row is the unit. Divide the panel by the row count, and give the
-  // mixer and the waveform column exactly the same total.
+  // So the row is the unit. Divide the panel by the row count, up to
+  // LANE_ROW_MAX_HEIGHT, and give the mixer and the waveform column exactly
+  // the same total.
   //
   // An open EQ panel is a row of its own fixed height in both columns
   // (eq/eqRows.js); the lanes share what the panels leave.
-  const { rowH, stackH } = laneLayout(panelH, count, eqPanelsHeight(), WAVEFORM_LANE_HEIGHT + WAVEFORM_SEPARATOR_HEIGHT);
+  const { rowH, stackH } = laneLayout(panelH, count, eqPanelsHeight() + ADD_TRACK_ROW_HEIGHT, WAVEFORM_LANE_HEIGHT + WAVEFORM_SEPARATOR_HEIGHT, LANE_ROW_MAX_HEIGHT);
   const appEl = document.querySelector(".app");
   appEl?.style.setProperty("--lane-h", `${rowH}px`);
   appEl?.style.setProperty("--wave-widget-track-stack-h", `${stackH}px`);

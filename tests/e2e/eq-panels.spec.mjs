@@ -127,8 +127,8 @@ test("every lane has an EQ tab that opens its own panel, and the columns stay al
   await openStudio(page);
   for (const lane of ["vocals", "drums", "bass", "other"]) {
     await expect(tab(page, lane)).toBeVisible();
-    // In the lane's own header, on the fader's line, before the fader.
-    await expect(page.locator(`.mixer-column .lane-header[data-stem="${lane}"] .mx-line-a > .mx-eq-slot > .eq-tab`)).toHaveAttribute("data-eq-lane", lane);
+    // In the lane's own header, in the rail under M and S.
+    await expect(page.locator(`.mixer-column .lane-header[data-stem="${lane}"] .mx-rail > .mx-eq-slot > .eq-tab`)).toHaveAttribute("data-eq-lane", lane);
   }
   // The waveform lanes carry only their waveforms.
   await expect(page.locator(".waves-column .eq-tab")).toHaveCount(0);

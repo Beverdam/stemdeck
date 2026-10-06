@@ -74,12 +74,15 @@ export function openPanelsHeight(lanes, isOpen, kindOf) {
 
 /**
  * Lane height when the panel stack shares the wave panel with the lanes: the
- * lanes divide what the open panels leave, never under `minRow`.
+ * lanes divide what the open panels leave, never under `minRow` and, when
+ * `maxRow` is given, never over it (the stack then ends above the panel's
+ * bottom instead of stretching every row).
  * Returns {rowH, stackH} where stackH = count * rowH + panelsPx.
  */
-export function laneLayout(panelH, count, panelsPx, minRow) {
+export function laneLayout(panelH, count, panelsPx, minRow, maxRow = Infinity) {
   const free = Math.max(0, (panelH || 0) - (panelsPx || 0));
-  const rowH = panelH > 0 && count > 0 ? Math.max(minRow, Math.floor(free / count)) : minRow;
+  const fill = panelH > 0 && count > 0 ? Math.floor(free / count) : minRow;
+  const rowH = Math.max(minRow, Math.min(maxRow, fill));
   return { rowH, stackH: count * rowH + (panelsPx || 0) };
 }
 

@@ -2417,6 +2417,280 @@ input, textarea { font-family: inherit; }
 
 .mx-fader-input { touch-action: pan-y; }
 
+/* ── The side-rail header (mixer.js renderMixerRow) ──
+   A card on the left and a rail on the right edge. The card: the lane's
+   swatch and name, the fader with its level, two thin meter bars under the
+   fader, then the key. The rail: mute, solo, the EQ tab and download
+   stacked, the full height of the row, so they sit in the same place on every
+   row. Colours are the app's own: the lane's colour (--lane-color, set by
+   mixer.js from STEM_COLORS) and the existing M/S/EQ state colours. */
+.lane-header.mx-row.mx-row-rail {
+  position: relative;
+  align-items: stretch;
+  gap: 10px;
+  padding: 0 0 0 12px;
+}
+.mx-card {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "head head"
+    "fader fader"
+    "meter meter"
+    "actions actions";
+  align-content: center;
+  row-gap: 7px;
+  padding: 8px 0;
+}
+.mx-head {
+  grid-area: head;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mx-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--lane-color, var(--muted));
+  flex-shrink: 0;
+}
+.mx-card .mx-name {
+  font-size: calc(var(--mx-name-font) + 3px);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mx-faderline {
+  grid-area: fader;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: var(--mx-ctl-h);
+}
+/* The fader and its meter are short, enough travel to set a level, and the
+   level reads right beside the fader. */
+.mx-faderline .lane-knob { flex: 0 0 84px; width: 84px; }
+.mx-faderline .mx-val {
+  width: auto;
+  min-width: 58px;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 3px;
+}
+.mx-val-unit {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+}
+/* The meter: one thin line under the fader, as long as the fader's track.
+   The level and its peak hold share it, the hold fainter behind the level. */
+.mx-card .lane-vu.mx-meter {
+  grid-area: meter;
+  height: auto;
+  width: 84px;
+  display: grid;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.mx-meter-track {
+  grid-area: 1 / 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.mx-card .lane-vu-bar.mx-meter-fill,
+.mx-card .lane-vu-bar.mx-meter-hold {
+  display: block;
+  position: static;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #22c55e 0%, #86efac 80%, #f97316 95%, #ef4444 100%);
+  transition: width 40ms linear;
+}
+.mx-card .lane-vu-bar.mx-meter-fill { width: var(--vu-level, 0%); }
+.mx-card .lane-vu-bar.mx-meter-hold { width: var(--vu-peak, 0%); opacity: 0.55; }
+.mx-meter-track:has(.mx-meter-fill) { background: transparent; position: relative; z-index: 1; }
+
+.mx-actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* The key: a column of its own beside the rail, in four equal cells level
+   with the rail's M, S, EQ and download: plus, KEY, the offset, minus. The
+   reading's wrapper steps aside (display: contents) so its label and number
+   are cells of their own; `order` sets the top-to-bottom sequence, since the
+   DOM keeps minus, reading, plus for the horizontal stepper. */
+.mx-keyrail {
+  display: flex;
+  width: 34px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+}
+.mx-keyrail .lane-key {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: auto;
+}
+.mx-keyrail .lane-key-value { display: contents; }
+.mx-keyrail .lane-key-step,
+.mx-keyrail .lane-key-label,
+.mx-keyrail .lane-key-num {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.mx-keyrail .lane-key-step.up { order: 1; }
+.mx-keyrail .lane-key-label { order: 2; }
+.mx-keyrail .lane-key-num { order: 3; }
+.mx-keyrail .lane-key-step.down { order: 4; }
+.mx-keyrail .lane-key-step {
+  height: auto;
+  padding: 0;
+  border-radius: 0;
+  font-size: var(--mx-ctl-font);
+  color: var(--fg-2);
+}
+.mx-keyrail .lane-key-step:hover { background: var(--panel-2); color: var(--fg); }
+.mx-keyrail .lane-key-label { font-size: 8px; letter-spacing: 0.06em; text-indent: 0.06em; }
+.mx-keyrail .lane-key-num {
+  font-family: var(--font-mono);
+  font-size: var(--mx-ctl-font);
+  font-weight: 700;
+}
+.lane-key-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.lane-key-num { color: var(--fg-2); }
+.mx-keyrail .lane-key.active .lane-key-value { background: transparent; border: 0; }
+.mx-keyrail .lane-key.active .lane-key-num { color: var(--lane-color, var(--accent)); }
+/* Drums: the control stays whole, dimmed, explaining itself on hover. */
+.mx-keyrail .lane-key.locked { opacity: 0.45; }
+
+/* The rail: four equal cells the full height of the row. */
+.mx-rail {
+  display: flex;
+  flex-direction: column;
+  width: 46px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+}
+.mx-rail > .mx-btn {
+  flex: 1;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+.mx-rail > .mx-btn:hover { background: var(--panel-2); }
+/* The EQ tab as a rail cell: the M/S face, its dot after the label, no
+   chevron. The slot keeps its cell while the tab is not there yet. */
+.mx-rail > .mx-eq-slot {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+.mx-rail .eq-tab {
+  height: 100%;
+  padding: 0;
+  gap: 3px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.mx-rail .eq-tab:hover { background: var(--panel-2); }
+.mx-rail .eq-tab::after { display: none; }
+.mx-rail .eq-tab:not(.active):not(.bypassed) .eq-tab-dot { display: none; }
+.mx-rail .eq-tab-dot { width: 6px; height: 6px; }
+
+/* What the ear hears, on both columns (mixer.js paintLaneSilence): a muted
+   lane fades; while any lane is soloed, every other lane goes dark and
+   blurred. The row's contents fade, never the row itself: each row draws the
+   separator under it, and fading the row took the line between it and the
+   next lane with it. Hovering a dimmed mixer row, or reaching it with the
+   keyboard, brings it back into focus so its M and S stay easy to find. Not
+   :focus-within: a clicked S keeps focus, so the row it just un-soloed stayed
+   lit after the pointer left. */
+.mx-row-rail > *,
+.stem-waveform-row > * {
+  transition: opacity var(--t-base) var(--easing), filter var(--t-base) var(--easing);
+}
+.lane-header.mx-row.mx-row-rail.muted { opacity: 1; }
+.mx-row-rail.muted > * { opacity: 0.45; }
+.stem-waveform-row.lane-muted > * { opacity: 0.3; }
+.mx-row-rail.solo-dimmed > *,
+.stem-waveform-row.solo-dimmed > * {
+  opacity: 0.35;
+  filter: blur(1.5px) brightness(0.6);
+}
+.mx-row-rail.solo-dimmed:hover > *,
+.mx-row-rail.solo-dimmed:has(:focus-visible) > * {
+  opacity: 0.8;
+  filter: none;
+}
+
+/* Short rows (when many lanes share the height): the same parts on fewer
+   lines. The EQ tab and the key go beside the name, the fader and its meter
+   under them. */
+@container mxrow (max-height: 107px) {
+  .mx-card {
+    row-gap: 3px;
+    padding: 4px 0;
+  }
+  .mx-card .mx-name { font-size: var(--mx-name-font); }
+  .mx-faderline { height: 22px; }
+  .mx-meter-track { height: 2px; }
+  .mx-actions { gap: 5px; }
+}
+/* A stem has nothing on the actions line; it takes no room. */
+.mx-actions:empty { display: none; }
+
+/* A recording track's take folder arrow sits in the row's left gutter, so
+   the track's name lines up with every stem's. */
+.lane-header.mx-row.mx-row-rail > .take-folder-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 12px;
+  margin: 0;
+  transform: translateY(-50%);
+}
+
+/* A recording track in the same card (capture/takeLanes.js): the arm button
+   and the input picker where a stem has its key, the track menu at the end of
+   the name's line. */
+.mx-head .take-menu-btn { margin-left: auto; flex-shrink: 0; }
+.mx-actions .track-input-wrap { flex: 1 1 auto; min-width: 0; }
+@container mxrow (max-height: 107px) {
+  /* A track's arm and picker on the card's bottom line, low enough that the
+     four lines fit the row. */
+  .track-lane .mx-card { row-gap: 2px; }
+  .track-lane .mx-faderline { height: 18px; }
+  .track-lane .mx-actions { height: 22px; }
+  .track-lane .mx-actions > * { max-height: 22px; }
+}
+
 /* ── Waveform panel (right) ── */
 /* Layout only — waves.css handles all visual styling inside (.wave-scroll bg,
    golden scrollbar, .loop-region, .waves-grid, .stem-waveform-layer etc.) */

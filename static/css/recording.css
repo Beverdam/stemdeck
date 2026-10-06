@@ -242,20 +242,33 @@
 
 /* ── Recording tracks (static/js/capture/takeLanes.js) ── */
 /* "+ Track" in the mixer header. */
+/* The add-track box: a dashed box under the last extracted stem, above the
+   recording tracks (player.js placeAddTrackRow sets its CSS order; the
+   default keeps it last until then). 28px plus 6px above and below:
+   player.js ADD_TRACK_ROW_HEIGHT counts these 40px into the stack, and the
+   waveform column has an empty row as tall at the same place. */
 .add-track-btn {
-  margin-left: auto;
-  margin-right: 8px;
-  padding: 2px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xs);
-  background: var(--panel-2);
-  color: var(--fg-2);
+  order: 2147483000;
+  flex: 0 0 28px;
+  height: 28px;
+  margin: 6px 12px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
   font-family: var(--font-mono);
   font-size: 11px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background var(--t-fast), color var(--t-fast);
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
-.add-track-btn:hover:not(:disabled) { background: var(--panel-3); color: var(--fg); }
+.add-track-spacer { flex: 0 0 40px; height: 40px; }
+.add-track-btn:hover:not(:disabled) { background: var(--panel-2); color: var(--fg); border-color: var(--muted-2); }
 .add-track-btn:disabled { opacity: 0.4; cursor: default; }
 .add-track-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 /* Why other tracks were disarmed: a short note under the mixer header,
