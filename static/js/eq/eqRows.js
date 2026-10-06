@@ -25,7 +25,10 @@ import {
 } from "./eqPanelKinds.js";
 
 // The panel modules, by kind, loaded on first open.
-const LOADERS = {};
+const LOADERS = {
+  graph: () => import("./eqGraphPanel.js"),
+  drum: () => import("./eqGraphPanel.js"),
+};
 
 const TITLE_KEYS = {
   graph: "eq.panel.general",
@@ -330,6 +333,11 @@ export function syncEqRows() {
     mountPanel(lane);
   }
   syncEqRowOrder();
+}
+
+/** A mounted panel's own measurements (tests read the spectrum's cost). */
+export function eqPanelStats(lane) {
+  return _rows.get(lane)?.panel?.stats?.() || null;
 }
 
 /** Give each panel row its place: right under its lane, in both columns. */

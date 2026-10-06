@@ -87,6 +87,13 @@
   --eq-plate-edge: #26313a;
   --eq-knob:       #222c34;
   --eq-knob-cap:   #2c3741;
+  /* Band handles, in turn (a band keeps its colour while it exists). */
+  --eq-band-1: #f4b740;
+  --eq-band-2: #5ec8c0;
+  --eq-band-3: #e97a6a;
+  --eq-band-4: #8fb4ff;
+  --eq-band-5: #b9e07a;
+  --eq-band-6: #d49cf0;
 
   /* Motion */
   --t-fast: 80ms;
