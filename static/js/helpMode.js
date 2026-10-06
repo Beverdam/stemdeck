@@ -87,6 +87,8 @@ const HELP = [
   [".eq-toolbar .eq-ab", "help.eqAb", null, "help.eqAbTitle"],
   [".eq-toolbar .eq-undo, .eq-toolbar .eq-redo", "help.eqUndo", null, "help.eqUndoTitle"],
   [".eq-toolbar .eq-reset", "help.eqReset", null, "eq.reset"],
+  [".eq-toolbar .eq-suggest-btn", "help.eqSuggest", null, "suggest.button"],
+  [".eq-suggest-card", "help.eqSuggestCard", null, "suggest.title"],
   [".eq-preset", "help.eqPresets", null, "eq.presets"],
   [".eq-out", "help.eqOut", null, "eq.out"],
   [".eq-analyzer", "help.eqAnalyzer", null, "eq.analyzer"],

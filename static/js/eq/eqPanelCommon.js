@@ -36,6 +36,7 @@ export function readColors(node) {
     spectrumLine: v("--eq-spectrum-line", "rgba(148,163,184,0.42)"),
     curve: v("--accent", "#f4b740"),
     curveFill: v("--eq-curve-fill", "rgba(244,183,64,0.1)"),
+    ghost: v("--eq-ghost", "rgba(125,211,252,0.9)"),
     fg: v("--fg", "#e8ecf0"),
     muted: v("--muted", "#8a939c"),
     stem: v("--stem-color", "#f4b740"),
@@ -230,7 +231,10 @@ export function createMiniCurve(canvas, lane) {
   const freqs = new Float64Array(160);
   for (let i = 0; i < freqs.length; i++) freqs[i] = 20 * 1000 ** (i / (freqs.length - 1));
   let colors = null;
+  let ghost = null;
   return {
+    /** A descriptor to draw dashed over the lane's curve (a suggestion), or null. */
+    setGhost(d) { ghost = d; },
     draw() {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
@@ -278,6 +282,19 @@ export function createMiniCurve(canvas, lane) {
       ctx.lineWidth = 1.6;
       ctx.stroke();
       ctx.globalAlpha = 1;
+      if (ghost) {
+        const gdb = eqResponseDb(ghost, freqs, eq.liveSampleRate());
+        ctx.beginPath();
+        for (let i = 0; i < freqs.length; i++) {
+          const x = (i / (freqs.length - 1)) * w;
+          if (i === 0) ctx.moveTo(x, y(gdb[i])); else ctx.lineTo(x, y(gdb[i]));
+        }
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = colors.ghost;
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       canvas.setAttribute("aria-label", t("eq.curveAria", { out: fmtDb(cur.params.out) }));
     },
   };

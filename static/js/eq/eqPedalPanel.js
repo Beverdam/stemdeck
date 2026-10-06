@@ -18,6 +18,7 @@ import {
   controlsFromEq, panelEq, pedalDefaults, keysDefaults, normalizePedal, normalizeKeys,
 } from "./eqPedalMath.js";
 import { controlPresets } from "./eqPresets.js";
+import { createSuggest } from "./eqSuggest.js";
 import {
   el, containKeys, createEditState, buildToolbar, bindUndoKeys, createMiniCurve,
 } from "./eqPanelCommon.js";
@@ -143,6 +144,14 @@ export function mountPanel({ lane, kind, body, controls }) {
     presets: controlPresets(kind).map((p) => ({ key: p.key, apply: () => applyPreset(p) })),
     onChange: () => syncFromEq(),
   });
+  const suggest = createSuggest({
+    lane, kind, state,
+    toolbar: controls.querySelector(".eq-toolbar"),
+    cardHost: root,
+    onShow: (on) => { root.classList.toggle("is-suggesting", on); },
+    onGhost: (d) => { curve.setGhost(d); paint(); },
+    onApplied: () => syncFromEq(),
+  });
   containKeys(controls);
   bindUndoKeys(body, state, () => syncFromEq());
   bindUndoKeys(controls, state, () => syncFromEq());
@@ -198,6 +207,7 @@ export function mountPanel({ lane, kind, body, controls }) {
       knob.set(knob.value());
     }
     toolbar.relabel();
+    suggest.relabel();
     paint();
   }
 
@@ -222,7 +232,9 @@ export function mountPanel({ lane, kind, body, controls }) {
   return {
     refresh() { syncFromEq(); },
     relabel,
+    suggest,
     destroy() {
+      suggest.destroy();
       offChange();
       ro?.disconnect();
       if (queued) cancelAnimationFrame(queued);
