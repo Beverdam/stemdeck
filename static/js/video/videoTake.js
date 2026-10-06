@@ -17,6 +17,7 @@ import { currentJobId, mixerState } from "../state.js";
 import { t, applyTranslations, onLanguageChange } from "../i18n.js";
 import { showError } from "../job.js";
 import { currentMixLanes, triggerDownload } from "../player.js";
+import { exportFxParam } from "../eqEngine.js";
 import {
   requestCamera, renderCameraPermission, getRememberedCamera,
   onTakeEvent, registerTakeParticipant, uploadCameraPart,
@@ -440,8 +441,11 @@ function _takeRow(jobId, take, signal, songTitle) {
         gains.push(Number(lanes.gains[i].toFixed(3)));
         pitches.push(lanes.pitches?.[i] ?? 0);
       });
+      // The backing lanes' EQs plus the take's own track, whose EQ the server
+      // puts on the take.
+      const fx = exportFxParam(take.track_id ? [...names, take.track_id] : names);
       await requestRender(jobId, take.id, {
-        cameraOffsetMs: offset, mix: { names, gains, pitches }, takeGain, span: span.value,
+        cameraOffsetMs: offset, mix: { names, gains, pitches }, takeGain, span: span.value, fx,
       });
     } catch (err) {
       console.warn("[video] render request failed:", err);
