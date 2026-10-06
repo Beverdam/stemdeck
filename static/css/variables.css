@@ -71,9 +71,21 @@
   --radius-sm: 8px;
   --radius-xs: 6px;
 
+  /* Track header controls (the mixer column's rows): K, M, S, download, arm,
+     the track menu, the input picker and the EQ tab are one size, large
+     enough to read across a room (a practice screen seen from the drum
+     stool). The row keeps its height and the column its width: the controls
+     sit on two lines, centred on the row's middle where the name sits. */
+  --mx-ctl-h:      28px;
+  --mx-ctl-w:      28px;
+  --mx-ctl-font:   13px;
+  --mx-ctl-gap:    6px;
+  --mx-name-font:  15px;
+  --mx-name-w:     88px;
+
   /* EQ tab and panels (eq.css). The tab is the M/S buttons' family: the
-     same 5px corner, a little lower so it sits on the lane's bottom edge. */
-  --eq-tab-h:      16px;
+     same 5px corner and height, at the start of the fader's line. */
+  --eq-tab-h:      var(--mx-ctl-h);
   --eq-tab-radius: 5px;
   --eq-panel-bg:   #0d1216;
   --eq-graph-bg:   #090c0f;

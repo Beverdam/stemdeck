@@ -1,56 +1,45 @@
 /* EQ tab on each lane and the EQ panel row it opens (static/js/eq/).
    Colours and sizes are tokens from variables.css. */
 
-/* ── The tab, at the bottom-left of a waveform lane ── */
-
-/* Spans the lane so the tab can stick to the visible left edge when the
-   lanes are zoomed and scrolled: a sticky child is held inside its parent's
-   box, and this box is the whole lane. */
-.stem-waveform-row > .eq-tab-dock {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: flex-end;
-  pointer-events: none;
-  z-index: 2;
-}
+/* ── The tab, in a lane's header (the mixer column) ──
+   At the start of the fader's line, in the slot mixer.js leaves for it
+   (daw.css .mx-eq-slot): the M/S buttons' height, corner and mono face. */
 
 .eq-tab {
-  position: sticky;
-  left: 6px;
-  margin: 0 0 4px 6px;
   height: var(--eq-tab-h);
-  min-width: 34px;
+  width: 100%;
   padding: 0 6px 0 7px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
   border: 1px solid var(--border-strong);
   border-radius: var(--eq-tab-radius);
   background: var(--bg-2);
-  color: var(--muted);
+  color: var(--fg-2);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--mx-ctl-font);
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   line-height: 1;
   cursor: pointer;
-  pointer-events: auto;
+  box-sizing: border-box;
   transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
 }
 .eq-tab:hover { color: var(--fg); border-color: var(--muted-2); }
 /* A small chevron: down when closed, up when the panel is open. */
 .eq-tab::after {
   content: "";
-  width: 4px;
-  height: 4px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  transform: translateY(-1px) rotate(45deg);
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
   transition: transform var(--t-fast);
   opacity: 0.8;
 }
-.eq-tab.open::after { transform: translateY(1px) rotate(-135deg); }
+.eq-tab.open::after { transform: translateY(2px) rotate(-135deg); }
 .eq-tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .eq-tab.open {
   color: var(--accent);
@@ -61,10 +50,11 @@
 /* "EQ on": a gold dot when the EQ changes the sound, a hollow one when it is
    set but bypassed, nothing when it is flat. */
 .eq-tab-dot {
-  width: 5px;
-  height: 5px;
+  width: 7px;
+  height: 7px;
+  box-sizing: border-box;
   border-radius: 50%;
-  border: 1px solid transparent;
+  border: 1.5px solid transparent;
   flex-shrink: 0;
 }
 .eq-tab.active .eq-tab-dot {

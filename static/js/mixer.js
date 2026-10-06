@@ -554,6 +554,9 @@ export function renderMixerRow(stem) {
   nameEl.className = "mx-name";
   nameEl.style.color = color;
   nameEl.textContent = display;
+  // A long name ("Backing vocals", a track named by its player) ends in an
+  // ellipsis at the size the header uses; the full name is on hover.
+  nameEl.title = display;
 
   // Col 3: horizontal fader
   const fader = makeVolumeKnob(stem.name, color);
@@ -570,11 +573,8 @@ export function renderMixerRow(stem) {
   const initFrac = Math.max(0, Math.min(1, (state?.volume ?? 1) / LANE_VOLUME_MAX));
   val.textContent = String(Math.round(initFrac * 100));
 
-  // Col 6: this lane's key, just left of the mute button.
-  //
-  // Laid out along the row like everything beside it. The original version
-  // stacked its buttons vertically next to M and S, which put one widget on the
-  // opposite axis to its neighbours and read as a jumble.
+  // Col 6: this lane's key, just left of the mute button: minus, the
+  // reading, plus, along the line like M and S beside it.
   const key = makeLaneKey(stem.name, display);
 
   // Col 7: M button
@@ -608,7 +608,27 @@ export function renderMixerRow(stem) {
   nameVuCol.className = "lane-name-vu";
   nameVuCol.append(nameEl, vu);
 
-  row.append(iconCell, nameVuCol, fader, val, key, muteBtn, soloBtn, dl);
+  // The controls, on two lines beside the name (#776: large enough to read
+  // from across a room, in the same 300px column and the same row height).
+  // The first line is the signal path, left to right: the EQ tab
+  // (eq/eqRows.js puts it in the slot), the fader, the level it sets. The
+  // second is the lane's switches: key, mute, solo, download. The two lines
+  // are centred on the row's middle, which is where the name sits, level
+  // with its waveform.
+  const eqSlot = document.createElement("div");
+  eqSlot.className = "mx-eq-slot";
+  eqSlot.dataset.stem = stem.name;
+  const lineA = document.createElement("div");
+  lineA.className = "mx-line mx-line-a";
+  lineA.append(eqSlot, fader, val);
+  const lineB = document.createElement("div");
+  lineB.className = "mx-line mx-line-b";
+  lineB.append(key, muteBtn, soloBtn, dl);
+  const strip = document.createElement("div");
+  strip.className = "mx-strip";
+  strip.append(lineA, lineB);
+
+  row.append(iconCell, nameVuCol, strip);
 
   muteBtn.addEventListener("click", () => toggleStemMute(stem.name));
   soloBtn.addEventListener("click", () => toggleStemSolo(stem.name));
@@ -621,7 +641,10 @@ export function renderMixerRow(stem) {
 }
 
 /**
- * The per-lane key stepper: plus above, the reading in the middle, minus below.
+ * The per-lane key stepper: minus, the reading in the middle, plus, on the
+ * line of M and S. It used to stack plus above and minus below, 11px arrows
+ * around a 20px box; on the second line of the header there is the width
+ * for three controls of a size that can be read and hit.
  *
  * Drums get the control too, disabled and saying why, rather than no control at
  * all. A missing button on one row reads as a rendering bug; a disabled one
@@ -649,8 +672,8 @@ function makeLaneKey(stemName, display) {
   down.textContent = "\u2212";
   down.setAttribute("aria-label", t("aria.laneKeyDown", { name: display }));
 
-  // Plus above, the reading, minus below.
-  wrap.append(up, valueEl, down);
+  // Minus, the reading, plus: lower to the left, higher to the right.
+  wrap.append(down, valueEl, up);
 
   if (stemName === "drums") {
     wrap.classList.add("locked");
