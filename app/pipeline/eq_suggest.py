@@ -86,7 +86,10 @@ def make_suggestion(
     base = power_cur if merge else power0
     measured = bands_db(base)
     room = MAX_BANDS - len(cur_bands) if merge else max_bands
-    fit = fit_eq(measured, target.bands_db, layout, max(0, min(max_bands, room)))
+    # Where a boost may go is decided on the lane as it is, before any EQ.
+    fit = fit_eq(
+        measured, target.bands_db, layout, max(0, min(max_bands, room)), boost_ref=bands_db(power0)
+    )
     new_bands = [fb.band for fb in fit.bands]
 
     if merge:

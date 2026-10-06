@@ -23,9 +23,9 @@ The fit, on the 31 third-octave bands (eq_analysis.py):
 3. Weights: a band counts fully where the signal has energy (within 30 dB
    of its loudest band) and fades to nothing 45 dB down; the extremes
    (20 to 31.5 Hz, 16 and 20 kHz) count less. No boost is asked where the
-   signal is 20 to 30 dB under its loudest band: a song with no bass
-   instrument is not given one, and noise, bleed or an encoder's cut-off are
-   not lifted. Cuts are allowed anywhere.
+   signal lacks 12 to 20 dB or more against the target: then the content is
+   missing, not dull (a song with no bass instrument is not given one, an
+   encoder's cut-off is not lifted). Cuts are allowed anywhere.
 4. Greedy: of every candidate band the layout allows (each type at the
    nominal third-octave frequencies in its range and a few Q values), the
    one that lowers the cost most is added, its gain from weighted least
@@ -98,9 +98,10 @@ TOL_DB = np.array(
 # same paper): less bass than the target is tolerated this much more.
 BASS_LOW_HZ = 125.0
 BASS_SHORT_FACTOR = 2.0
-# Boosts only where there is something to lift (dB under the loudest band).
-BOOST_FULL_DB = 20.0
-BOOST_NONE_DB = 30.0
+# Boosts only where there is something to lift: how far under the target a
+# band may be and still be boosted (dB, level removed).
+BOOST_DEFICIT_FULL_DB = 12.0
+BOOST_DEFICIT_NONE_DB = 20.0
 
 FREE_Q = (0.7, 1.0, 1.4, 2.0)
 PEDAL_Q = (1.0, 1.4, 2.0)
@@ -152,8 +153,9 @@ def dynamic_shelf_freq(g: float, f_min: float = 75.0, f_max: float = 400.0) -> f
 
 _FREE = (
     Slot("bell", "bell", _nominal_between(40, 16000), FREE_Q, reuse=True),
-    Slot("lowshelf", "lowshelf", _nominal_between(63, 250), reuse=True),
-    Slot("highshelf", "highshelf", _nominal_between(2000, 10000), reuse=True),
+    # One shelf of each kind: two stacked shelves read as one, less clearly.
+    Slot("lowshelf", "lowshelf", _nominal_between(63, 250)),
+    Slot("highshelf", "highshelf", _nominal_between(2000, 10000)),
 )
 LAYOUTS: dict[str, tuple[Slot, ...]] = {
     "free": (*_FREE, Slot("lowcut", "lowcut", _nominal_between(25, 125))),
@@ -323,14 +325,16 @@ def tolerated_error(
     return np.where(error > 0, up, np.minimum(0.0, error + tol))
 
 
-def boost_allowed(measured_db: np.ndarray) -> np.ndarray:
-    """Where a boost may be suggested: not where the signal has little to
-    lift. Full within BOOST_FULL_DB of the loudest band, none past
-    BOOST_NONE_DB (a song with no bass instrument is not given one)."""
-    peak = float(np.max(measured_db))
-    return np.clip(
-        (measured_db - (peak - BOOST_NONE_DB)) / (BOOST_NONE_DB - BOOST_FULL_DB), 0.0, 1.0
-    )
+def boost_allowed(measured_db: np.ndarray, target_db) -> np.ndarray:
+    """Where a boost may be suggested: not where the signal lacks so much
+    against the target that the content is missing rather than dull (a song
+    with no bass instrument, an encoder's cut-off, a stem's empty octaves).
+    Full up to BOOST_DEFICIT_FULL_DB under the target (level removed,
+    smoothed), none from BOOST_DEFICIT_NONE_DB."""
+    m = np.asarray(measured_db, dtype=float)
+    deficit = smoothed_error(m, target_db, weights_for(m))
+    span = BOOST_DEFICIT_NONE_DB - BOOST_DEFICIT_FULL_DB
+    return np.clip((BOOST_DEFICIT_NONE_DB - deficit) / span, 0.0, 1.0)
 
 
 def _make_band(slot: Slot, f: float, g: float, q: float) -> Band:
@@ -426,17 +430,23 @@ def fit_eq(
     layout: str = "free",
     max_bands: int = MAX_BANDS_LANE,
     tolerance: float = 1.0,
+    boost_ref=None,
 ) -> FitResult:
     """Fit a few bands of ``layout`` so the measured third-octave spectrum
     moves towards the target. Both are 31 levels in dB (any offset).
-    ``tolerance`` scales the tolerance range (0: fit the line itself; tests)."""
+    ``tolerance`` scales the tolerance range (0: fit the line itself; tests).
+    ``boost_ref``: the levels that decide where a boost may go (default the
+    measured ones). A fit on top of an EQ passes the lane's raw levels, so a
+    boost already applied does not make room for more (no ratchet)."""
     measured = np.asarray(measured_db, dtype=np.float64)
     w = weights_for(measured)
     error = smoothed_error(measured, target_db, w)
     result = FitResult(error_db=error, weights=w)
     slots = LAYOUTS[layout]
     order = [sl.id for sl in slots] if layout in FIXED_LAYOUTS else None
-    boost_ok = boost_allowed(measured)
+    boost_ok = boost_allowed(
+        measured if boost_ref is None else np.asarray(boost_ref, float), target_db
+    )
     fitter = _Fitter(error, w, boost_ok, tolerance)
     chosen: list[tuple[Slot, float, float, float, np.ndarray]] = []  # slot, f, g, q, resp
 
