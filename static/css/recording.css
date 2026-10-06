@@ -166,11 +166,25 @@
 .take-menu-btn {
   border: 0;
   background: transparent;
-  color: var(--muted);
-  font-size: 16px;
+  color: var(--fg-2);
+  font-size: 20px;
   line-height: 1;
   cursor: pointer;
 }
+/* In a track's header: the M/S buttons' size, without their box, so the
+   menu stays quieter than the switches beside it. */
+.lane-header.mx-row .take-menu-btn.mx-btn {
+  width: var(--mx-ctl-w);
+  height: var(--mx-ctl-h);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 5px;
+}
+.lane-header.mx-row .take-menu-btn.mx-btn:hover { background: var(--panel-2); }
+.lane-header.mx-row .take-menu-btn.mx-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .take-menu-btn:hover,
 .take-menu-btn[aria-expanded="true"] { color: var(--fg); }
 
@@ -262,35 +276,48 @@
 }
 .track-note[hidden] { display: none; }
 
-/* Right-align the strip so arm, M, S and the menu line up with the stem rows'
-   K, M, S and download buttons above. */
-.lane-header.mx-row .track-arm.mx-btn { margin-left: auto; }
 .track-arm.mx-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
-/* The input picker is a line of its own along the row's bottom edge, from
-   the fader to the end of the buttons, so a device and its input read in full
-   ("MG-XU · Input 1+2"). The control strip moves up by half the picker's line
-   to make room; the row keeps its height, so it stays level with its lane. */
-.lane-header.mx-row.track-lane { padding-bottom: 10px; }
+/* A track's header (takeLanes.js buildRow): the stem rows' two lines, with
+   the menu and arm at the end of the fader's line and the input picker
+   before M, S and download, which line up with the stems' above. A track's
+   name is its own ("Track 1", "Guitar"), so its column is narrower and the
+   fader and the picker get the width. */
+/* The row is a size container (daw.css): its height decides whether the
+   picker has a line of its own. */
+.lane-header.mx-row.track-lane { --mx-name-w: 64px; }
 .track-input-wrap {
-  position: absolute;
-  left: calc(10px + 58px + 5px);
-  right: 10px;
-  bottom: 5px;
+  position: relative;
+  flex: 1 1 auto;
   display: flex;
   min-width: 0;
   color: var(--fg-2);
 }
+/* A row tall enough for three lines: the picker goes under the buttons, the
+   width of the controls, so a device and its input read in full ("MG-XU ·
+   Input 1+2"). The buttons' line stays on the row's middle, level with the
+   name. */
+@container mxrow (min-height: 108px) {
+  .lane-header.track-lane .mx-line-b {
+    flex-wrap: wrap;
+    height: auto;
+    row-gap: var(--mx-ctl-gap);
+  }
+  .lane-header.track-lane .track-input-wrap {
+    order: 1;
+    flex: 1 0 100%;
+  }
+}
 .track-input-wrap::after {
   content: "";
   position: absolute;
-  right: 6px;
+  right: 7px;
   top: 50%;
-  width: 4px;
-  height: 4px;
-  margin-top: -3px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
+  width: 5px;
+  height: 5px;
+  margin-top: -4px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
   transform: rotate(45deg);
   pointer-events: none;
 }
@@ -299,16 +326,16 @@
   -webkit-appearance: none;
   width: 100%;
   min-width: 0;
-  height: 20px;
-  padding: 0 16px 0 6px;
+  height: var(--mx-ctl-h);
+  padding: 0 18px 0 7px;
   background: transparent;
   color: var(--fg-2);
   border: 1px solid var(--border-strong);
   border-radius: 5px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  font-family: var(--font-sans);
+  font-size: var(--mx-ctl-font);
+  font-weight: 600;
+  letter-spacing: 0;
   cursor: pointer;
   text-overflow: ellipsis;
   transition: color var(--t-fast), border-color var(--t-fast);
@@ -381,7 +408,7 @@
 .take-folder-toggle[aria-expanded="true"] { color: var(--take); }
 .take-folder-count {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1;
 }
@@ -409,8 +436,9 @@
 
 /* Play this take: a radio dot, filled in the take colour when it plays. */
 .lane-header.mx-row .take-play.mx-btn {
-  width: 22px;
-  height: 20px;
+  width: var(--mx-ctl-w);
+  height: var(--mx-ctl-h);
+  box-sizing: border-box;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -425,8 +453,8 @@
 }
 .lane-header.mx-row .take-play.mx-btn::before {
   content: "";
-  width: 8px;
-  height: 8px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   border: 1.5px solid currentColor;
   box-sizing: border-box;
@@ -450,7 +478,8 @@
 }
 .lane-header.mx-row .take-folder-name {
   color: var(--fg-2);
-  font-size: 12.5px;
+  font-size: 14px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -459,7 +488,7 @@
 .take-folder-meta {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11.5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -469,13 +498,14 @@
 /* The take's menu: the track menu's twin, in the same column. */
 .lane-header.mx-row .take-folder-menu-btn.mx-btn {
   margin-left: auto;
-  width: 22px;
-  height: 20px;
+  width: var(--mx-ctl-w);
+  height: var(--mx-ctl-h);
   padding: 0;
   border: 0;
+  border-radius: 5px;
   background: transparent;
-  color: var(--muted);
-  font-size: 16px;
+  color: var(--fg-2);
+  font-size: 20px;
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;

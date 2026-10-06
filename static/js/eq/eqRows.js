@@ -1,7 +1,9 @@
 // The EQ tab on every lane, and the EQ panel row it opens.
 //
-// Each waveform lane carries a small "EQ" tab at its bottom-left corner. A
-// click opens that lane's EQ panel as an extra row right under the lane, in
+// Each lane's header in the mixer column carries an "EQ" tab, at the start of
+// the fader's line (mixer.js leaves a slot for it), so the waveform lane is
+// only the waveform. A click opens that lane's EQ panel as an extra row right
+// under the lane, in
 // both columns: a row in the mixer column (the panel's title and its global
 // switches) and a row in the waveform column (the editor itself), so the two
 // columns keep the same rows at the same heights, the way an open take folder
@@ -149,29 +151,35 @@ function laneMixRow(lane) {
   return mixerEl?.querySelector(`.lane-header[data-stem="${CSS.escape(lane)}"]`) || null;
 }
 
-/** The tab at the bottom-left of a lane. Rebuilt after every redraw of the lane. */
+/**
+ * The tab in a lane's header, in the slot mixer.js leaves for it. A recording
+ * track's row is rebuilt when the tracks change, so this runs after every
+ * redraw and adds the tab where it is missing.
+ */
 function ensureTab(lane) {
-  const row = laneWaveRow(lane);
-  if (!row) return;
-  let dock = row.querySelector(":scope > .eq-tab-dock");
-  if (!dock) {
-    dock = el("div", "eq-tab-dock");
-    const tab = el("button", "eq-tab");
+  const slot = laneMixRow(lane)?.querySelector(".mx-eq-slot");
+  if (!slot) return;
+  let tab = slot.querySelector(":scope > .eq-tab");
+  if (!tab) {
+    tab = el("button", "eq-tab");
     tab.type = "button";
     tab.dataset.eqLane = lane;
     tab.append(el("span", "eq-tab-label", "EQ"), el("span", "eq-tab-dot"));
     tab.querySelector(".eq-tab-dot").setAttribute("aria-hidden", "true");
-    // The waves column starts a seek or a loop drag on pointerdown.
-    tab.addEventListener("pointerdown", (e) => e.stopPropagation());
     tab.addEventListener("click", (e) => {
       e.stopPropagation();
       setPanelOpen(lane, !isPanelOpen(lane));
     });
-    dock.append(tab);
+    slot.append(tab);
   }
-  // Last in the row, so it paints over the bars and the drag handle's lane.
-  if (row.lastElementChild !== dock) row.append(dock);
-  paintTab(dock.firstElementChild, lane);
+  paintTab(tab, lane);
+}
+
+/** Tabs whose lane is no longer on screen, or every tab when the EQ is off. */
+function dropTabs(keep) {
+  for (const tab of document.querySelectorAll(".mx-eq-slot > .eq-tab")) {
+    if (!keep || !keep.includes(tab.dataset.eqLane)) tab.remove();
+  }
 }
 
 function paintTab(tab, lane) {
@@ -304,17 +312,18 @@ async function mountPanel(lane) {
 }
 
 /**
- * Put the tabs on the lanes and the open panels under them, in both columns.
- * player.js calls it after every redraw of the lanes (a zoom step rewrites
- * each lane row, tab included) and after the stack changes.
+ * Put the tabs in the lane headers and the open panels under the lanes, in
+ * both columns. player.js calls it after every redraw of the lanes and after
+ * the stack changes.
  */
 export function syncEqRows() {
   ensureViewWidth();
   if (!_enabled) {
     for (const lane of [..._rows.keys()]) dropRows(lane);
-    for (const dock of document.querySelectorAll(".eq-tab-dock")) dock.remove();
+    dropTabs(null);
     return;
   }
+  dropTabs(_lanes);
   for (const lane of _lanes) ensureTab(lane);
   for (const lane of [..._rows.keys()]) {
     if (!_lanes.includes(lane) || !isPanelOpen(lane) || _rows.get(lane).kind !== laneKind(lane)) dropRows(lane);

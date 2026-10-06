@@ -2,7 +2,7 @@
 // where the row sits in the lane stack, and the remembered open/closed state.
 // No DOM and no imports, so tests/js/eq-panels.test.mjs runs it in node.
 //
-// Every mixer lane has an EQ tab at the bottom-left of its waveform lane.
+// Every mixer lane has an EQ tab in its header, in the mixer column.
 // The tab opens the lane's EQ panel as an extra row right under the lane, in
 // both columns (mixer and waveforms), the way a take folder opens its takes.
 // eqRows.js draws the rows; player.js counts their height into the stack.

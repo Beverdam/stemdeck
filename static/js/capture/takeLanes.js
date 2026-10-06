@@ -249,19 +249,21 @@ function buildRow(track) {
     openTrackMenu(menuBtn, track);
   });
 
-  // One control strip, as a DAW channel reads: arm, M, S, then the menu,
-  // all the same size and style. The input picker is a line of its own under
-  // the strip, from the fader to the row's end, so "MG-XU · Input 1+2" or a
-  // microphone's name reads in full: under the fader alone it was cut to
-  // "Input 1...". The wrapper draws the chevron, so the select stays a
-  // native, keyboard-friendly control.
+  // The stem rows' two lines (mixer.js renderMixerRow), with a track's own
+  // controls in them, all the same size as M and S. The first line: the EQ
+  // tab, the fader, the track menu and arm, where a stem shows its level.
+  // The second: the input picker, then M, S and download, in the same
+  // columns as the stems' M, S and download above. On a row tall enough the
+  // picker takes a line of its own under the buttons (recording.css), so
+  // "MG-XU · Input 1+2" or a microphone's name reads in full. The wrapper
+  // draws the chevron, so the select stays a native, keyboard-friendly
+  // control.
   const picker = document.createElement("span");
   picker.className = "track-input-wrap";
   picker.append(input);
-  row.append(picker);
   row.querySelector(".mx-val")?.remove();
-  row.insertBefore(arm, row.querySelector(".mute"));
-  row.insertBefore(menuBtn, dl);
+  row.querySelector(".mx-line-a")?.append(menuBtn, arm);
+  row.querySelector(".mx-line-b")?.prepend(picker);
   row.insertBefore(buildFolderToggle(track), row.querySelector(".mx-icon"));
   return row;
 }

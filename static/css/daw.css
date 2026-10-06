@@ -2163,7 +2163,7 @@ input, textarea { font-family: inherit; }
 .lane-header.mx-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
   padding: 0 10px;
   height: var(--lane-h, 72px);
   min-height: 72px;
@@ -2184,13 +2184,15 @@ input, textarea { font-family: inherit; }
 /* The name and its meter share a fixed column, and the fader takes whatever is
    left of the row. So this width is the fader's length: every pixel taken off
    here is a pixel the fader gains. 76px left the fader badly compressed once
-   the key stepper joined the row. */
+   the key stepper joined the row. The controls now sit on two lines beside
+   it (.mx-strip), so the name has the room to be read from across a room. */
 .lane-name-vu {
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: var(--lane-name-vu-gap, 5px);
-  width: 58px;
+  width: var(--mx-name-w);
+  min-width: 0;
   flex-shrink: 0;
   /* Centres the NAME on the row, not the name-and-meter pair. The row centres
      its children, so a stacked pair puts the name above the centre line by half
@@ -2207,11 +2209,30 @@ input, textarea { font-family: inherit; }
 
 /* Stem name */
 .mx-name {
-  font-size: 13px; font-weight: 500;
+  font-size: var(--mx-name-font); font-weight: 600;
+  line-height: 1.2;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* In a lane's header a long name ("Backing-Gesang", "Voix principale") takes
+   a second line rather than an ellipsis; the name stays centred on the row
+   either way (.lane-name-vu's margin). */
+.lane-name-vu .mx-name {
+  white-space: normal;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+/* Rows are taller than the controls need whenever the window has the
+   height (the lanes share it): the name grows into the room. A size
+   container: the row's height is set (--lane-h), never its content's. */
+.lane-header.mx-row[data-stem] { container: mxrow / size; }
+@container mxrow (min-height: 108px) {
+  .lane-name-vu .mx-name { font-size: calc(var(--mx-name-font) + 2px); }
 }
 
 /* Fader (horizontal, native range input) */
@@ -2226,15 +2247,15 @@ input, textarea { font-family: inherit; }
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 22px;
+  height: var(--mx-ctl-h);
   background: transparent;
   cursor: ew-resize;
   outline: none;
   margin: 0;
 }
 .mx-fader-input::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
+  height: 6px;
+  border-radius: 3px;
   background: linear-gradient(
     to right,
     var(--fader-color, #888) 0%,
@@ -2244,20 +2265,20 @@ input, textarea { font-family: inherit; }
 }
 .mx-fader-input::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px; height: 14px;
+  width: 18px; height: 18px;
   border-radius: 50%;
   background: var(--fader-color, #888);
-  margin-top: -5px;
+  margin-top: -6px;
   border: 2px solid rgba(0,0,0,0.35);
   box-shadow: 0 0 0 1px rgba(255,255,255,0.18);
   cursor: ew-resize;
 }
 .mx-fader-input::-moz-range-track {
-  height: 4px; border-radius: 2px;
+  height: 6px; border-radius: 3px;
   background: rgba(255,255,255,0.08);
 }
 .mx-fader-input::-moz-range-thumb {
-  width: 14px; height: 14px;
+  width: 18px; height: 18px;
   border-radius: 50%;
   background: var(--fader-color, #888);
   border: 2px solid rgba(0,0,0,0.35);
@@ -2296,10 +2317,10 @@ input, textarea { font-family: inherit; }
 /* dB value */
 .mx-val {
   font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 500;
+  font-size: var(--mx-ctl-font);
+  font-weight: 700;
   color: var(--fg);
-  width: 36px;
+  width: 46px;
   text-align: right;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
@@ -2310,12 +2331,13 @@ input, textarea { font-family: inherit; }
 .ms-btn.mx-btn,
 .track-arm.mx-btn,
 .lane-dl.mx-btn {
-  width: 22px; height: 20px;
+  width: var(--mx-ctl-w); height: var(--mx-ctl-h);
+  box-sizing: border-box;
   background: transparent;
   border: 1px solid var(--border-strong);
   border-radius: 5px;
-  color: var(--muted);
-  font-size: 10px; font-weight: 700;
+  color: var(--fg-2);
+  font-size: var(--mx-ctl-font); font-weight: 700;
   font-family: var(--font-mono);
   letter-spacing: 0.05em;
   cursor: pointer;
@@ -2348,7 +2370,7 @@ input, textarea { font-family: inherit; }
 .track-arm.mx-btn { color: var(--danger); }
 .track-arm.mx-btn::before {
   content: "";
-  width: 8px; height: 8px;
+  width: 11px; height: 11px;
   border-radius: 50%;
   border: 1.5px solid currentColor;
   box-sizing: border-box;
@@ -2358,13 +2380,40 @@ input, textarea { font-family: inherit; }
 .track-arm.mx-btn.on { background: rgba(214,90,74,0.14); border-color: rgba(214,90,74,0.35); }
 .track-arm.mx-btn.on::before { background: currentColor; box-shadow: 0 0 6px currentColor; }
 
-/* Download button */
-.lane-dl.mx-btn {
-  color: var(--muted);
-  border-color: transparent;
+/* Download button: the same box as M and S, so it reads as one of them
+   from a distance; it was a borderless 13px glyph. */
+.lane-dl.mx-btn { color: var(--fg-2); }
+.lane-dl.mx-btn:hover { color: var(--fg); border-color: var(--muted-2); }
+.lane-dl.mx-btn svg { width: 17px; height: 17px; }
+
+/* The two lines of controls beside the name (mixer.js renderMixerRow):
+   the EQ tab, the fader and its level; then key, M, S and download, at the
+   right end so they line up from row to row. Centred as a pair on the row's
+   middle, the name's line. */
+.mx-strip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--mx-ctl-gap);
 }
-.lane-dl.mx-btn:hover { color: var(--fg); border-color: var(--border); }
-.lane-dl.mx-btn svg { width: 13px; height: 13px; }
+.mx-line {
+  display: flex;
+  align-items: center;
+  gap: var(--mx-ctl-gap);
+  min-width: 0;
+  height: var(--mx-ctl-h);
+}
+.mx-line-b { justify-content: flex-end; }
+/* Holds the EQ tab (eq/eqRows.js). The same width with or without it, so
+   the fader does not move when the audio engine comes up and the tab
+   appears. */
+.mx-eq-slot {
+  width: 52px;
+  flex-shrink: 0;
+  display: flex;
+}
 
 .mx-fader-input { touch-action: pan-y; }
 
@@ -4791,30 +4840,24 @@ input, textarea { font-family: inherit; }
 }
 
 /* ── Per-lane transpose (the K stepper) ────────────────────────────────────
-   Sits in the row just left of M, with its arrows stacked above and below the
-   reading, and drawn from the same kit as M and S: same border, same radius,
-   same mono face, same width. It reads as one more control in that cluster
-   rather than as a different kind of thing parked next to it.
-
-   Stacked rather than inline because the lane row only has about 300px, and at
-   the inline width the fader collapsed to 10px. The vertical form costs 22px
-   instead of 55px, and the row has the height spare. */
+   On the second line of the header, just left of M: minus, the reading,
+   plus. The reading is the button, the same box as M and S (same border,
+   radius, mono face and size), so it reads as one more control in that
+   cluster. The arrows around it are the stepper, not two more buttons: no
+   border, so they stay quiet beside the boxes, and the row's full height
+   to hit. They used to stack 11px high above and below a 20px box. */
 .lane-key {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  width: 22px;
+  gap: 1px;
   flex-shrink: 0;
 }
-/* The K is the button, and it is the same box as M and S: same size, same
-   border, same radius, same mono face. Boxing the arrows instead put two
-   look-alike buttons around a floating letter, which is the opposite of the
-   family it belongs to -- M and S are each one box with one character in it. */
 .lane-key-value {
-  width: 22px;
-  height: 20px;
+  min-width: calc(var(--mx-ctl-w) + 4px);
+  height: var(--mx-ctl-h);
+  padding: 0 2px;
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
@@ -4822,11 +4865,11 @@ input, textarea { font-family: inherit; }
   background: transparent;
   border: 1px solid var(--border-strong);
   border-radius: 5px;
-  color: var(--muted);
+  color: var(--fg-2);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--mx-ctl-font);
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
@@ -4838,17 +4881,15 @@ input, textarea { font-family: inherit; }
   border-color: rgba(244, 183, 64, 0.4);
 }
 
-/* The arrows are the stepper around it, not two more buttons: no border, so
-   they stay quiet next to the three boxes they sit beside. */
 .lane-key-step {
-  width: 22px;
-  height: 11px;
+  width: 20px;
+  height: var(--mx-ctl-h);
   padding: 0;
   background: transparent;
   border: none;
-  border-radius: 3px;
-  color: var(--muted);
-  font-size: 11px;
+  border-radius: 4px;
+  color: var(--fg-2);
+  font-size: 16px;
   font-weight: 700;
   font-family: var(--font-mono);
   line-height: 1;
