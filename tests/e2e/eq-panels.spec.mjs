@@ -229,6 +229,10 @@ test("graphical EQ: add, drag, keys, typing, type menu, undo, A/B, preset, solo,
   await expect(panel.locator(".eq-curve-canvas")).toBeVisible();
   await page.waitForTimeout(300);
   const curve0 = await panel.locator(".eq-curve-canvas").evaluate((c) => c.toDataURL());
+  // At the stems' own 44.1 kHz the export matches what plays: no note.
+  if (await page.evaluate(async () => (await import("/js/eqEngine.js")).liveSampleRate()) === 44100) {
+    await expect(mixRow(page, "other").locator(".eq-note")).toBeHidden();
+  }
 
   // A click at 880 Hz, +9 dB adds a bell there: the "other" lane is an 880 Hz tone.
   const p = await graphPoint(page, "other", 880, 9);
@@ -477,4 +481,23 @@ test("what the spectrum costs while it runs", async ({ page }) => {
   await tab(page, "drums").click();
   await page.waitForTimeout(300);
   expect(await page.evaluate(async () => (await import("/js/eq/eqRows.js")).eqPanelStats("drums"))).toBeNull();
+});
+
+test("at 48 kHz the general EQ says exports can differ above 10 kHz", async ({ page }) => {
+  const errors = watchErrors(page);
+  // Every AudioContext of the page runs at 48 kHz, as on a device set to it.
+  await page.addInitScript(() => {
+    const Native = window.AudioContext;
+    window.AudioContext = class extends Native {
+      constructor(opts = {}) { super({ ...opts, sampleRate: 48000 }); }
+    };
+  });
+  await openStudio(page);
+  await expect.poll(() => page.evaluate(async () => (await import("/js/eqEngine.js")).liveSampleRate())).toBe(48000);
+  await tab(page, "other").click();
+  const note = mixRow(page, "other").locator(".eq-note");
+  await expect(note).toBeVisible();
+  await expect(note).toContainText("48.0 kHz");
+  await expect(note).toContainText("10 kHz");
+  expect(errors).toEqual([]);
 });
