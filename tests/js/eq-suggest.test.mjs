@@ -129,7 +129,8 @@ for (const [name, kind] of [["bass", "bass"], ["guitar", "guitar"], ["keys", "ke
   const lines = reasonLines(answers.master, t);
   check("master: one line per reason plus the preset's", lines.length === answers.master.why.length + 1);
   check("master: the preset's reason is last", lines[lines.length - 1].startsWith(answers.master.master.why.key));
-  check("no em or en dash in any formatted line", lines.every((l) => !/[–—]/.test(l)));
+  const dashes = new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`);
+  check("no em or en dash in any formatted line", lines.every((l) => !dashes.test(l)));
   const opts = targetOptions(answers.master, (k) => `T(${k})`);
   check("master: four targets, translated labels", opts.length === 4 && opts[0].label.startsWith("T(suggest.target."));
 }
