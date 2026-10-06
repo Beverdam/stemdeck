@@ -200,8 +200,44 @@ export function createEngineFx(ctx, membersOf) {
   master.output.connect(around);
   around.connect(tail);
   tail.connect(ctx.destination);
-  let mfx = null; // { effect, wet }
+  let mfx = null; // { effect, wet, active }
   let mfxDrop = 0;
+  // A master effect made the moment it is switched on starts out compressing
+  // hard: measured in Chromium, the level dipped 4 dB and took about 200 ms
+  // to come back, and the compressors reported up to -22 dB of reduction
+  // that was not there. So while the Master drawer is open the effect is kept
+  // running, silent (wet at 0), and switching it on only crossfades to a
+  // signal that has settled. The straight path stays at exactly 1 meanwhile,
+  // so the output is still bit-identical to the master EQ's.
+  let warmWanted = false;
+
+  function makeMfx(params) {
+    const effect = createMasterEffect(ctx);
+    const wet = ctx.createGain();
+    wet.gain.value = 0;
+    master.output.connect(effect.input);
+    effect.output.connect(wet);
+    wet.connect(tail);
+    effect.set(params, { immediate: true });
+    return { effect, wet, active: false };
+  }
+
+  function dropMfx(old) {
+    if (mfx !== old) return;
+    try { master.output.disconnect(old.effect.input); } catch { /* gone */ }
+    old.effect.dispose();
+    try { old.wet.disconnect(); } catch { /* gone */ }
+    mfx = null;
+  }
+
+  function scheduleDrop(immediate) {
+    if (!mfx || mfx.active || warmWanted) return;
+    const old = mfx;
+    if (mfxDrop) clearTimeout(mfxDrop);
+    const drop = () => { mfxDrop = 0; if (!old.active && !warmWanted) dropMfx(old); };
+    if (immediate) drop();
+    else mfxDrop = setTimeout(drop, RELEASE_MS);
+  }
 
   return {
     /** Wire gain -> slot -> analyser for one source and give it its EQ. */
@@ -241,44 +277,42 @@ export function createEngineFx(ctx, membersOf) {
     setMasterFx(params, { immediate = false } = {}) {
       if (params) {
         if (mfxDrop) { clearTimeout(mfxDrop); mfxDrop = 0; }
-        if (!mfx) {
-          const effect = createMasterEffect(ctx);
-          const wet = ctx.createGain();
-          wet.gain.value = 0;
-          master.output.connect(effect.input);
-          effect.output.connect(wet);
-          wet.connect(tail);
-          mfx = { effect, wet };
-          effect.set(params, { immediate: true });
-        } else {
-          mfx.effect.set(params, { immediate });
-        }
+        if (!mfx) mfx = makeMfx(params);
+        else mfx.effect.set(params, { immediate });
+        mfx.active = true;
         rampTo(around.gain, 0, ctx, immediate, XFADE);
         rampTo(mfx.wet.gain, 1, ctx, immediate, XFADE);
         return true;
       }
       if (!mfx) return false;
-      const old = mfx;
+      mfx.active = false;
       rampTo(around.gain, 1, ctx, immediate, XFADE);
-      rampTo(old.wet.gain, 0, ctx, immediate, XFADE);
-      const drop = () => {
-        mfxDrop = 0;
-        if (mfx !== old) return;
-        try { master.output.disconnect(old.effect.input); } catch { /* gone */ }
-        old.effect.dispose();
-        try { old.wet.disconnect(); } catch { /* gone */ }
-        mfx = null;
-      };
-      if (immediate) drop();
-      else mfxDrop = setTimeout(drop, RELEASE_MS);
+      rampTo(mfx.wet.gain, 0, ctx, immediate, XFADE);
+      scheduleDrop(immediate);
+      return true;
+    },
+    /**
+     * Keep the master effect running, silent, ready to be switched on (true),
+     * or let it go once it is off (false). `params` are what it should
+     * settle on: the master the drawer would switch on.
+     */
+    warmMasterFx(on, params = null) {
+      warmWanted = !!on;
+      if (warmWanted) {
+        if (mfxDrop) { clearTimeout(mfxDrop); mfxDrop = 0; }
+        if (!mfx) mfx = makeMfx(params || {});
+        else if (params && !mfx.active) mfx.effect.set(params);
+        return true;
+      }
+      scheduleDrop(false);
       return true;
     },
     /** The live master's In and Out nodes (export level), or null when off. */
     getMasterFxNodes() {
-      return mfx && !mfxDrop ? { input: mfx.effect.inTap, output: mfx.effect.outTap } : null;
+      return mfx?.active ? { input: mfx.effect.inTap, output: mfx.effect.outTap } : null;
     },
-    masterFxReduction: () => (mfx ? mfx.effect.reduction() : null),
-    masterFxLatency: () => (mfx && !mfxDrop ? mfx.effect.latencySec : 0),
+    masterFxReduction: () => (mfx?.active ? mfx.effect.reduction() : null),
+    masterFxLatency: () => (mfx?.active ? mfx.effect.latencySec : 0),
     getLaneTap(name, which, opts) {
       const nodes = membersOf(name)
         .filter((s) => s.fx)
@@ -369,6 +403,7 @@ export function engineFxApi(fx) {
     getMasterOutputNode: () => fx.masterOutput,
     supportsMaster: true,
     setMasterFx: (params, opts) => fx.setMasterFx(params, opts),
+    warmMasterFx: (on, params) => fx.warmMasterFx(on, params),
     getMasterFxNodes: () => fx.getMasterFxNodes(),
     masterFxReduction: () => fx.masterFxReduction(),
     masterFxLatency: () => fx.masterFxLatency(),

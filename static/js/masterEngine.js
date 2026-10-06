@@ -41,6 +41,35 @@ let watchTimer = 0;
 let settleTimer = 0;
 let inflight = null; // AbortController
 let planJob = null;
+// Match loudness, measured on the live preview itself. The server's plan
+// gives the exact export's before/after difference, but the live master is an
+// approximation of that render: on Louder for a quiet song the two differed
+// by 0.53 to 0.7 dB, past the 0.5 dB a match must hold. So while the song
+// plays with the drawer open, the panel's meters feed the live master's own
+// In and Out loudness here, and after 3 s of sound the match uses that.
+const LIVE_MATCH_MIN_READS = 30; // meter reads, 100 ms apart
+let live = { sumIn: 0, sumOut: 0, n: 0, diff: NaN };
+
+function resetLiveMatch() {
+  live = { sumIn: 0, sumOut: 0, n: 0, diff: NaN };
+}
+
+/**
+ * One meter read of the live master's momentary loudness at its input and
+ * output (LUFS, export level). Silence is skipped.
+ */
+export function noteLiveLoudness(inLufs, outLufs) {
+  if (!isMasterOn() || !Number.isFinite(inLufs) || !Number.isFinite(outLufs)) return;
+  if (inLufs < -60 || outLufs < -60) return;
+  live.sumIn += 10 ** (inLufs / 10);
+  live.sumOut += 10 ** (outLufs / 10);
+  live.n += 1;
+  if (live.n < LIVE_MATCH_MIN_READS) return;
+  const diff = 10 * Math.log10(live.sumOut / live.sumIn);
+  if (Number.isFinite(live.diff) && Math.abs(diff - live.diff) < 0.05) return;
+  live.diff = diff;
+  if (match) applyToEngine();
+}
 
 function readMatch() {
   try {
@@ -87,6 +116,7 @@ export function setMaster(desc, { save = true } = {}) {
   const e = entry();
   // The master EQ stays first in the slot; the master follows it.
   e.fx = [...e.fx.filter((x) => x?.id !== MASTER_ID), m];
+  resetLiveMatch();
   if (save) persistMix();
   applyToEngine();
   emit("master");
@@ -197,6 +227,7 @@ export async function measure() {
     if (inflight !== ctl) return null;
     plan = body;
     planSig = sig;
+    resetLiveMatch();
     planJob = src.jobId;
     planState = "ready";
   } catch (err) {
@@ -221,6 +252,7 @@ export function resetForSong() {
   wantedSig = "";
   planState = "idle";
   listen = "master";
+  resetLiveMatch();
   stopWatch();
   emit(null);
 }
@@ -240,8 +272,35 @@ export function liveParams() {
     fader: masterVolume,
     listen,
     match,
-    diffLu: p && Number.isFinite(p.post?.i) && Number.isFinite(p.pre?.i) ? p.post.i - p.pre.i : NaN,
+    diffLu: Number.isFinite(live.diff) ? live.diff
+      : p && Number.isFinite(p.post?.i) && Number.isFinite(p.pre?.i) ? p.post.i - p.pre.i : NaN,
   };
+}
+
+/**
+ * Keep the live master warm while the drawer is open (fxChain warmMasterFx),
+ * settled on the master the power button would switch on.
+ */
+let warm = false;
+export function warmLive(on) {
+  warm = !!on;
+  if (!audioEngine?.supportsMaster || !audioEngine.warmMasterFx) return;
+  try {
+    const m = stored() ? getMaster() : applyPreset(null, "streaming");
+    const p = planJob === currentJobId ? plan : null;
+    audioEngine.warmMasterFx(on, on ? {
+      gainDb: p ? p.gain_db : 0,
+      comp: m.params.comp,
+      compThresholdDb: p ? p.comp_threshold_db : null,
+      ceiling: m.params.ceiling_dbtp,
+      fader: masterVolume,
+      listen: "master",
+      match,
+      diffLu: NaN,
+    } : null);
+  } catch (err) {
+    console.warn("[master] could not warm the live master:", err);
+  }
 }
 
 /** Push the master to the engine (the player calls it when an engine is up). */
@@ -258,6 +317,8 @@ export function applyToEngine({ immediate = false } = {}) {
 eq.onChange(({ laneId }) => {
   if (laneId !== null) return;
   applyToEngine({ immediate: true });
+  // A rebuilt engine has no warm master yet.
+  if (warm) warmLive(true);
   emit(null);
   watch();
 });

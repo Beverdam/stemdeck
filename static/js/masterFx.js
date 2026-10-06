@@ -43,12 +43,11 @@ function ramp(param, value, ctx, immediate) {
     return;
   }
   const now = ctx.currentTime;
-  if (typeof param.cancelAndHoldAtTime === "function") param.cancelAndHoldAtTime(now);
-  else {
-    const cur = param.value;
-    param.cancelScheduledValues?.(now);
-    param.setValueAtTime?.(cur, now);
-  }
+  // Not cancelAndHoldAtTime: it clicked on every knob step in Chromium
+  // (fxChain.js rampTo has the measurement).
+  const cur = param.value;
+  param.cancelScheduledValues?.(now);
+  param.setValueAtTime?.(cur, now);
   param.linearRampToValueAtTime(value, now + RAMP);
 }
 

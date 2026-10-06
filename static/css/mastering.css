@@ -249,31 +249,60 @@
 
 /* ── Master EQ (E2's general panel on the MASTER lane) ── */
 
-.master-eq-side {
-  flex: 0 0 210px;
-  width: 210px;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border-right: 1px solid var(--border);
-  overflow: hidden;
+.master-eq-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
-.master-eq-title { color: var(--accent); flex: 1; }
+/* The EQ's controls as one bar over the graph. */
+.master-eq-side.eq-side {
+  flex: 0 0 auto;
+  flex-direction: row;
+  width: auto;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.master-eq-side .eq-side-head { flex: 0 0 auto; margin: 0; gap: 8px; }
+.master-eq-side .eq-side-controls {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+}
+.master-eq-side .eq-side-controls > * { margin: 0; flex: 0 0 auto; width: auto; }
+.master-eq-side .eq-side-controls select { width: 150px; }
+.master-eq-side .eq-out input[type="range"] { width: 90px; }
+.master-eq-title { color: var(--accent); }
 .master-eq-body {
   flex: 1;
   min-width: 0;
-  height: 100%;
+  min-height: 0;
   overflow: hidden;
   position: relative;
+  container-type: inline-size;
 }
 /* Narrower than in a lane row: the drawer shares the width with the master's
-   own columns. The band list's fixed columns still fit. */
+   own columns. On a narrow window the band list gives way to the graph, which
+   edits the same bands by dragging. */
 .master-eq-body .eq-band-list { width: 300px; }
+@container (max-width: 640px) {
+  .master-eq-body .eq-band-list { display: none; }
+}
 
 /* ── Meters (approximate) ── */
 
 .master-meters {
-  flex: 0 0 120px;
-  width: 120px;
+  flex: 0 0 104px;
+  width: 104px;
   box-sizing: border-box;
   padding: 8px 10px;
   border-left: 1px solid var(--border);

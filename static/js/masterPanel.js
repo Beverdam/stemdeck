@@ -3,8 +3,8 @@
 // layout (the lanes give it room), and holds four columns:
 //
 //   settings (on/off, preset, target, ceiling, glue, listen, readout, excerpt)
-//   | master EQ toolbar | master EQ graph (E2's general panel on the MASTER lane)
-//   | meters (approximate)
+//   | master EQ: its toolbar as a bar over the graph (E2's general panel on
+//     the MASTER lane) | meters (approximate)
 //
 // The truth lives in masterEngine.js and eqEngine.js; this module only draws
 // and forwards. Every string goes through i18n.
@@ -29,6 +29,10 @@ let eqPanel = null;
 let meters = null;
 let meterTimer = 0;
 let excerpt = null; // { master: HTMLAudioElement, original: HTMLAudioElement, start, end }
+// The excerpt being rendered. Closing the drawer (or Stop) aborts it: before,
+// the render finished after the drawer had closed and played with nothing on
+// screen to stop it.
+let excerptCtl = null;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -76,11 +80,23 @@ function build() {
   const field = (cls, min, max, step, unit) => {
     const lab = el("label", `master-field ${cls}`);
     const name = el("span", "master-field-name");
+    // Text, not type=number: a number field in an English-locale browser took
+    // "-12,5" as -125. The value is parsed here, comma or dot alike, and the
+    // arrow keys step it.
     const input = el("input", "master-num");
-    input.type = "number";
-    input.min = String(min);
-    input.max = String(max);
-    input.step = String(step);
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.setAttribute("aria-valuemin", String(min));
+    input.setAttribute("aria-valuemax", String(max));
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault();
+      const cur = parseNum(input.value);
+      const base = Number.isFinite(cur) ? cur : min;
+      const next = Math.round((base + (e.key === "ArrowUp" ? step : -step)) / step) * step;
+      input.value = String(Math.max(min, Math.min(max, +next.toFixed(2))));
+      input.dispatchEvent(new Event("change"));
+    });
     const u = el("span", "master-unit", unit);
     lab.append(name, input, u);
     fields.append(lab);
@@ -174,7 +190,11 @@ function build() {
   const gr = el("span", "master-gr");
   meterCol.append(meterHead, bars, lufsRow, gr);
 
-  root.append(side, eqSide, eqBody, meterCol);
+  // The master EQ's controls run as a bar above its graph, so the graph gets
+  // the drawer's width (beside them it was 2 px wide at 1280 px).
+  const eqArea = el("div", "master-eq-area");
+  eqArea.append(eqSide, eqBody);
+  root.append(side, eqArea, meterCol);
   drawer.replaceChildren(root);
 
   // ─── Events ───
@@ -182,12 +202,17 @@ function build() {
   close.addEventListener("click", () => setOpen(false));
   const onNum = (which) => () => {
     const m = master.getMaster();
-    const v = parseFloat(which === "target" ? target.input.value : ceiling.input.value);
-    if (!Number.isFinite(v)) { paint(); return; }
-    const params = { ...m.params, preset: "custom" };
-    if (which === "target") params.target_lufs = v;
-    else params.ceiling_dbtp = v;
-    master.setMaster({ ...m, bypass: false, params });
+    const v = parseNum(which === "target" ? target.input.value : ceiling.input.value);
+    if (Number.isFinite(v)) {
+      const params = { ...m.params, preset: "custom" };
+      if (which === "target") params.target_lufs = v;
+      else params.ceiling_dbtp = v;
+      master.setMaster({ ...m, bypass: false, params });
+    }
+    // Show what was kept, clamped, even while the field has focus: paint()
+    // leaves a focused field alone, so a typed -40 stayed on screen as -40
+    // while the master used the limit, and an unreadable entry left it blank.
+    writeFields();
   };
   target.input.addEventListener("change", onNum("target"));
   ceiling.input.addEventListener("change", onNum("ceiling"));
@@ -297,6 +322,20 @@ function presetSummary(m) {
   return `${tgt}, ${fmtDb(p.ceiling_dbtp)} dBTP`;
 }
 
+/** "-12,5" and "-12.5" alike; NaN for anything else. */
+function parseNum(s) {
+  const v = Number(String(s).trim().replace(",", "."));
+  return String(s).trim() === "" ? NaN : v;
+}
+
+function writeFields() {
+  if (!ui) return;
+  const p = master.getMaster().params;
+  ui.target.input.value = p.target_lufs === null ? "" : String(p.target_lufs);
+  ui.target.input.placeholder = p.target_lufs === null ? t("master.targetNone") : "";
+  ui.ceiling.input.value = String(p.ceiling_dbtp);
+}
+
 function paint() {
   paintChip();
   if (!ui) return;
@@ -386,8 +425,11 @@ function tickMeters() {
   const ceiling = master.getMaster().params.ceiling_dbtp;
   paintBar(ui.inBar, r?.in, 0);
   paintBar(ui.outBar, r?.out, ceiling);
-  // "-0.0" reads as a fault: a reduction under 0.05 dB is shown as 0.0.
-  const red = r && r.reduction < -0.05 ? r.reduction : 0;
+  // "-0.0" reads as a fault: a reduction under 0.05 dB is shown as 0.0. A
+  // stopped song has nothing being reduced, whatever the compressor last held.
+  const playing = !!transport()?.isPlaying?.();
+  const red = r && playing && r.reduction < -0.05 ? r.reduction : 0;
+  if (r && playing) master.noteLiveLoudness(r.in.lufs, r.out.lufs);
   ui.gr.textContent = r ? `${t("master.meterGr")} ${fmtDb(red)} dB` : "";
 }
 
@@ -439,7 +481,7 @@ function syncExcerptSource() {
 
 async function startExcerpt() {
   const span = excerptSpan();
-  if (!span || !ui) return;
+  if (!span || !ui || excerptCtl) return;
   // MP3 for a lossy export (its own ceiling), WAV otherwise: the excerpt is
   // what that export will be.
   const ext = ["mp3", "ogg", "mp4"].includes(exportFormat()) ? "mp3" : "wav";
@@ -447,14 +489,17 @@ async function startExcerpt() {
   const oUrl = excerptUrl(ext, span.start, span.end, false);
   if (!mUrl || !oUrl) return;
   if (transport()?.isPlaying?.()) togglePlayPause();
+  const ctl = new AbortController();
+  excerptCtl = ctl;
   ui.exBtn.disabled = true;
   ui.exState.textContent = t("master.excerptRendering");
   try {
     const [mBlob, oBlob] = await Promise.all([mUrl, oUrl].map(async (u) => {
-      const r = await fetch(u);
+      const r = await fetch(u, { signal: ctl.signal });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.blob();
     }));
+    if (ctl.signal.aborted || !open) return;
     const mk = (blob) => {
       const a = new Audio(URL.createObjectURL(blob));
       a.preload = "auto";
@@ -469,11 +514,22 @@ async function startExcerpt() {
     drawer.dataset.excerpt = "playing";
     syncExcerptSource();
   } catch (err) {
+    if (ctl.signal.aborted) return;
     console.warn("[master] rendering the excerpt failed:", err);
     ui.exState.textContent = t("master.excerptFailed");
     excerpt = null;
+  } finally {
+    if (excerptCtl === ctl) excerptCtl = null;
+    if (ui) paint();
   }
-  paint();
+}
+
+/** Stop a render in flight: the fetches end and nothing plays. */
+function cancelExcerptRender() {
+  if (!excerptCtl) return;
+  excerptCtl.abort();
+  excerptCtl = null;
+  if (ui) ui.exState.textContent = "";
 }
 
 function stopExcerpt() {
@@ -508,8 +564,11 @@ export function setOpen(next) {
     if (master.isMasterOn() && !master.getPlan()) master.measure();
   } else {
     stopMeters();
+    cancelExcerptRender();
     stopExcerpt();
   }
+  // Open: the live master runs silently, settled, ready to be switched on.
+  master.warmLive(open);
   paintChip();
   // The lanes give the drawer its room: lay them out again.
   document.dispatchEvent(new CustomEvent("stemdeck:master-drawer", { detail: { open } }));
@@ -525,6 +584,10 @@ export function initMasterPanel() {
     e.stopPropagation();
     setOpen(!open);
   });
+  // The studio's Space shortcut plays; on this button Space is the button's.
+  chip.addEventListener("keydown", (e) => {
+    if (e.code === "Space" || e.key === "Enter") e.stopPropagation();
+  });
   const row = document.getElementById("t-export-master");
   row?.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -534,7 +597,9 @@ export function initMasterPanel() {
     ui?.power.focus();
   });
   master.onChange((what) => {
-    if (what === null) stopExcerpt();
+    if (what === null) { cancelExcerptRender(); stopExcerpt(); }
+    // Off, the warm master follows the preset the power button would use.
+    if (open && what === "master" && !master.isMasterOn()) master.warmLive(true);
     paint();
   });
   eq.onChange(({ laneId }) => { if (laneId === eq.MASTER || laneId === null) paint(); });

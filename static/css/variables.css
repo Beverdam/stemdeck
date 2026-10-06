@@ -110,7 +110,9 @@
   --eq-band-6: #d49cf0;
   /* The Master drawer (mastering.css): its settings column fits without
      scrolling at this height. */
-  --master-drawer-h: 364px;
+  /* A third of the window, so the lanes keep room above it (364 px fixed left
+     no lane at all on a 720 px tall window). The settings column scrolls. */
+  --master-drawer-h: clamp(250px, 34vh, 340px);
 
   /* Motion */
   --t-fast: 80ms;
