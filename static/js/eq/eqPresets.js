@@ -23,3 +23,29 @@ const DRUM = [
 export function graphPresets(kind) {
   return kind === "drum" ? DRUM : GRAPH;
 }
+
+// Pedal and keys presets: control values over the panel's starting point.
+const BASS = [
+  { key: "eq.preset.bassCutMud", c: { mf: 300, mg: -5, mq: 2.5 } },
+  { key: "eq.preset.bassGrowl", c: { mf: 800, mg: 4, mq: 1.8, hf: 2500, hg: 3, hq: 1.5 } },
+  { key: "eq.preset.bassRound", c: { lf: 80, lg: 3, lq: 1, lpf: 2500, hs: -3 } },
+  { key: "eq.preset.bassSlap", c: { hpf: 30, lf: 60, lg: 4, lq: 1.5, mf: 500, mg: -5, mq: 1.5, hf: 3500, hg: 4, hq: 1.5 } },
+];
+
+const GUITAR = [
+  { key: "eq.preset.guitarPresence", c: { mf: 2500, mg: 4, mq: 1 } },
+  { key: "eq.preset.guitarMix", c: { hpf: 100, mf: 1200, mg: 3, mq: 1.5, hf: 7000, hg: -3, hq: 2.5 } },
+  { key: "eq.preset.guitarWarm", c: { lf: 150, lg: 3, lq: 1, hs: -2 } },
+  { key: "eq.preset.guitarFizz", c: { lpf: 6000, hf: 4000, hg: -3, hq: 2.5 } },
+];
+
+const KEYS = [
+  { key: "eq.preset.keysBright", c: { presence: 3, air: 3 } },
+  { key: "eq.preset.keysWarm", c: { warmth: 3, tone: -2 } },
+  { key: "eq.preset.keysThin", c: { lowcut: 120, body: -3 } },
+];
+
+/** The presets of a pedal or keys panel ("bass", "guitar", "keys"). */
+export function controlPresets(kind) {
+  return kind === "bass" ? BASS : kind === "guitar" ? GUITAR : kind === "keys" ? KEYS : [];
+}

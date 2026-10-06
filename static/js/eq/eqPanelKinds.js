@@ -38,8 +38,8 @@ export function panelKindFor(lane, { isTrack = false, inputKind = null } = {}) {
 export const PANEL_HEIGHT = Object.freeze({
   graph: 304,
   drum: 304,
-  bass: 244,
-  guitar: 244,
+  bass: 256,
+  guitar: 256,
   keys: 212,
   voice: 156,
 });

@@ -515,3 +515,141 @@
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ── Pedal and keys panels: a faceplate of knobs and a small curve ── */
+
+.eq-pedal-panel {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  padding: 8px 12px 8px 10px;
+  box-sizing: border-box;
+}
+.eq-plate {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border: 1px solid var(--eq-plate-edge);
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--eq-plate) 100%, var(--fg) 3%), var(--eq-plate));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 2px 10px rgba(0, 0, 0, 0.35);
+  padding: 6px 12px 8px;
+  min-height: 0;
+}
+.eq-plate-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--eq-plate-edge);
+  margin-bottom: 6px;
+}
+.eq-plate-title {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--stem-color, var(--accent));
+}
+/* The pedal's "on" light: lit while the EQ is not bypassed. */
+.eq-plate-led {
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+.eq-plate-led.on {
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 80%, transparent);
+}
+.eq-plate-body {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  min-height: 0;
+}
+.eq-plate-sec {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border-right: 1px solid color-mix(in srgb, var(--eq-plate-edge) 70%, transparent);
+}
+.eq-plate-sec:last-child { border-right: 0; }
+.eq-plate-sec-name {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+.eq-plate-knobs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.eq-plate-sec.grid .eq-plate-knobs {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 6px 10px;
+}
+.eq-pedal-keys .eq-plate-knobs { flex-direction: row; align-items: flex-end; gap: 8px; }
+
+.eq-knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 52px;
+}
+.eq-knob-dial {
+  border-radius: 50%;
+  cursor: ns-resize;
+  touch-action: none;
+  line-height: 0;
+}
+.eq-knob-dial:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.eq-knob-track { fill: none; stroke: var(--eq-knob); stroke-width: 3; stroke-linecap: round; }
+.eq-knob-fill { fill: none; stroke: var(--stem-color, var(--accent)); stroke-width: 3; stroke-linecap: round; }
+.eq-knob-cap {
+  fill: var(--eq-knob-cap);
+  stroke: rgba(0, 0, 0, 0.45);
+  stroke-width: 1;
+}
+.eq-knob-pointer { stroke: var(--fg); stroke-width: 2; stroke-linecap: round; }
+.eq-knob.turning .eq-knob-cap,
+.eq-knob-dial:hover .eq-knob-cap { fill: color-mix(in srgb, var(--eq-knob-cap) 85%, var(--fg)); }
+.eq-knob.is-off .eq-knob-pointer { stroke: var(--muted); }
+.eq-knob.no-name .eq-knob-name { display: none; }
+.eq-knob-name {
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.eq-knob-val {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.eq-knob.is-off .eq-knob-val { color: var(--muted-2); }
+
+.eq-pedal-curve {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+.eq-mini-curve { width: 100%; height: 100%; display: block; }

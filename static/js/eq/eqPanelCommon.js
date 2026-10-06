@@ -256,6 +256,15 @@ export function createMiniCurve(canvas, lane) {
       }
       ctx.strokeStyle = colors.zero;
       ctx.beginPath(); ctx.moveTo(0, Math.round(h / 2) + 0.5); ctx.lineTo(w, Math.round(h / 2) + 0.5); ctx.stroke();
+      ctx.fillStyle = colors.label;
+      ctx.font = `9px ${colors.font}`;
+      ctx.textAlign = "center";
+      for (const [f, label] of [[100, "100"], [1000, "1k"], [10000, "10k"]]) {
+        ctx.fillText(label, (Math.log(f / 20) / Math.log(1000)) * w, h - 4);
+      }
+      ctx.textAlign = "left";
+      ctx.fillText(`+${range}`, 4, 11);
+      ctx.fillText(`-${range}`, 4, h - 4);
       const cur = eq.getLaneEq(lane);
       const shown = { ...cur, bypass: false };
       const db = eqResponseDb(shown, freqs, eq.liveSampleRate());
