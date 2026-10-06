@@ -189,6 +189,7 @@ function _onTake(ev) {
         bitsPerSecond: QUALITY[_quality()].bitsPerSecond,
         deviceLabel: track?.label || "",
         mirrorPreview: getMirrorPreview(),
+        previewVideo: ui.preview,
         upload: (seq, blob) => uploadCameraPart(jobId, takeId, seq, blob),
       });
       active = { jobId, takeId, rec };

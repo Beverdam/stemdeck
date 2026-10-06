@@ -103,18 +103,68 @@ function _round(n, digits = 3) {
   return Math.round(n * f) / f;
 }
 
+// How much later than its capture a microphone sample's stamp is. The take
+// recorder stamps audio frame 0 with the time the AudioContext plays that
+// context time (getOutputTimestamp, perfMsAtFrame0), and a captured sample
+// reaches the worklet through the WebAudio input buffer first. Measured with
+// Chromium's file-based fake devices against Chromium's own A/V MediaRecorder
+// (0.21.0 overnight log, task C): 25.8 to 35.0 ms over 17 takes, median
+// 30.5, the same for every camera codec. A browser pipeline delay, not a
+// camera or microphone property: the camera frame's capture time is moved
+// onto the same stamped clock, so picture and sound captured together land
+// together.
+export const AUDIO_STAMP_LAG_MS = 30;
+
+/**
+ * Capture time (performance.now() clock) of the first frame a MediaRecorder
+ * records, from the capture times of the frames the preview showed.
+ *
+ * The recorder's file starts with the first frame captured after start() was
+ * called (verified frame by frame with an indexed test video, 18 of 18, MP4,
+ * VP9 and VP8). The preview can skip a frame under load: when the gap before
+ * the first frame it showed after the call is more than one and a half
+ * frames, the skipped frame's time is used. Returns null when nothing usable was
+ * seen (no captureTime on this engine, or the preview never painted).
+ *
+ * `captures` is ascending captureTime values; `startCallMs` the time just
+ * before recorder.start().
+ */
+export function firstRecordedCapture(captures, startCallMs) {
+  if (!Array.isArray(captures) || !Number.isFinite(startCallMs)) return null;
+  const times = captures.filter(Number.isFinite);
+  const idx = times.findIndex((c) => c > startCallMs);
+  if (idx < 0) return null;
+  const first = times[idx];
+  if (idx === 0) return first;
+  const deltas = [];
+  for (let i = 1; i < times.length; i++) deltas.push(times[i] - times[i - 1]);
+  deltas.sort((a, b) => a - b);
+  const interval = deltas[deltas.length >> 1];
+  // A gap of more than one and a half frames before it: the preview skipped
+  // the recorder's first frame, which came one interval after the last frame
+  // before the call.
+  const before = times[idx - 1];
+  if (first - before > 1.5 * interval && before + interval > startCallMs) return before + interval;
+  return first;
+}
+
 /**
  * The "video" block of take.json (validated by app/api on finish).
  *
- * Clock: everything is on performance.now(). The take recorder stamps perfMsAtFrame0 for raw
- * audio frame 0; firstFrameAtMs is how long after that the camera recorder
- * actually started delivering, so positive means video starts later. Camera
- * pipeline latency is invisible to the browser and is what cameraOffsetMs
- * (positive = video late, subtract) corrects.
+ * Clock: everything is on performance.now(). The take recorder stamps
+ * perfMsAtFrame0 for raw audio frame 0; firstFrameAtMs is where the camera
+ * file's first frame sits on that same stamped clock, so positive means video
+ * starts later. With `firstCapturePerf` (the first recorded frame's capture
+ * time) it is that time plus AUDIO_STAMP_LAG_MS (firstFrameClock "capture");
+ * without it the recorder's "start" event stands in ("recorder-start"),
+ * which fires 11 to 61 ms after the first frame depending on the codec and
+ * the main thread's load (measured). Camera latency is invisible to the
+ * browser and is what cameraOffsetMs (positive = video late, subtract)
+ * corrects.
  */
 export function buildVideoBlock({
   mime, ext, width, height, fps, deviceLabel, mirrorPreview,
-  perfMsAtFrame0, ctxTimeAtFrame0, startedAtPerf, firstChunkAtPerf,
+  perfMsAtFrame0, ctxTimeAtFrame0, startedAtPerf, firstChunkAtPerf, firstCapturePerf,
   parts, cameraOffsetMs = 0,
 }) {
   // The server validates every number as finite and bounded, so a value the browser
@@ -132,9 +182,13 @@ export function buildVideoBlock({
   if (Number.isFinite(height) && height >= 1) block.h = Math.min(4096, Math.round(height));
   if (Number.isFinite(ctxTimeAtFrame0)) block.startedAtAudioCtx = _round(ctxTimeAtFrame0, 6);
   if (Number.isFinite(startedAtPerf)) block.startedAtPerf = _round(startedAtPerf);
-  const firstAt = Number.isFinite(firstChunkAtPerf) ? firstChunkAtPerf : startedAtPerf;
+  const fromCapture = Number.isFinite(firstCapturePerf);
+  const firstAt = fromCapture
+    ? firstCapturePerf + AUDIO_STAMP_LAG_MS
+    : (Number.isFinite(firstChunkAtPerf) ? firstChunkAtPerf : startedAtPerf);
   if (Number.isFinite(perfMsAtFrame0) && Number.isFinite(firstAt)) {
     block.firstFrameAtMs = Math.max(-600000, Math.min(600000, _round(firstAt - perfMsAtFrame0)));
+    block.firstFrameClock = fromCapture ? "capture" : "recorder-start";
   }
   return block;
 }

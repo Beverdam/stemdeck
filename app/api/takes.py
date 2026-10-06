@@ -532,6 +532,9 @@ class VideoModel(BaseModel):
     startedAtAudioCtx: float | None = _finite(-1e12, 1e12)  # noqa: N815
     startedAtPerf: float | None = _finite(-1e15, 1e15)  # noqa: N815
     firstFrameAtMs: float = _finite(-600_000, 600_000, 0.0)  # noqa: N815
+    # How firstFrameAtMs was taken: the first frame's capture time, or the
+    # recorder's start event when the engine reports no capture times.
+    firstFrameClock: Literal["capture", "recorder-start"] | None = None  # noqa: N815
     parts: int | None = Field(default=None, ge=0, le=TAKE_MAX_SEQ + 1)
 
 

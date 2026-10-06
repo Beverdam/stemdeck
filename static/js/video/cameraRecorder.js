@@ -8,7 +8,9 @@
 // 5 to 8 Mbps), one at a time and in order, so seq is strictly increasing and
 // a crash loses at most the last few seconds.
 
-import { cutParts, extForMime, pickRecorderMime, buildVideoBlock, FRAME_RATE } from "./videoCodec.js";
+import {
+  cutParts, extForMime, pickRecorderMime, buildVideoBlock, firstRecordedCapture, FRAME_RATE,
+} from "./videoCodec.js";
 
 const TIMESLICE_MS = 1000;
 
@@ -16,14 +18,53 @@ export function recorderSupported() {
   return typeof window.MediaRecorder === "function";
 }
 
+// Frames watched for capture times: enough to pass the first recorded frame
+// and to measure the frame interval, then the watch stops.
+const CAPTURE_WATCH_FRAMES = 8;
+
+/**
+ * Watch `video` (playing the camera stream) for frame capture times.
+ * Returns { times, stop() }; `times` stays empty on an engine without
+ * requestVideoFrameCallback or captureTime, or while the preview is not
+ * painted (a hidden window), and the block then falls back to the
+ * recorder's start event.
+ */
+function watchCaptureTimes(video) {
+  const times = [];
+  let handle = null;
+  let done = false;
+  const supported = Boolean(video) && typeof video.requestVideoFrameCallback === "function";
+  const onFrame = (_now, meta) => {
+    if (done) return;
+    if (Number.isFinite(meta?.captureTime)) times.push(meta.captureTime);
+    if (times.length >= CAPTURE_WATCH_FRAMES) {
+      done = true;
+      return;
+    }
+    handle = video.requestVideoFrameCallback(onFrame);
+  };
+  if (supported) handle = video.requestVideoFrameCallback(onFrame);
+  return {
+    times,
+    stop() {
+      done = true;
+      if (supported && handle != null) video.cancelVideoFrameCallback?.(handle);
+    },
+  };
+}
+
 /**
  * start({ stream, jobId, takeId, perfMsAtFrame0, ctxTimeAtFrame0, bitsPerSecond,
- *         deviceLabel, mirrorPreview, upload })
+ *         deviceLabel, mirrorPreview, upload, previewVideo })
  * upload(seq, blob) -> Promise, resolves on the server ack.
+ * previewVideo: a <video> playing `stream`, to read frame capture times.
  * Returns { stop() -> Promise<videoBlock>, abort(), takeId }.
  */
 export function startCameraRecording(opts) {
-  const { stream, takeId, perfMsAtFrame0, ctxTimeAtFrame0, bitsPerSecond, deviceLabel, mirrorPreview, upload } = opts;
+  const {
+    stream, takeId, perfMsAtFrame0, ctxTimeAtFrame0, bitsPerSecond, deviceLabel, mirrorPreview, upload,
+    previewVideo,
+  } = opts;
   const chosen = pickRecorderMime(window.MediaRecorder?.isTypeSupported?.bind(window.MediaRecorder));
   const recOpts = { videoBitsPerSecond: bitsPerSecond };
   if (chosen) recOpts.mimeType = chosen;
@@ -79,6 +120,9 @@ export function startCameraRecording(opts) {
   });
 
   const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
+  // The recorder's first frame is the first one captured after this call.
+  const captures = watchCaptureTimes(previewVideo);
+  const startCallMs = performance.now();
   recorder.start(TIMESLICE_MS);
   if (startedAtPerf === null) startedAtPerf = performance.now();
 
@@ -86,6 +130,7 @@ export function startCameraRecording(opts) {
     takeId,
     get mimeType() { return recorder.mimeType || chosen; },
     async stop() {
+      captures.stop();
       if (recorder.state !== "inactive") recorder.stop();
       await stopped;
       drain(true);
@@ -104,11 +149,13 @@ export function startCameraRecording(opts) {
         ctxTimeAtFrame0,
         startedAtPerf,
         firstChunkAtPerf,
+        firstCapturePerf: firstRecordedCapture(captures.times, startCallMs),
         parts: seq,
       });
     },
     abort() {
       aborted = true;
+      captures.stop();
       try {
         if (recorder.state !== "inactive") recorder.stop();
       } catch (err) {
