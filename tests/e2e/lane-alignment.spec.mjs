@@ -68,6 +68,33 @@ test.describe("lane alignment", () => {
     expect(offenders).toEqual([]);
   });
 
+  // An open EQ panel is a row of its own in both columns (static/js/eq/),
+  // taller than a lane and of a fixed height: the lanes share what it leaves.
+  // The same measurement as above, with two panels open.
+  test("every row lines up with EQ panels open, at any window height", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await openStudio(page, { tauri: true });
+    await waitForClickTrack(page);
+    for (const lane of ["drums", "bass"]) {
+      await page.locator(`.eq-tab[data-eq-lane="${lane}"]`).click();
+      await expect(page.locator(`.eq-panel-lane[data-eq-lane="${lane}"]`)).toHaveCount(1);
+    }
+
+    const offenders = [];
+    for (const height of HEIGHTS) {
+      await page.setViewportSize({ width: 1600, height });
+      await page.waitForTimeout(450);
+      const g = await geometry(page);
+      const worstRow = Math.max(...g.mixTops.map((t, i) => Math.abs((g.waveTops[i] ?? t) - t)));
+      const worstName = Math.max(...g.nameMids.map((m, i) => (m === null ? 0 : Math.abs((g.waveMids[i] ?? m) - m))));
+      if (g.mixTops.length !== g.waveTops.length || worstRow > 1 || worstName > 2) {
+        offenders.push({ height, rows: [g.mixTops.length, g.waveTops.length], worstRow, worstName });
+      }
+      expect(`${g.column}px`).toBe(g.stackVar);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   test("the waveform column is the stack the mixer was built from", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 900 });
     await openStudio(page, { tauri: true });
