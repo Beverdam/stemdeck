@@ -258,9 +258,11 @@ The author(s) of StemDeck provide this software "as is", without warranty of any
 
 ## <img src="imgs/readme/shield.svg" width="26" align="top" alt=""> License
 
-StemDeck is [Apache-2.0](LICENSE).
+StemDeck is free software under the [GNU Affero General Public License v3.0 only](LICENSE) (AGPL-3.0-only). You may use, study, change and share it. If you change it and let other people use your version over a network, the AGPL asks you to offer them its source code too; the About dialog links to the source for that reason.
 
-Every download ships a `THIRD_PARTY_NOTICES.txt` and a `licenses/` folder. `licenses/INDEX.txt` lists each packaged Python dependency with its version and license, and each one's full license text sits beside it. That inventory is generated from the packaged interpreter at build time, so it describes what actually shipped rather than what was expected to.
+Releases up to and including 0.20.0 were published under Apache-2.0, and copies received under those terms keep them.
+
+Every download ships StemDeck's own `LICENSE.txt`, a `THIRD_PARTY_NOTICES.txt` and a `licenses/` folder. `licenses/INDEX.txt` lists each packaged Python dependency with its version and license, and each one's full license text sits beside it. That inventory is generated from the packaged interpreter at build time, so it describes what actually shipped rather than what was expected to.
 
 FFmpeg is a GPL build. StemDeck downloads it and runs it as a separate executable, so it does not change StemDeck's own license, and `THIRD_PARTY_NOTICES.txt` carries the written offer of source for the exact build your platform receives.
 

@@ -862,6 +862,8 @@ const en = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "Song details from AcoustID, MusicBrainz (CC0), Wikipedia (CC BY-SA) and Wikidata (CC0). Band profiles from Discogs, with a Discogs token set. Lyrics from LRCLIB. Transcription by OpenAI Whisper (MIT).",
+  "about.license": "StemDeck is free software under the GNU AGPL-3.0.",
+  "about.source": "Source code",
 
   "friends.title": "We Recommend",
   "friends.tagline": "StemDeck is free and does not accept any money, sponsorship, or funding from anyone listed below. I share these makers and artists and communities purely for the joy of pointing you toward wonderful people doing beautiful work. Go meet them ❤️",
@@ -2189,6 +2191,8 @@ const pl = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "Informacje o utworach: AcoustID, MusicBrainz (CC0), Wikipedia (CC BY-SA) i Wikidane (CC0). Profile zespołów: Discogs, gdy ustawiony jest token Discogs. Teksty: LRCLIB. Transkrypcja: OpenAI Whisper (MIT).",
+  "about.license": "StemDeck to wolne oprogramowanie na licencji GNU AGPL-3.0.",
+  "about.source": "Kod źródłowy",
 
   "friends.title": "Polecamy",
   "friends.tagline": "StemDeck jest darmowy i nie przyjmuje żadnych pieniędzy, sponsoringu ani finansowania od nikogo z wymienionych poniżej. Dzielę się tymi twórcami, artystami i społecznościami wyłącznie dla radości wskazania Ci wspaniałych ludzi tworzących piękne rzeczy. Poznaj ich ❤️",
@@ -3507,6 +3511,8 @@ const ja = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "曲の情報: AcoustID、MusicBrainz (CC0)、Wikipedia (CC BY-SA)、Wikidata (CC0)。バンドのプロフィール: Discogs (Discogs トークン設定時)。歌詞: LRCLIB。文字起こし: OpenAI Whisper (MIT)。",
+  "about.license": "StemDeck は GNU AGPL-3.0 で公開されているフリーソフトウェアです。",
+  "about.source": "ソースコード",
 
   "friends.title": "おすすめ",
   "friends.tagline": "StemDeck は無料で、以下に挙げた方々から金銭・スポンサー・資金提供を一切受け取っていません。素晴らしい仕事をする方々を紹介する喜びだけのために、これらの作り手やアーティスト、コミュニティを共有しています。ぜひ会いに行ってみてください ❤️",
@@ -4801,6 +4807,8 @@ const zhHans = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "歌曲信息来自 AcoustID、MusicBrainz (CC0)、维基百科 (CC BY-SA) 和维基数据 (CC0)。乐队简介来自 Discogs（需设置 Discogs 令牌）。歌词来自 LRCLIB。转写由 OpenAI Whisper (MIT) 完成。",
+  "about.license": "StemDeck 是采用 GNU AGPL-3.0 许可证的自由软件。",
+  "about.source": "源代码",
 
   "friends.title": "推荐",
   "friends.tagline": "StemDeck 是免费的，也不接受下列任何人的金钱、赞助或资助。分享这些创作者、艺术家和社区，纯粹是为了把你引向那些做着美好事情的了不起的人。去认识他们吧 ❤️",
@@ -6096,6 +6104,8 @@ const de = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "Songdaten von AcoustID, MusicBrainz (CC0), Wikipedia (CC BY-SA) und Wikidata (CC0). Bandprofile von Discogs, wenn ein Discogs-Token gesetzt ist. Songtexte von LRCLIB. Transkription mit OpenAI Whisper (MIT).",
+  "about.license": "StemDeck ist freie Software unter der GNU AGPL-3.0.",
+  "about.source": "Quellcode",
 
   "friends.title": "Wir empfehlen",
   "friends.tagline": "StemDeck ist kostenlos und nimmt von niemandem auf dieser Liste Geld, Sponsoring oder Förderung an. Ich teile diese Macher, Künstler und Communities allein aus Freude daran, dich auf wunderbare Menschen hinzuweisen, die schöne Arbeit leisten. Lern sie kennen ❤️",
@@ -7401,6 +7411,8 @@ const pt = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "Dados das músicas: AcoustID, MusicBrainz (CC0), Wikipédia (CC BY-SA) e Wikidata (CC0). Perfis de bandas: Discogs, com um token do Discogs definido. Letras: LRCLIB. Transcrição: OpenAI Whisper (MIT).",
+  "about.license": "O StemDeck é software livre sob a licença GNU AGPL-3.0.",
+  "about.source": "Código-fonte",
 
   "friends.title": "Recomendamos",
   "friends.tagline": "O StemDeck é gratuito e não aceita dinheiro, patrocínio ou financiamento de ninguém listado abaixo. Compartilho estes criadores, artistas e comunidades apenas pela alegria de apontar você para pessoas maravilhosas fazendo um trabalho lindo. Conheça-as ❤️",
@@ -8707,6 +8719,8 @@ const id = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "Info lagu dari AcoustID, MusicBrainz (CC0), Wikipedia (CC BY-SA), dan Wikidata (CC0). Profil band dari Discogs, jika token Discogs diatur. Lirik dari LRCLIB. Transkripsi oleh OpenAI Whisper (MIT).",
+  "about.license": "StemDeck adalah perangkat lunak bebas dengan lisensi GNU AGPL-3.0.",
+  "about.source": "Kode sumber",
 
   "friends.title": "Rekomendasi",
   "friends.tagline": "StemDeck gratis dan tidak menerima uang, sponsor, atau pendanaan dari siapa pun yang tercantum di bawah. Saya membagikan para pembuat, seniman, dan komunitas ini semata-mata demi kesenangan menunjukkan orang-orang hebat yang melakukan pekerjaan indah. Temui mereka ❤️",
@@ -10002,6 +10016,8 @@ const fr = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "Informations sur les morceaux : AcoustID, MusicBrainz (CC0), Wikipédia (CC BY-SA) et Wikidata (CC0). Profils de groupes : Discogs, si un jeton Discogs est défini. Paroles : LRCLIB. Transcription : OpenAI Whisper (MIT).",
+  "about.license": "StemDeck est un logiciel libre sous licence GNU AGPL-3.0.",
+  "about.source": "Code source",
 
   "friends.title": "Nos recommandations",
   "friends.tagline": "StemDeck est gratuit et n'accepte aucun argent, parrainage ni financement de la part des personnes citées ci-dessous. Je partage ces créateurs, artistes et communautés pour le seul plaisir de vous orienter vers des gens formidables qui font de belles choses. Allez les rencontrer ❤️",
@@ -11606,6 +11622,8 @@ const es = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "Datos de las canciones: AcoustID, MusicBrainz (CC0), Wikipedia (CC BY-SA) y Wikidata (CC0). Perfiles de grupos: Discogs, si hay un token de Discogs configurado. Letras: LRCLIB. Transcripción: OpenAI Whisper (MIT).",
+  "about.license": "StemDeck es software libre con licencia GNU AGPL-3.0.",
+  "about.source": "Código fuente",
 
   "friends.title": "Recomendamos",
   "friends.tagline": "StemDeck es gratuito y no acepta dinero, patrocinio ni financiación de nadie de los que aparecen abajo. Comparto a estos creadores, artistas y comunidades solo por el gusto de señalarte gente maravillosa haciendo un trabajo precioso. Ve a saludarlos ❤️",
@@ -12933,6 +12951,8 @@ const ko = {
   "about.instagram": "Instagram",
   "about.x": "X",
   "about.credits": "곡 정보: AcoustID, MusicBrainz (CC0), 위키백과 (CC BY-SA), 위키데이터 (CC0). 밴드 프로필: Discogs (Discogs 토큰 설정 시). 가사: LRCLIB. 받아쓰기: OpenAI Whisper (MIT).",
+  "about.license": "StemDeck은 GNU AGPL-3.0 라이선스를 따르는 자유 소프트웨어입니다.",
+  "about.source": "소스 코드",
 
   "friends.title": "추천",
   "friends.tagline": "StemDeck은 무료이며, 아래에 있는 누구에게서도 돈이나 후원, 자금을 받지 않습니다. 좋은 일을 하는 멋진 사람들을 소개하는 즐거움만으로 이 창작자와 아티스트, 커뮤니티를 공유합니다. 한번 만나 보세요 ❤️",

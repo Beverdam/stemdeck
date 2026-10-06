@@ -4025,6 +4025,11 @@ input, textarea { font-family: inherit; }
 /* Where song details, lyrics and transcription come from, and their
    licences: small print under the socials. */
 .about-credits { margin: 16px 0 0; font-size: 10.5px; line-height: 1.5; color: var(--muted); }
+/* StemDeck's own license and a link to its source: the AGPL asks a network
+   service to offer its users the source, and the server version is one. */
+.about-license { margin: 6px 0 0; font-size: 10.5px; line-height: 1.5; color: var(--muted); }
+.about-license a { color: inherit; text-decoration: underline; }
+.about-license a:hover { color: var(--fg-2); }
 
 /* ── Release notes dialog ── */
 .release-card {

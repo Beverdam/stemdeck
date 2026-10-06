@@ -4,6 +4,7 @@ name = "stemdeck"
 version = "0.0.0"
 description = "StemDeck desktop launcher"
 authors = ["StemDeck contributors"]
+license = "AGPL-3.0-only"
 edition = "2021"
 rust-version = "1.88"
 

@@ -1,6 +1,7 @@
 {
   "name": "stemdeck-frontend-tests",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Browser tests for static/js. The app itself has no build step and no runtime dependencies; this exists only so CI can drive a real browser (#339).",
   "scripts": {
