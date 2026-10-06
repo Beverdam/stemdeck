@@ -1391,6 +1391,9 @@ const en = {
   "eq.preset.keysBright": "Keys: brighter",
   "eq.preset.keysWarm": "Keys: warmer",
   "eq.preset.keysThin": "Keys: thin out the lows",
+  "eq.voice.soon": "Voice EQ coming soon",
+  "eq.voice.sub": "A tone panel made for voices is on its way. Until then this lane plays as it is.",
+  "eq.voice.side": "Nothing to set here yet.",
 };
 
 const pl = {

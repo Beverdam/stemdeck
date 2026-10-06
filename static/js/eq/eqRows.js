@@ -31,6 +31,7 @@ const LOADERS = {
   bass: () => import("./eqPedalPanel.js"),
   guitar: () => import("./eqPedalPanel.js"),
   keys: () => import("./eqPedalPanel.js"),
+  voice: () => import("./eqVoicePanel.js"),
 };
 
 const TITLE_KEYS = {
