@@ -11,6 +11,8 @@ import tempfile
 import uuid
 import zipfile
 from collections import deque
+from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import NamedTuple
 
@@ -46,7 +48,28 @@ from app.pipeline.fx_filters import (
     slot_filter,
     slot_section_count,
 )
-from app.pipeline.take_render import AAC_ENCODE_ARGS, EXPORT_LIMITER_LOSSY, export_limiter
+from app.pipeline.mastering import (
+    MASTER_PARAM_MAX_CHARS,
+    Loudness,
+    MasterError,
+    MasterPlan,
+    MasterSettings,
+    MeasureError,
+    comp_ratio,
+    effective_ceiling,
+    measure_file,
+    parse_master_param,
+    plan_chain,
+    plan_graph,
+    run_plan,
+    trim_filter,
+)
+from app.pipeline.take_render import (
+    AAC_ENCODE_ARGS,
+    AAC_ENCODE_ARGS_ALT,
+    EXPORT_LIMITER_LOSSY,
+    export_limiter,
+)
 
 logger = logging.getLogger("stemdeck.api")
 
@@ -139,7 +162,28 @@ _MIXDOWN_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
 # (EXPORT_LIMITER_LOSSY) instead of the -1 dBFS sample-peak one.
 #
 # "5": exports take the studio EQ (fx=), and its filters are part of the key.
-_RENDER_CACHE_VERSION = "5"
+#
+# "6": exports take the master (master=): loudness target, glue compressor and
+# true-peak limiter; the master chain with its measured gain is in the key.
+_RENDER_CACHE_VERSION = "6"
+
+# Measured masters (app/pipeline/mastering.py), one small JSON per mix and
+# master setting, so the export, the region export, the "render and listen"
+# excerpt and the loudness readout share one measurement of the whole song.
+# The key holds every input of the measurement; bump the version when the
+# plan's maths change.
+_MASTER_PLAN_DIR = CACHE_DIR / "master"
+_MASTER_PLAN_MAX_FILES = 200
+_MASTER_PLAN_VERSION = "1"
+# At most two songs measured at once on this server; one mix is never
+# measured twice at the same time (the export and the readout often ask
+# together).
+_master_plan_slots = asyncio.Semaphore(2)
+_master_plan_locks: dict[str, asyncio.Lock] = {}
+# A mastered lossy export is decoded and measured; over the ceiling, it is
+# rendered again with its output trimmed (_render_master_verified).
+LOSSY_RETRIES = 3
+LOSSY_RETRY_MARGIN_DB = 0.1
 
 
 def _mixdown_cache_key(
@@ -153,6 +197,7 @@ def _mixdown_cache_key(
     pitches: list[int] | None = None,
     lane_versions: list[str] | None = None,
     fx_fragment: str = "",
+    master_fragment: str = "",
 ) -> str:
     """Every render input is in the key, so a different mixer state, region,
     or a Settings change (export sample rate) misses cleanly -- never a stale
@@ -184,6 +229,8 @@ def _mixdown_cache_key(
             # The EQ as the exact filter strings the render runs (RenderFx),
             # empty when no EQ changes the sound.
             fx_fragment,
+            # The master chain with its measured gain, empty when off.
+            master_fragment,
         ]
     )
     # Cache key, not a security context -- usedforsecurity=False documents
@@ -684,6 +731,212 @@ def build_render_fx(
     if master or any(prefixes):
         fragment = "fx:" + "|".join(prefixes) + "#" + master
     return RenderFx(prefixes, master, fragment)
+
+
+def parse_master_query(master: str) -> MasterSettings | None:
+    """The master= parameter, validated, or a 422 with a safe message."""
+    try:
+        return parse_master_param(master)
+    except MasterError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+def _read_master_plan(path: Path) -> MasterPlan | None:
+    try:
+        return MasterPlan.from_json(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.debug("unreadable master plan %s", path, exc_info=True)
+        return None
+
+
+def _write_master_plan(path: Path, plan: MasterPlan) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(plan.to_json()), encoding="utf-8")
+    os.replace(tmp, path)
+    try:
+        entries = sorted(
+            (p for p in path.parent.iterdir() if p.is_file() and not p.name.startswith(".")),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for old in entries[: max(0, len(entries) - _MASTER_PLAN_MAX_FILES)]:
+            if old != path:
+                old.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("master plan prune failed", exc_info=True)
+
+
+async def master_plan(
+    job_id: str,
+    lane_paths: list[Path],
+    lane_chains: list[str],
+    master_eq: str,
+    settings: MasterSettings,
+    lossy: bool,
+    versions: list[str],
+) -> tuple[MasterPlan, int]:
+    """The measured master of the whole song for these lanes, and the rate the
+    master chain runs at (the first input's, which amix runs at).
+
+    ``lane_chains[i]`` is input i's chain as the export runs it (EQ, pitch
+    shift, gain), ``master_eq`` the master EQ prefix, ``versions`` the take
+    fragments that pin files which can change in place. Cached on disk; a
+    mix measured once is never measured again, and never twice at once."""
+    rate = await asyncio.to_thread(_input_rate, lane_paths[0])
+    ceiling = effective_ceiling(settings, lossy)
+    inputs: list[str] = []
+    for p in lane_paths:
+        inputs += ["-i", str(p)]
+    graph = plan_graph(lane_chains, master_eq)
+    raw = "|".join(
+        [
+            _MASTER_PLAN_VERSION,
+            job_id,
+            ";".join(str(p) for p in lane_paths),
+            graph,
+            ",".join(versions),
+            settings.fragment(),
+            f"{ceiling:.1f}",
+            str(rate),
+        ]
+    )
+    key = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
+    path = _MASTER_PLAN_DIR / f"{key}.json"
+    cached = await asyncio.to_thread(_read_master_plan, path)
+    if cached is not None:
+        return cached, rate
+    lock = _master_plan_locks.setdefault(key, asyncio.Lock())
+    try:
+        async with lock:
+            cached = await asyncio.to_thread(_read_master_plan, path)
+            if cached is not None:
+                return cached, rate
+            async with _master_plan_slots:
+                try:
+                    plan = await run_plan(inputs, graph, settings, ceiling, rate)
+                except MeasureError as exc:
+                    logger.warning("master measurement failed [job=%s]: %s", job_id, exc)
+                    raise HTTPException(
+                        status_code=500, detail="loudness measurement failed"
+                    ) from None
+            await asyncio.to_thread(_write_master_plan, path, plan)
+            return plan, rate
+    finally:
+        if not lock.locked():
+            _master_plan_locks.pop(key, None)
+
+
+def master_headers(plan: MasterPlan, out: Loudness | None = None) -> dict[str, str]:
+    """The measured loudness before and after the master, for API clients.
+    ``out`` is the decoded file's own measurement (lossy exports), otherwise
+    the plan's (lossless output is the plan's signal, quantised)."""
+
+    def fmt(v: float | None) -> str:
+        return "none" if v is None else f"{v:.2f}"
+
+    post = out or plan.post
+    return {
+        "X-StemDeck-Loudness-Pre": f"i={fmt(plan.pre.i)};tp={fmt(plan.pre.tp)}",
+        "X-StemDeck-Loudness-Post": f"i={fmt(post.i)};tp={fmt(post.tp)}",
+        "X-StemDeck-Master-Gain": f"{plan.gain_db:.2f}",
+    }
+
+
+def _output_note_path(cache_key: str) -> Path:
+    return _MASTER_PLAN_DIR / f"out-{cache_key}.json"
+
+
+def _read_master_output(cache_key: str) -> Loudness | None:
+    try:
+        data = json.loads(_output_note_path(cache_key).read_text(encoding="utf-8"))
+        return Loudness(**data)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError):
+        logger.debug("unreadable master output note %s", cache_key, exc_info=True)
+        return None
+
+
+def _write_master_output(cache_key: str, out: Loudness) -> None:
+    path = _output_note_path(cache_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(asdict(out)), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+async def _render_master_verified(
+    build_cmd: Callable[[float, bool], list[str]],
+    suffix: str,
+    context: str,
+    ceiling: float,
+    cache_path: Path | None,
+    cache_key: str | None,
+    has_alt_encoder: bool = False,
+) -> tuple[Path, Loudness]:
+    """Render a mastered lossy export, decode it and measure its true peak.
+
+    The master limits the signal at the lossy ceiling, but an encoder adds
+    peak of its own: up to 1.0 dB for MP3 and OGG on dense limited material,
+    and the AAC encoder sometimes sends a single block several dB over (task F
+    measured +3.6 dBFS on one song at a -1.6 dB limit, not monotonic in the
+    input level). So the file is checked as a player would decode it, and when
+    it is over the user's ceiling the master's output is trimmed by the
+    overshoot plus LOSSY_RETRY_MARGIN_DB and the file rendered again, up to
+    LOSSY_RETRIES times. With ``has_alt_encoder`` (AAC) the first retry keeps
+    the level and switches to the alternative encoder settings instead: an AAC
+    glitch is one block, and trimming the whole song by it cost up to 4.9 LU
+    (measured), where the fast coder stayed within 0.8 dB of its input on
+    every song tried. Returns the file (the cache entry when ``cache_path``
+    is given, otherwise a temp file the caller removes) and its measurement."""
+    trim = 0.0
+    alt = False
+    path: Path | None = None
+    out = Loudness(None, None)
+    for attempt in range(LOSSY_RETRIES + 1):
+        path = await _render_to_file(build_cmd(trim, alt), suffix, context=context)
+        try:
+            out = await measure_file(str(path))
+        except MeasureError as exc:
+            path.unlink(missing_ok=True)
+            logger.warning("master output measurement failed [%s]: %s", context, exc)
+            raise HTTPException(status_code=500, detail="export failed") from None
+        if out.tp is None or out.tp <= ceiling:
+            break
+        if attempt == LOSSY_RETRIES:
+            logger.warning(
+                "mastered export still %.2f dBTP over its ceiling after %d retries [%s]",
+                out.tp - ceiling,
+                LOSSY_RETRIES,
+                context,
+            )
+            break
+        if has_alt_encoder and not alt:
+            alt = True
+        else:
+            trim += out.tp - ceiling + LOSSY_RETRY_MARGIN_DB
+        path.unlink(missing_ok=True)
+    assert path is not None
+    if cache_path is not None and cache_key is not None:
+        os.replace(path, cache_path)
+        _prune_mixdown_cache(cache_path.parent, keep=cache_path)
+        await asyncio.to_thread(_write_master_output, cache_key, out)
+        path = cache_path
+    return path, out
+
+
+def master_plan_view(plan: MasterPlan) -> dict:
+    """The plan as the studio reads it (the readout and the live preview)."""
+    view = plan.to_json()
+    view["comp_ratio"] = comp_ratio(plan.comp) if plan.comp_threshold_db is not None else None
+    return view
+
+
+def _lane_chain(eq: str, pitch: int, gain: float) -> str:
+    """One input's chain as every export runs it: EQ, pitch shift, gain."""
+    return f"{eq}{_pitch_filter(pitch)}volume={gain:.6f}"
 
 
 def _expand_render_lanes(
@@ -1326,6 +1579,14 @@ async def get_mixdown(
             "Empty means no EQ. See app/pipeline/fx_filters.py."
         ),
     ),
+    master: str = Query(
+        default="",
+        max_length=MASTER_PARAM_MAX_CHARS,
+        description=(
+            "The master: base64url JSON {v: 1, target: LUFS or null, ceiling: dBTP, "
+            "comp: 0..1}. Empty means no master. See app/pipeline/mastering.py."
+        ),
+    ),
 ) -> FileResponse | StreamingResponse:
     """Render a mixdown of the given lanes at the given gains, streamed as WAV,
     MP3, FLAC, or OGG. Mirrors the studio mixer (per-stem volume, mute, solo) so the
@@ -1347,6 +1608,7 @@ async def get_mixdown(
     names, parsed_gains = _parse_lane_gains(stems, gains)
     parsed_pitches = _parse_pitches(pitches, names)
     fx_req = parse_fx_query(fx)
+    master_settings = parse_master_query(master)
     if (start is None) != (end is None) or (start is not None and start >= end):
         raise HTTPException(
             status_code=422,
@@ -1375,6 +1637,28 @@ async def get_mixdown(
         build_render_fx, [lane.name for lane in render_lanes], paths, fx_req
     )
 
+    # The master: measured on the whole song (so a region gets the full
+    # master's gain), then its chain replaces the export limiter.
+    lossy = ext in _LOSSY_MIXDOWN_EXTS
+    plan: MasterPlan | None = None
+    limiter = export_limiter(lossy=lossy)
+    master_fragment = ""
+    if master_settings is not None:
+        plan, rate_in = await master_plan(
+            job_id,
+            paths,
+            [
+                _lane_chain(render_fx.lanes[i], lane.pitch, lane.gain)
+                for i, lane in enumerate(render_lanes)
+            ],
+            render_fx.master,
+            master_settings,
+            lossy,
+            _take_versions(job_id, names),
+        )
+        limiter = plan_chain(plan, rate_in)
+        master_fragment = "m:" + limiter
+
     media_type = MIXDOWN_MEDIA_TYPES[ext]
     click_lane = await asyncio.to_thread(
         _click_lane,
@@ -1399,18 +1683,21 @@ async def get_mixdown(
         parsed_pitches,
         _take_versions(job_id, names),
         render_fx.fragment,
+        master_fragment,
     )
+    headers = {
+        "Content-Disposition": (
+            f'attachment; filename="{_mixdown_download_name(job_id, ext, start is not None)}"'
+        ),
+        **(master_headers(plan) if plan is not None else {}),
+    }
     cache_path = _MIXDOWN_CACHE_DIR / f"{cache_key}.{ext}"
     if cache_path.is_file():
-        return FileResponse(
-            cache_path,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="{_mixdown_download_name(job_id, ext, start is not None)}"'
-                )
-            },
-        )
+        if plan is not None and lossy:
+            out = await asyncio.to_thread(_read_master_output, cache_key)
+            if out is not None:
+                headers.update(master_headers(plan, out))
+        return FileResponse(cache_path, media_type=media_type, headers=headers)
 
     pre_seek = ["-ss", str(start)] if start is not None else []
 
@@ -1445,8 +1732,8 @@ async def get_mixdown(
     # bit-transparent below it, so an export that never reached the ceiling is
     # unchanged (EXPORT_LIMITER). MP3 and OGG get the true-peak limiter at
     # -1.5 dBTP, because their encoders add peak of their own
-    # (EXPORT_LIMITER_LOSSY).
-    limiter = export_limiter(lossy=ext in _LOSSY_MIXDOWN_EXTS)
+    # (EXPORT_LIMITER_LOSSY). With a master, its chain (compressor, gain,
+    # true-peak limiter) takes the limiter's place (set above).
     filters = []
     for i, lane in enumerate(render_lanes):
         delay = f"adelay={delay_ms}:all=1," if delay_ms > 0 else ""
@@ -1463,33 +1750,41 @@ async def get_mixdown(
     # Master EQ on the sum (click included, as live: the click joins upstream
     # of the master slot), then the limiter last.
     master = render_fx.master
-    if n > 1:
-        labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{master}{limiter}[mix]")
-    else:
-        filters.append(f"[a0]{master}{limiter}[mix]")
     out_label = "[mix]"
     codec = MIXDOWN_CODECS[ext]
     # Resample to the user's chosen export rate (default 44.1 kHz = the stem rate,
     # so a no-op unless changed). Applies to every audio container -- some hardware
     # samplers reject anything but a specific rate.
     rate = ["-ar", str(get_export_sample_rate())]
-    cmd += [
-        "-filter_complex",
-        ";".join(filters),
-        "-map",
-        out_label,
-        *post_seek,
-        *codec,
-        *rate,
-    ]
+
+    def build_cmd(trim_db: float = 0.0, _alt: bool = False) -> list[str]:
+        # trim_db > 0 only on a mastered lossy export the encoder pushed over
+        # the ceiling (_render_master_verified).
+        end_chain = f"{master}{limiter}{trim_filter(trim_db)}[mix]"
+        if n > 1:
+            labels = "".join(f"[a{i}]" for i in range(n))
+            mix = f"{labels}amix=inputs={n}:normalize=0,{end_chain}"
+        else:
+            mix = f"[a0]{end_chain}"
+        return [
+            *cmd,
+            "-filter_complex",
+            ";".join([*filters, mix]),
+            "-map",
+            out_label,
+            *post_seek,
+            *codec,
+            *rate,
+        ]
 
     context = f"mixdown job={job_id} ext={ext} stems={stems}"
-    headers = {
-        "Content-Disposition": (
-            f'attachment; filename="{_mixdown_download_name(job_id, ext, start is not None)}"'
+    if plan is not None and master_settings is not None and lossy:
+        rendered, out = await _render_master_verified(
+            build_cmd, f".{ext}", context, master_settings.ceiling, cache_path, cache_key
         )
-    }
+        headers.update(master_headers(plan, out))
+        return FileResponse(rendered, media_type=media_type, headers=headers)
+    cmd = build_cmd()
     if ext in _SEEKABLE_OUTPUT_EXTS:
         # Rendered to a file so the muxer can seek back and finish its header
         # (#458). It lands in the cache, so nothing is deleted afterwards --
@@ -1504,6 +1799,54 @@ async def get_mixdown(
         media_type=media_type,
         headers=headers,
     )
+
+
+@router.get("/jobs/{job_id}/mixdown/loudness")
+async def get_mixdown_loudness(
+    job_id: str,
+    stems: str = Query(..., description="Comma-separated lane names to sum"),
+    gains: str = Query(..., description="Comma-separated linear gains, parallel to stems"),
+    pitches: str = Query(default="", max_length=128, description="As for mixdown"),
+    fx: str = Query(default="", max_length=FX_PARAM_MAX_CHARS, description="As for mixdown"),
+    master: str = Query(..., max_length=MASTER_PARAM_MAX_CHARS, description="As for mixdown"),
+    lossy: bool = Query(default=False, description="Plan for a lossy export's ceiling"),
+) -> dict:
+    """The measured master of this mix (the same plan the export renders):
+    loudness before, after the compressor and after the master, the gain and
+    the compressor threshold. The studio's Master readout and its live
+    preview read it. The whole song is always measured, so there is no
+    start/end; a mix measured once is answered from the cache."""
+    if not JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    names, parsed_gains = _parse_lane_gains(stems, gains)
+    parsed_pitches = _parse_pitches(pitches, names)
+    fx_req = parse_fx_query(fx)
+    settings = parse_master_query(master)
+    if settings is None:
+        raise HTTPException(status_code=422, detail="master: required")
+    if any(parsed_pitches) and not await asyncio.to_thread(_rubberband_available):
+        raise HTTPException(
+            status_code=422,
+            detail="this ffmpeg build cannot transpose (no rubberband filter)",
+        )
+    render_lanes, _unpitched = _expand_render_lanes(job_id, names, parsed_gains, parsed_pitches)
+    paths = [lane.path for lane in render_lanes]
+    render_fx = await asyncio.to_thread(
+        build_render_fx, [lane.name for lane in render_lanes], paths, fx_req
+    )
+    plan, _rate = await master_plan(
+        job_id,
+        paths,
+        [
+            _lane_chain(render_fx.lanes[i], lane.pitch, lane.gain)
+            for i, lane in enumerate(render_lanes)
+        ],
+        render_fx.master,
+        settings,
+        lossy,
+        _take_versions(job_id, names),
+    )
+    return master_plan_view(plan)
 
 
 def _title_slug(title: str | None) -> str:
@@ -1542,6 +1885,11 @@ async def get_video_mixdown(
         max_length=FX_PARAM_MAX_CHARS,
         description="The studio EQ, as for mixdown. Empty means no EQ.",
     ),
+    master: str = Query(
+        default="",
+        max_length=MASTER_PARAM_MAX_CHARS,
+        description="The master, as for mixdown. Empty means no master.",
+    ),
 ) -> StreamingResponse:
     """Mux a fresh audio mixdown of the current mixer state with the job's preserved
     video into an MP4 (issue #219). Mirrors get_mixdown's audio graph (encoded
@@ -1565,6 +1913,7 @@ async def get_video_mixdown(
     names, parsed_gains = _parse_lane_gains(stems, gains)
     parsed_pitches = _parse_pitches(pitches, names)
     fx_req = parse_fx_query(fx)
+    master_settings = parse_master_query(master)
     # Same refusal as the audio export: a video whose audio came back in the
     # original key would be the same complaint reported again (#592).
     if any(parsed_pitches) and not await asyncio.to_thread(_rubberband_available):
@@ -1588,6 +1937,25 @@ async def get_video_mixdown(
     render_fx = await asyncio.to_thread(
         build_render_fx, [lane.name for lane in render_lanes], paths, fx_req
     )
+    # The master, measured on the music lanes (the click is the last input and
+    # is left out of the measurement), replaces the lossy export limiter.
+    limiter = EXPORT_LIMITER_LOSSY
+    plan: MasterPlan | None = None
+    if master_settings is not None:
+        music = len(render_lanes) - (1 if click_lane is not None else 0)
+        plan, rate_in = await master_plan(
+            job_id,
+            paths[:music],
+            [
+                _lane_chain(render_fx.lanes[i], lane.pitch, lane.gain)
+                for i, lane in enumerate(render_lanes[:music])
+            ],
+            render_fx.master,
+            master_settings,
+            True,
+            _take_versions(job_id, names),
+        )
+        limiter = plan_chain(plan, rate_in)
 
     cmd: list[str] = [ffmpeg_executable(), "-nostdin", "-loglevel", "error"]
     for p in paths:
@@ -1606,35 +1974,54 @@ async def get_video_mixdown(
     # lossy (AAC), so it must not clip where the audio export no longer does.
     # The master EQ goes before it.
     master = render_fx.master
-    if n > 1:
-        labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{master}{EXPORT_LIMITER_LOSSY}[mix]")
-    else:
-        filters.append(f"[a0]{master}{EXPORT_LIMITER_LOSSY}[mix]")
     out_label = "[mix]"
-    cmd += [
-        "-filter_complex",
-        ";".join(filters),
-        "-map",
-        out_label,
-        "-map",
-        f"{video_idx}:v",
-        "-c:v",
-        "copy",
-        *AAC_ENCODE_ARGS,
-        "-shortest",
-        "-movflags",
-        "frag_keyframe+empty_moov",
-        "-f",
-        "mp4",
-        "pipe:1",
-    ]
+
+    def build_cmd(trim_db: float = 0.0, alt: bool = False) -> list[str]:
+        end_chain = f"{master}{limiter}{trim_filter(trim_db)}[mix]"
+        if n > 1:
+            labels = "".join(f"[a{i}]" for i in range(n))
+            mix = f"{labels}amix=inputs={n}:normalize=0,{end_chain}"
+        else:
+            mix = f"[a0]{end_chain}"
+        return [
+            *cmd,
+            "-filter_complex",
+            ";".join([*filters, mix]),
+            "-map",
+            out_label,
+            "-map",
+            f"{video_idx}:v",
+            "-c:v",
+            "copy",
+            *(AAC_ENCODE_ARGS_ALT if alt else AAC_ENCODE_ARGS),
+            "-shortest",
+            "-movflags",
+            "frag_keyframe+empty_moov",
+            "-f",
+            "mp4",
+        ]
 
     filename = f"{_safe_title(job.title)}_video.mp4"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    context = f"video-mux job={job_id} stems={stems}"
+    if plan is not None and master_settings is not None:
+        # A mastered video is rendered to a file first, so its decoded true
+        # peak can be checked against the ceiling (_render_master_verified),
+        # then sent and removed.
+        rendered, out = await _render_master_verified(
+            build_cmd, ".mp4", context, master_settings.ceiling, None, None, True
+        )
+        headers.update(master_headers(plan, out))
+        return FileResponse(
+            rendered,
+            media_type="video/mp4",
+            headers=headers,
+            background=BackgroundTask(_unlink_later, rendered),
+        )
     return StreamingResponse(
-        _stream_ffmpeg(cmd, context=f"video-mux job={job_id} stems={stems}"),
+        _stream_ffmpeg([*build_cmd(), "pipe:1"], context=context),
         media_type="video/mp4",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=headers,
     )
 
 

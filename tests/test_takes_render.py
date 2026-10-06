@@ -417,6 +417,10 @@ async def test_render_refusals(jobs_dir, client, tmp_path, monkeypatch):
             {"fx": "!!!"},
             {"fx": "A" * 9000},
             {"fx": 12},
+            {"master": "!!!"},
+            {"master": "A" * 300},
+            {"master": 12},
+            {"master": "eyJ2IjoxfQ"},  # {"v":1}: no target or ceiling
         ]
         monkeypatch.setattr(takes_mod, "libx264_available", lambda: True)
         monkeypatch.setattr(takes_mod, "aac_available", lambda: True)
@@ -874,6 +878,37 @@ async def test_render_applies_the_lane_and_master_eq(jobs_dir, client, tmp_path)
     assert levels["none"] > 0.05
     assert 20 * np.log10(levels["lane"] / levels["none"]) < -40
     assert 20 * np.log10(levels["master"] / levels["none"]) < -40
+
+
+async def test_render_applies_the_master(jobs_dir, client, tmp_path, monkeypatch):
+    """The Make video render takes the master: measured on the whole song
+    with the take, its audio lands on the target and under the ceiling."""
+    _needs_x264()
+    _make_job(jobs_dir)
+    from app.api import stems as stems_mod
+
+    monkeypatch.setattr(stems_mod, "_MASTER_PLAN_DIR", tmp_path / "master")
+    from app.pipeline.mastering import MasterSettings, encode_master_param
+
+    async with client as c:
+        tid = await _take_with_camera(c, tmp_path, first_frame_ms=0.0)
+        r = await c.post(
+            f"/api/jobs/{JOB}/takes/{tid}/render",
+            json={
+                "stems": ["drums"],
+                "gains": [1.0],
+                "span": "song",
+                "master": encode_master_param(MasterSettings(-20.0, -2.0)),
+            },
+        )
+        assert r.status_code == 202, r.text
+        assert (await _wait(c, tid))["status"] == "done"
+    out = jobs_dir / JOB / "takes" / tid / "render.mp4"
+    from app.pipeline.mastering import measure_file
+
+    got = await measure_file(str(out))
+    assert got.i == pytest.approx(-20.0, abs=0.3)
+    assert got.tp <= -2.0
 
 
 def test_command_puts_the_eq_in_the_lanes_take_and_master(tmp_path):
