@@ -13,7 +13,7 @@ import { recBtn, removeTracks, jobState, waitForEngine, watchTakes } from "./rec
 
 test.use({
   launchOptions: {
-    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio"],
   },
   permissions: ["microphone"],
 });
