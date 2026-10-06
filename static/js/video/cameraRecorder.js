@@ -47,7 +47,11 @@ export function startCameraRecording(opts) {
 
   const send = (part) => {
     const n = seq++;
-    chain = chain.then(() => (aborted ? null : upload(n, part))).catch((err) => {
+    // After one part has failed for good the file has a hole and the take
+    // is kept without its video, so the rest is not sent: each later part
+    // would only be refused (a 409 and a resync each), and a long take
+    // queued hundreds of them, holding Stop for minutes (measured).
+    chain = chain.then(() => (aborted || uploadError ? null : upload(n, part))).catch((err) => {
       uploadError = uploadError || err;
       console.warn(`[video] camera part ${n} failed:`, err);
     });

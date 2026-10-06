@@ -613,6 +613,20 @@ async def finish_take(job_id: str, take_id: str, request: Request) -> dict[str, 
             # frontend sends the block only when every camera part arrived,
             # so a missing one means a file with a hole or an unknown start,
             # which would render out of sync. It is discarded in build().
+            # The block also says how many parts were sent; fewer on disk
+            # means the end of the recording is missing, and the take keeps
+            # its sound without the video rather than a short one.
+            sent = body.video.parts if body.video is not None else None
+            received = int((state.get("camera") or {}).get("next_seq", 0))
+            if sent is not None and sent != received:
+                logger.warning(
+                    "[%s] take %s: %d camera parts sent, %d received; video dropped",
+                    job_id,
+                    take_id,
+                    sent,
+                    received,
+                )
+                return None
             if body.video is not None and camera_part.is_file() and camera_part.stat().st_size > 0:
                 camera_ext = sniff_container(camera_part)
                 if camera_ext is None:
