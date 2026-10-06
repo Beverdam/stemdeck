@@ -281,6 +281,7 @@ class AudioLane(NamedTuple):
     path: Path
     gain: float
     pitch_filter: str  # "" or "rubberband=...," as stems._pitch_filter builds it
+    fx_filter: str = ""  # "" or "biquad=...," (the lane's EQ, stems.build_render_fx)
 
 
 CANVAS_SIZES = {"16:9": (1920, 1080), "9:16": (1080, 1920)}
@@ -329,6 +330,8 @@ def build_video_render_cmd(
     mirror: bool,
     audio_rate: int,
     start_sec: float = 0.0,
+    take_fx: str = "",
+    master_fx: str = "",
 ) -> list[str]:
     """One ffmpeg command: backing mix + take audio + one camera tile -> MP4.
 
@@ -341,7 +344,10 @@ def build_video_render_cmd(
     song, the count-in for the take's own span) and `duration_sec` its length.
     Every lane is cut at the same whole sample, before any pitch shift, so the
     take stays on its sample against the backing; `camera_start_sec` is song
-    time and is moved into the video's time here."""
+    time and is moved into the video's time here.
+
+    `take_fx` is the take's EQ (its track's), `master_fx` the master EQ, both
+    "" or a filter prefix ending in a comma, as the lanes' fx_filter."""
     width, height = CANVAS_SIZES[canvas]
     start_sample = max(0, int(round(start_sec * TAKE_RATE)))
     start_sec = start_sample / TAKE_RATE
@@ -357,16 +363,18 @@ def build_video_render_cmd(
     cmd += ["-i", str(take_audio), "-i", str(camera)]
 
     filters = [
-        f"[{i}:a]{cut}{lane.pitch_filter}volume={lane.gain:.6f}[a{i}]"
+        f"[{i}:a]{cut}{lane.fx_filter}{lane.pitch_filter}volume={lane.gain:.6f}[a{i}]"
         for i, lane in enumerate(lanes)
     ]
-    filters.append(f"[{take_idx}:a]{cut}volume={take_gain:.6f}[a{take_idx}]")
+    filters.append(f"[{take_idx}:a]{cut}{take_fx}volume={take_gain:.6f}[a{take_idx}]")
     n = take_idx + 1
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER_LOSSY}[aout]")
+        filters.append(
+            f"{labels}amix=inputs={n}:normalize=0,{master_fx}{EXPORT_LIMITER_LOSSY}[aout]"
+        )
     else:
-        filters.append(f"[a0]{EXPORT_LIMITER_LOSSY}[aout]")
+        filters.append(f"[a0]{master_fx}{EXPORT_LIMITER_LOSSY}[aout]")
 
     filters.append(f"color=c=black:s={width}x{height}:r={VIDEO_FPS}:d={duration_sec:.6f}[bg]")
     filters.append(

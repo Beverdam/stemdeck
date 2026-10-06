@@ -27,8 +27,20 @@ function defaultMixerEntry() {
   // control, so the number on a lane never has to be added to another number to
   // know what you are hearing. It rides along in the same per-track store as
   // volume and mute, so a lane's key survives a reload.
-  return { volume: 1, muted: false, soloed: false, pitch: 0 };
+  //
+  // `fx` is the lane's effects list (the EQ descriptor, eqMath.js schema v1),
+  // read and written only through eqEngine.js. A mix saved before the EQ
+  // existed has no `fx`, and this default fills it in.
+  return { volume: 1, muted: false, soloed: false, pitch: 0, fx: [] };
 }
+
+// The master slot's effects live beside the lanes in the same per-song store,
+// under a key no lane can have (eqEngine.MASTER). Nothing iterates the lanes
+// through mixerState's keys, so it is never mistaken for a lane.
+const MASTER_SLOT = "__master";
+const masterEntry = (stored) => ({
+  fx: Array.isArray(stored?.fx) ? stored.fx : [],
+});
 
 export function ensureMixerStateDefaults() {
   for (const name of allTrackNames()) {
@@ -44,7 +56,9 @@ export async function loadMixIntoState(jobId, loadedStemNames = STEM_NAMES) {
   } catch (e) { console.warn("[mixer] failed to load mix state:", e); }
   for (const name of allTrackNames()) {
     Object.assign(mixerState[name], defaultMixerEntry(), stored[name] || {});
+    if (!Array.isArray(mixerState[name].fx)) mixerState[name].fx = [];
   }
+  mixerState[MASTER_SLOT] = masterEntry(stored[MASTER_SLOT]);
   // If all loaded stems are muted the session is unplayable -- unmute as recovery.
   const loadedStems = loadedStemNames.filter((n) => mixerState[n]);
   if (loadedStems.length > 0 && loadedStems.every((n) => mixerState[n].muted)) {
@@ -56,11 +70,17 @@ export function resetMixerState() {
   for (const name of allTrackNames()) {
     Object.assign(mixerState[name], defaultMixerEntry());
   }
+  mixerState[MASTER_SLOT] = masterEntry(null);
 }
 
 function saveMix() {
   if (!currentJobId) return;
   storeSetDebounced(`stemdeck:mix:${currentJobId}`, mixerState);
+}
+
+/** Save the open song's mix (debounced). Used by eqEngine.js. */
+export function persistMix() {
+  saveMix();
 }
 
 /** Push one lane's transpose into whichever engine is playing. */

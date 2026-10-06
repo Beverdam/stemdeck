@@ -38,6 +38,7 @@ import { createChunkedAudioEngine } from "./chunkedAudioEngine.js";
 import { createPlaybackContext } from "./audioContext.js";
 import { effectivePitch } from "./pitchBus.js";
 import { addVisualOnlyStems, buildPlaybackStems } from "./playbackStems.js";
+import { applyAllLaneEq, exportFxParam } from "./eqEngine.js";
 import { vuLevel } from "./vuScale.js";
 import { createMetronome } from "./metronome.js";
 import { initBeatGrid, destroyBeatGrid } from "./beatgrid.js";
@@ -1216,7 +1217,13 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   setTotalDuration(duration || 0);
   refreshMixerVisuals();
   const mixReady = loadMixIntoState(jobId, stems.map((s) => s.name))
-    .then(() => { if (currentJobId === jobId) refreshMixerVisuals(); })
+    .then(() => {
+      if (currentJobId !== jobId) return;
+      refreshMixerVisuals();
+      // The song's saved EQs, into whichever engine is up (or none yet: the
+      // engine's ready handler applies them again).
+      applyAllLaneEq();
+    })
     .catch((e) => { console.warn("[player] mix state load failed:", e); });
   setLaneControlsEnabled(true);
   setLoopEnabled(false);
@@ -1640,6 +1647,8 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
           // per-track store in the same breath as the gains.
           setLaneKeysAvailable(eng.supportsPitchShift?.() === true);
           applyAllLanePitches();
+          // Saved EQs ride on the same engine and are restored with the keys.
+          applyAllLaneEq();
 
           // Click track. Bound to this engine instance, so it is rebuilt on
           // every engine bring-up (including the chunked -> fulldecode
@@ -2044,6 +2053,10 @@ function _mixdownUrl(ext, region) {
     gains: gains.map((g) => g.toFixed(3)).join(","),
     ...(pitches.some((p) => p !== 0) ? { pitches: pitches.join(",") } : {}),
   });
+  // The lanes' EQs and the master EQ, only when one changes the sound, so an
+  // export without EQ keeps exactly the URL (and cache entry) it had.
+  const fx = exportFxParam(names);
+  if (fx) q.set("fx", fx);
   if (region) {
     q.set("start", loopStart.toFixed(3));
     q.set("end", loopEnd.toFixed(3));
@@ -2095,6 +2108,8 @@ export function downloadCurrentVideo(onTransferStart) {
     gains: gains.map((g) => g.toFixed(3)).join(","),
     ...(pitches.some((p) => p !== 0) ? { pitches: pitches.join(",") } : {}),
   });
+  const fx = exportFxParam(names);
+  if (fx) q.set("fx", fx);
   _clickParams(q);
   const safe = _currentTitle
     .replace(/[^a-zA-Z0-9]+/g, "_")

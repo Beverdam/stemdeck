@@ -14,6 +14,7 @@ from collections import deque
 from pathlib import Path
 from typing import NamedTuple
 
+import soundfile as sf
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
@@ -36,6 +37,15 @@ from app.pipeline.audio_stats import vocal_envelope
 from app.pipeline.click_render import cache_key as click_cache_key
 from app.pipeline.click_render import count_in_beats, render_click_wav, render_count_in_wav
 from app.pipeline.collect import fill_missing_peaks
+from app.pipeline.fx_filters import (
+    FX_PARAM_MAX_CHARS,
+    FxError,
+    FxRequest,
+    check_section_budget,
+    parse_fx_param,
+    slot_filter,
+    slot_section_count,
+)
 from app.pipeline.take_render import AAC_ENCODE_ARGS, EXPORT_LIMITER_LOSSY, export_limiter
 
 logger = logging.getLogger("stemdeck.api")
@@ -127,7 +137,9 @@ _MIXDOWN_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB
 #
 # "4": MP3 and OGG mixdowns now end in the true-peak limiter at -1.5 dBTP
 # (EXPORT_LIMITER_LOSSY) instead of the -1 dBFS sample-peak one.
-_RENDER_CACHE_VERSION = "4"
+#
+# "5": exports take the studio EQ (fx=), and its filters are part of the key.
+_RENDER_CACHE_VERSION = "5"
 
 
 def _mixdown_cache_key(
@@ -140,6 +152,7 @@ def _mixdown_cache_key(
     click_lane: tuple[Path, float] | None = None,
     pitches: list[int] | None = None,
     lane_versions: list[str] | None = None,
+    fx_fragment: str = "",
 ) -> str:
     """Every render input is in the key, so a different mixer state, region,
     or a Settings change (export sample rate) misses cleanly -- never a stale
@@ -168,6 +181,9 @@ def _mixdown_cache_key(
             # audio.wav under the same name. Its size and mtime pin the file
             # the render read, so a nudged take misses the cache.
             ",".join(lane_versions or []),
+            # The EQ as the exact filter strings the render runs (RenderFx),
+            # empty when no EQ changes the sound.
+            fx_fragment,
         ]
     )
     # Cache key, not a security context -- usedforsecurity=False documents
@@ -602,11 +618,72 @@ def _parse_lane_gains(stems: str, gains: str) -> tuple[list[str], list[float]]:
 
 
 class _RenderLane(NamedTuple):
-    """One ffmpeg input in the mixdown graph: a file, its gain, its shift."""
+    """One ffmpeg input in the mixdown graph: a file, its gain, its shift, and
+    the mixer lane it belongs to (whose EQ it gets; "" for the click)."""
 
     path: Path
     gain: float
     pitch: int
+    name: str = ""
+
+
+def parse_fx_query(fx: str) -> FxRequest:
+    """The fx= parameter, validated, or a 422 with a safe message."""
+    try:
+        return parse_fx_param(fx)
+    except FxError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+def _input_rate(path: Path) -> int:
+    """The sample rate an input file is decoded at: the rate the EQ is
+    designed for, because the filter runs on the file's own samples (before
+    any resample to the export rate). Stems and takes are 44.1 kHz; reading the
+    header keeps an older job at another rate right."""
+    try:
+        return int(sf.info(str(path)).samplerate)
+    except Exception:
+        logger.debug("could not read the sample rate of %s; assuming 44100", path, exc_info=True)
+        return 44100
+
+
+class RenderFx(NamedTuple):
+    """The EQ of one render: per input a filter prefix ("" or "biquad=...,"),
+    the master prefix, and the cache key fragment."""
+
+    lanes: list[str]
+    master: str
+    fragment: str
+
+
+def build_render_fx(
+    lane_names: list[str], lane_paths: list[Path], fx_req: FxRequest, extra_sections: int = 0
+) -> RenderFx:
+    """Filter prefixes for each input (by its lane name) and for the mix.
+
+    An input whose lane has no EQ gets "" and the graph is exactly the one
+    built before the EQ existed. The master EQ is designed at the first
+    input's rate, which is the rate amix runs at."""
+    prefixes: list[str] = []
+    sections = extra_sections
+    for name, path in zip(lane_names, lane_paths, strict=True):
+        effects = fx_req.lanes.get(name, []) if name else []
+        chain = slot_filter(effects, _input_rate(path)) if effects else ""
+        sections += slot_section_count(effects)
+        prefixes.append(f"{chain}," if chain else "")
+    master_chain = ""
+    if fx_req.master and lane_paths:
+        master_chain = slot_filter(fx_req.master, _input_rate(lane_paths[0]))
+        sections += slot_section_count(fx_req.master)
+    try:
+        check_section_budget(sections)
+    except FxError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    master = f"{master_chain}," if master_chain else ""
+    fragment = ""
+    if master or any(prefixes):
+        fragment = "fx:" + "|".join(prefixes) + "#" + master
+    return RenderFx(prefixes, master, fragment)
 
 
 def _expand_render_lanes(
@@ -645,11 +722,11 @@ def _expand_render_lanes(
         # components when transposed, so the same URL was valid or not
         # depending on the pitch attached to it.
         if _is_recorded_lane(name):
-            lanes.append(_RenderLane(_take_lane_path(job_id, name), gain, pitch))
+            lanes.append(_RenderLane(_take_lane_path(job_id, name), gain, pitch, name))
             continue
         path = _validate_stem_path(job_id, name)
         if name != "original" or pitch == 0:
-            lanes.append(_RenderLane(path, gain, pitch))
+            lanes.append(_RenderLane(path, gain, pitch, name))
             continue
 
         components = [n for n in STEM_NAMES if n not in selected]
@@ -665,14 +742,14 @@ def _expand_render_lanes(
             paths.append(comp_path)
 
         if not paths:
-            lanes.append(_RenderLane(path, gain, 0))
+            lanes.append(_RenderLane(path, gain, 0, name))
             unpitched.append(name)
             continue
 
         # Each component carries the lane's own gain; amix sums them back to
         # what the single file would have been. effective_pitch keeps drums at 0.
         for comp, path in zip(components, paths, strict=True):
-            lanes.append(_RenderLane(path, gain, effective_pitch(comp, pitch)))
+            lanes.append(_RenderLane(path, gain, effective_pitch(comp, pitch), name))
 
     return lanes, unpitched
 
@@ -1241,6 +1318,14 @@ async def get_mixdown(
         le=4,
         description="Count-in bars before the audio (0 off)",
     ),
+    fx: str = Query(
+        default="",
+        max_length=FX_PARAM_MAX_CHARS,
+        description=(
+            "The studio EQ: base64url JSON {v: 1, lanes: {name: [eq]}, master: [eq]}. "
+            "Empty means no EQ. See app/pipeline/fx_filters.py."
+        ),
+    ),
 ) -> FileResponse | StreamingResponse:
     """Render a mixdown of the given lanes at the given gains, streamed as WAV,
     MP3, FLAC, or OGG. Mirrors the studio mixer (per-stem volume, mute, solo) so the
@@ -1261,6 +1346,7 @@ async def get_mixdown(
 
     names, parsed_gains = _parse_lane_gains(stems, gains)
     parsed_pitches = _parse_pitches(pitches, names)
+    fx_req = parse_fx_query(fx)
     if (start is None) != (end is None) or (start is not None and start >= end):
         raise HTTPException(
             status_code=422,
@@ -1283,6 +1369,11 @@ async def get_mixdown(
     # stale cache entry from before the job was removed.
     render_lanes, unpitched = _expand_render_lanes(job_id, names, parsed_gains, parsed_pitches)
     paths = [lane.path for lane in render_lanes]
+    # Each lane's EQ as biquad filters with the live engine's coefficients;
+    # "" for a lane without EQ, so its graph is unchanged.
+    render_fx = await asyncio.to_thread(
+        build_render_fx, [lane.name for lane in render_lanes], paths, fx_req
+    )
 
     media_type = MIXDOWN_MEDIA_TYPES[ext]
     click_lane = await asyncio.to_thread(
@@ -1307,6 +1398,7 @@ async def get_mixdown(
         click_lane,
         parsed_pitches,
         _take_versions(job_id, names),
+        render_fx.fragment,
     )
     cache_path = _MIXDOWN_CACHE_DIR / f"{cache_key}.{ext}"
     if cache_path.is_file():
@@ -1359,16 +1451,23 @@ async def get_mixdown(
     for i, lane in enumerate(render_lanes):
         delay = f"adelay={delay_ms}:all=1," if delay_ms > 0 else ""
         # Shift before the delay: rubberband would otherwise chew through the
-        # silent lead-in padding for nothing.
-        filters.append(f"[{i}:a]{_pitch_filter(lane.pitch)}{delay}volume={lane.gain:.6f}[a{i}]")
+        # silent lead-in padding for nothing. EQ before the shift, because the
+        # live engine's EQ sits before its pitch stage too (between the lane
+        # gain and the pitch bus): a boost at 1 kHz on a lane moved up two
+        # semitones is heard at 1.12 kHz, and the export must agree.
+        eq = render_fx.lanes[i]
+        filters.append(f"[{i}:a]{eq}{_pitch_filter(lane.pitch)}{delay}volume={lane.gain:.6f}[a{i}]")
     if click_lane is not None:
         filters.append(f"[{stem_count}:a]volume={click_lane.gain:.6f}[a{stem_count}]")
     n = stem_count + (1 if click_lane is not None else 0)
+    # Master EQ on the sum (click included, as live: the click joins upstream
+    # of the master slot), then the limiter last.
+    master = render_fx.master
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{limiter}[mix]")
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{master}{limiter}[mix]")
     else:
-        filters.append(f"[a0]{limiter}[mix]")
+        filters.append(f"[a0]{master}{limiter}[mix]")
     out_label = "[mix]"
     codec = MIXDOWN_CODECS[ext]
     # Resample to the user's chosen export rate (default 44.1 kHz = the stem rate,
@@ -1438,6 +1537,11 @@ async def get_video_mixdown(
     click_mult: float = Query(default=1.0, description="Click rate: 0.5, 1 or 2"),
     click_accent: int = Query(default=-1, ge=-1, le=32, description="-1 auto, 0 off, N per bar"),
     click_gain: float = Query(default=0.6, ge=0, le=4, description="Click level"),
+    fx: str = Query(
+        default="",
+        max_length=FX_PARAM_MAX_CHARS,
+        description="The studio EQ, as for mixdown. Empty means no EQ.",
+    ),
 ) -> StreamingResponse:
     """Mux a fresh audio mixdown of the current mixer state with the job's preserved
     video into an MP4 (issue #219). Mirrors get_mixdown's audio graph (encoded
@@ -1460,6 +1564,7 @@ async def get_video_mixdown(
 
     names, parsed_gains = _parse_lane_gains(stems, gains)
     parsed_pitches = _parse_pitches(pitches, names)
+    fx_req = parse_fx_query(fx)
     # Same refusal as the audio export: a video whose audio came back in the
     # original key would be the same complaint reported again (#592).
     if any(parsed_pitches) and not await asyncio.to_thread(_rubberband_available):
@@ -1479,7 +1584,10 @@ async def get_video_mixdown(
     )
     if click_lane is not None:
         paths = [*paths, click_lane[0]]
-        render_lanes = [*render_lanes, _RenderLane(click_lane[0], click_lane[1], 0)]
+        render_lanes = [*render_lanes, _RenderLane(click_lane[0], click_lane[1], 0, "")]
+    render_fx = await asyncio.to_thread(
+        build_render_fx, [lane.name for lane in render_lanes], paths, fx_req
+    )
 
     cmd: list[str] = [ffmpeg_executable(), "-nostdin", "-loglevel", "error"]
     for p in paths:
@@ -1488,18 +1596,21 @@ async def get_video_mixdown(
     video_idx = len(paths)
     # Per-lane gain then amix (normalize=0 keeps levels faithful). A single audible
     # lane skips amix (a 1-input amix is a no-op), matching get_mixdown.
+    # EQ first in each lane, as in get_mixdown; the click lane has none.
     filters = [
-        f"[{i}:a]{_pitch_filter(lane.pitch)}volume={lane.gain:.6f}[a{i}]"
+        f"[{i}:a]{render_fx.lanes[i]}{_pitch_filter(lane.pitch)}volume={lane.gain:.6f}[a{i}]"
         for i, lane in enumerate(render_lanes)
     ]
     n = len(paths)
     # Same limiter as an MP3 or OGG mixdown: this is the same mix, encoded
     # lossy (AAC), so it must not clip where the audio export no longer does.
+    # The master EQ goes before it.
+    master = render_fx.master
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(f"{labels}amix=inputs={n}:normalize=0,{EXPORT_LIMITER_LOSSY}[mix]")
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{master}{EXPORT_LIMITER_LOSSY}[mix]")
     else:
-        filters.append(f"[a0]{EXPORT_LIMITER_LOSSY}[mix]")
+        filters.append(f"[a0]{master}{EXPORT_LIMITER_LOSSY}[mix]")
     out_label = "[mix]"
     cmd += [
         "-filter_complex",

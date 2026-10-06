@@ -8,6 +8,7 @@ file appeared.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import subprocess
 import time
@@ -413,6 +414,9 @@ async def test_render_refusals(jobs_dir, client, tmp_path, monkeypatch):
             {"mirror": "yes"},
             {"camera_offset_ms": 6000},
             {"unknown": 1},
+            {"fx": "!!!"},
+            {"fx": "A" * 9000},
+            {"fx": 12},
         ]
         monkeypatch.setattr(takes_mod, "libx264_available", lambda: True)
         monkeypatch.setattr(takes_mod, "aac_available", lambda: True)
@@ -814,3 +818,87 @@ async def test_a_take_missing_camera_parts_keeps_its_sound_only(
     assert (folder / "camera.mp4").is_file() is kept
     assert not (folder / "camera.part").exists()
     assert ("video" in json.loads((folder / "take.json").read_text())) is kept
+
+
+def _audio_rms(path) -> float:
+    pcm = subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-vn",
+            "-f",
+            "f32le",
+            "-ac",
+            "1",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    x = np.frombuffer(pcm, dtype="<f4")
+    return float(np.sqrt(np.mean(x[int(0.5 * SR) : int(2.5 * SR)] ** 2)))
+
+
+async def test_render_applies_the_lane_and_master_eq(jobs_dir, client, tmp_path):
+    """The Make video render takes the studio EQ: a 48 dB/oct high cut at 100
+    Hz on the drums lane (a 440 Hz tone) takes it down by about 50 dB in the
+    video's audio; the same cut on the master does the same; none: unchanged."""
+    _needs_x264()
+    _make_job(jobs_dir)
+    cut = {"id": "eq", "out": 0, "b": [["highcut", 100, 0, 0.707, 48]]}
+
+    def wire(body):
+        raw = json.dumps({"v": 1, **body}).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    levels = {}
+    async with client as c:
+        tid = await _take_with_camera(c, tmp_path, first_frame_ms=0.0)
+        for label, body in (
+            ("none", {}),
+            ("lane", {"fx": wire({"lanes": {"drums": [cut]}})}),
+            ("master", {"fx": wire({"lanes": {}, "master": [cut]})}),
+        ):
+            r = await c.post(
+                f"/api/jobs/{JOB}/takes/{tid}/render",
+                json={"stems": ["drums"], "gains": [1.0], "span": "song", **body},
+            )
+            assert r.status_code == 202, r.text
+            assert (await _wait(c, tid))["status"] == "done"
+            levels[label] = _audio_rms(jobs_dir / JOB / "takes" / tid / "render.mp4")
+    assert levels["none"] > 0.05
+    assert 20 * np.log10(levels["lane"] / levels["none"]) < -40
+    assert 20 * np.log10(levels["master"] / levels["none"]) < -40
+
+
+def test_command_puts_the_eq_in_the_lanes_take_and_master(tmp_path):
+    cmd = build_video_render_cmd(
+        [
+            AudioLane(
+                tmp_path / "drums.wav",
+                1.0,
+                "",
+                "biquad=b0=1.0:b1=0.0:b2=0.0:a0=1.0:a1=0.0:a2=0.0:r=f64,",
+            )
+        ],
+        tmp_path / "audio.wav",
+        1.0,
+        tmp_path / "camera.webm",
+        0.0,
+        3.0,
+        "16:9",
+        "cover",
+        False,
+        44100,
+        take_fx="volume=0.5,",
+        master_fx="volume=0.25,",
+    )
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "[0:a]biquad=" in graph
+    assert "[1:a]volume=0.5,volume=1.000000[a1]" in graph
+    assert "normalize=0,volume=0.25,aresample" in graph

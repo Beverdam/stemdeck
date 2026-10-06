@@ -46,7 +46,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -1062,6 +1062,9 @@ class RenderBody(BaseModel):
     mirror: StrictBool = False
     # "take": from the take's count-in to where it stopped; "song": all of it.
     span: Literal["take", "song"] = "take"
+    # The studio EQ, the export's fx= value (app/pipeline/fx_filters.py). The
+    # take gets its track's EQ; "" means no EQ.
+    fx: str = Field(default="", max_length=stems_api.FX_PARAM_MAX_CHARS)
 
     @field_validator("stems")
     @classmethod
@@ -1072,8 +1075,33 @@ class RenderBody(BaseModel):
         return v
 
 
-def _render_lanes(job_id: str, take_id: str, body: RenderBody) -> list[AudioLane]:
-    """Validate and resolve the backing lanes with the export's own rules."""
+class _RenderAudio(NamedTuple):
+    lanes: list[AudioLane]
+    take_fx: str
+    master_fx: str
+
+
+def _render_lanes(
+    job_id: str,
+    take_id: str,
+    body: RenderBody,
+    take_audio: Path,
+    track_id: str | None = None,
+) -> _RenderAudio:
+    """Validate and resolve the backing lanes with the export's own rules,
+    with each lane's EQ, the take's (its track's EQ) and the master's."""
+    fx_req = stems_api.parse_fx_query(body.fx)
+    lanes = _backing_lanes(job_id, take_id, body)
+    # The take is one more input, named by its track so it gets that EQ.
+    names = [name for _, name in lanes] + [track_id or ""]
+    paths = [lane.path for lane, _ in lanes] + [take_audio]
+    render_fx = stems_api.build_render_fx(names, paths, fx_req)
+    out = [lane._replace(fx_filter=render_fx.lanes[i]) for i, (lane, _) in enumerate(lanes)]
+    return _RenderAudio(out, render_fx.lanes[-1], render_fx.master)
+
+
+def _backing_lanes(job_id: str, take_id: str, body: RenderBody) -> list[tuple[AudioLane, str]]:
+    """The backing lanes with their mixer lane names."""
     if len(body.gains) != len(body.stems):
         raise HTTPException(status_code=422, detail="stems and gains must be equal length")
     if any(not (0 <= g <= stems_api._MIXDOWN_MAX_GAIN) for g in body.gains):
@@ -1096,7 +1124,10 @@ def _render_lanes(job_id: str, take_id: str, body: RenderBody) -> list[AudioLane
             status_code=422, detail="this ffmpeg build cannot transpose (no rubberband filter)"
         )
     lanes, _unpitched = stems_api._expand_render_lanes(job_id, names, gains, pitches)
-    return [AudioLane(lane.path, lane.gain, stems_api._pitch_filter(lane.pitch)) for lane in lanes]
+    return [
+        (AudioLane(lane.path, lane.gain, stems_api._pitch_filter(lane.pitch)), lane.name)
+        for lane in lanes
+    ]
 
 
 # The shortest take-span video: a take stopped right after its count-in
@@ -1192,7 +1223,9 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
         raise HTTPException(
             status_code=422, detail="this ffmpeg build cannot encode H.264 video (no AAC encoder)"
         )
-    lanes = await asyncio.to_thread(_render_lanes, job_id, take_id, body)
+    audio = await asyncio.to_thread(
+        _render_lanes, job_id, take_id, body, folder / "audio.wav", entry.get("track_id") or None
+    )
     if _render_busy(job_id, take_id):
         raise HTTPException(status_code=409, detail="video render already running")
 
@@ -1208,6 +1241,7 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
     ) - offset_ms / 1000.0
     frames = await asyncio.to_thread(_song_frames, job_id)
     start, duration = _render_span(sidecar, frames / TAKE_RATE, body.span)
+    lanes = audio.lanes
     cmd = build_video_render_cmd(
         lanes,
         folder / "audio.wav",
@@ -1220,6 +1254,8 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
         body.mirror,
         get_export_sample_rate(),
         start_sec=start,
+        take_fx=audio.take_fx,
+        master_fx=audio.master_fx,
     )
     run = _RenderRun()
     _renders[(job_id, take_id)] = run
