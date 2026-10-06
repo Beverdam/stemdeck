@@ -22,7 +22,7 @@ import { trackRows, removeTracks, addTrack, waitForEngine, watchTakes as watchTa
 
 test.use({
   launchOptions: {
-    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio"],
   },
   permissions: ["microphone", "camera"],
 });
@@ -178,6 +178,11 @@ test("camera on, record, keep, nudge, make the video and download it", async ({ 
   await expect(offset).toHaveValue("33");
   await offset.fill("47");
 
+  // ── Length: the take's own span by default, the whole song on request ──
+  const span = row.locator(".vid-span-select");
+  await expect(span).toHaveValue("take");
+  await expect(span.locator("option")).toHaveText(["Take only", "Whole song"]);
+
   // ── Make video: real render, progress, then Download MP4 ──
   await row.locator(".vid-make").click();
   await expect(row.locator(".vid-make")).toBeDisabled();
@@ -189,6 +194,7 @@ test("camera on, record, keep, nudge, make the video and download it", async ({ 
   expect(log.renders.length).toBe(1);
   const req = log.renders[0];
   expect(req.camera_offset_ms).toBe(47);
+  expect(req.span).toBe("take");
   expect(req.canvas).toBe("16:9");
   expect(req.mirror).toBe(false);
   // The backing as heard: the fixture stems, never the take itself; the take
@@ -220,6 +226,32 @@ test("camera on, record, keep, nudge, make the video and download it", async ({ 
 
   // The download's own <a> click must not close the panel under the button.
   await expect(page.locator("#recPanel")).toBeVisible();
+
+  // The whole song on request, remembered for the next video.
+  await span.selectOption("song");
+  await row.locator(".vid-make").click();
+  await expect(row.locator(".vid-download")).toBeVisible({ timeout: 90000 });
+  expect(log.renders.length).toBe(2);
+  expect(log.renders[1].span).toBe("song");
+  expect(await page.evaluate(() => localStorage.getItem("stemdeck:video:span"))).toBe("song");
+
+  // Stop: a render can be stopped while it runs. The status polls are held
+  // at "running" so the click lands mid-render whatever the machine's speed;
+  // the stop itself goes to the real server.
+  const statusUrl = new RegExp(`/takes/${takeId}/render$`);
+  await page.route(statusUrl, (route) => (route.request().method() === "GET"
+    ? route.fulfill({ json: { status: "running", progress: 0.4, error: null, url: null } })
+    : route.continue()));
+  const cancelled = page.waitForRequest((r) => r.url().endsWith(`/takes/${takeId}/render/cancel`) && r.method() === "POST");
+  await row.locator(".vid-make").click();
+  await expect(row.locator(".vid-stop")).toBeVisible();
+  await row.locator(".vid-stop").click();
+  await cancelled;
+  await page.unroute(statusUrl);
+  await expect(row.locator(".vid-state")).toHaveText("Stopped. No video was made.", { timeout: 15000 });
+  await expect(row.locator(".vid-stop")).toBeHidden();
+  await expect(row.locator(".vid-download")).toBeHidden();
+  await expect(row.locator(".vid-make")).toBeEnabled();
 
   // ── Camera off releases the device ──
   await panel(page).locator(".vid-toggle").click();

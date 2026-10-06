@@ -5,7 +5,7 @@
 
 import {
   pickRecorderMime, extForMime, cutParts, PART_BYTES, clampOffsetMs, buildVideoBlock,
-  cameraConstraints, takeHasVideo, MIME_LADDER,
+  cameraConstraints, takeHasVideo, MIME_LADDER, firstRecordedCapture, AUDIO_STAMP_LAG_MS,
 } from '../../static/js/video/videoCodec.js';
 
 let passed = 0;
@@ -95,6 +95,24 @@ check('unknown values are left out, not sent as null',
 check('missing fps falls back to 30', sparse.fps_nominal === 30);
 check('device label is capped at 200 chars', buildVideoBlock({ deviceLabel: 'x'.repeat(500) }).deviceLabel.length === 200);
 check('an absurd width is capped at 4096', buildVideoBlock({ width: 99999 }).w === 4096);
+
+// ── First recorded frame and its clock ──
+// Frames every 33.3 ms; the recorder starts at 1000: its first frame is the
+// first one captured after that.
+const caps = [933.3, 966.6, 999.9, 1033.2, 1066.5, 1099.8];
+check('first frame captured after the start call', firstRecordedCapture(caps, 1000) === 1033.2);
+check('a frame the preview skipped is put back',
+  Math.abs(firstRecordedCapture([933.3, 966.6, 999.9, 1066.5, 1099.8, 1133.1], 1000.5) - 1033.2) < 0.01);
+check('nothing after the call: no time', firstRecordedCapture([900, 933], 1000) === null);
+check('no capture times: no time', firstRecordedCapture([], 1000) === null && firstRecordedCapture(null, 1000) === null);
+check('jitter is not a skipped frame', firstRecordedCapture([966.6, 999.0, 1036.0, 1069.3], 1001) === 1036.0);
+const captured = buildVideoBlock({ mime: 'video/mp4', perfMsAtFrame0: 1000, startedAtPerf: 1060, firstCapturePerf: 1033.2 });
+check('with a capture time, the block uses it on the audio stamp clock',
+  captured.firstFrameAtMs === Math.round((33.2 + AUDIO_STAMP_LAG_MS) * 1000) / 1000 && captured.firstFrameClock === 'capture',
+  JSON.stringify(captured));
+check('the audio stamp lag is the measured 30 ms', AUDIO_STAMP_LAG_MS === 30);
+check('without one, the recorder start stands in and says so',
+  block.firstFrameClock === 'recorder-start' && block.firstFrameAtMs === 120.25);
 
 // ── Which takes get "Make video" ──
 check('has_camera true shows it', takeHasVideo({ id: 't00000001', has_camera: true }));

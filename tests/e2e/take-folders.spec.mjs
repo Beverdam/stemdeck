@@ -15,7 +15,7 @@ import { trackRows, removeTracks, jobState, waitForEngine, recordForAWhile, watc
 
 test.use({
   launchOptions: {
-    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio"],
   },
   permissions: ["microphone"],
 });
