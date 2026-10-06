@@ -1582,9 +1582,9 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
       if (audioEngine) { audioEngine.destroy(); setAudioEngine(null); }
       const onEnded = () => { playBtn.classList.remove("playing"); updateStopVisual(); };
       // Engine bring-up, callable twice: the chunked path falls back to
-      // "fulldecode" when peaks.json is missing (legacy jobs), because the
-      // backend's documented degradation for missing peaks is client-side
-      // decode — which only the full-decode engine can provide.
+      // "fulldecode" when it cannot read the stems (below). Which engine to
+      // start for a job without peaks is decided before the first one starts
+      // (see the bottom of this block), never by swapping one that runs.
       const startEngine = (kind) => {
         updatePitchAvailability(false);
         setLaneKeysAvailable(false);
@@ -1613,7 +1613,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
             // The chunked engine parses WAV containers itself, so a layout it
             // cannot read disables playback on a file the browser's own decoder
             // would have handled (#343). Try that decoder before giving up,
-            // under the same RAM ceiling the missing-peaks swap below uses.
+            // under the same RAM ceiling the missing-peaks choice below uses.
             if (kind === "chunked"
                 && estimateDecodedBytes(totalDuration, engineStemCount) <= MAX_ENGINE_DECODED_BYTES) {
               console.warn("[player] chunked engine could not read these stems; trying full decode:", reason);
@@ -1642,8 +1642,8 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
           applyAllLanePitches();
 
           // Click track. Bound to this engine instance, so it is rebuilt on
-          // every engine bring-up (including the chunked -> fulldecode swap
-          // below) and torn down with it.
+          // every engine bring-up (including the chunked -> fulldecode
+          // fallback above) and torn down with it.
           _beatsPromise.then((grid) => {
             if (token !== visualRenderToken || multitrack !== mt || audioEngine !== eng) return;
             teardownMetronome();
@@ -1691,19 +1691,10 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
               if (token !== visualRenderToken || multitrack !== mt || audioEngine !== eng) return;
               const p = peaks || {};
               if (!Object.keys(p).length) {
-                // Legacy job with no peaks.json: no waveform source on the
-                // streaming path. Swap to the full-decode engine (unless the
-                // track is too big to decode in RAM — then keep streaming
-                // audio and accept placeholder waveforms).
-                if (estimateDecodedBytes(totalDuration, engineStemCount) <= MAX_ENGINE_DECODED_BYTES) {
-                  console.warn("[player] no peaks.json; using full-decode engine for visuals");
-                  teardownMetronome();
-                  eng.destroy();
-                  if (audioEngine === eng) setAudioEngine(null);
-                  startEngine("fulldecode");
-                } else {
-                  console.warn("[player] no peaks.json and track too large to decode; waveforms unavailable");
-                }
+                // Only a track too big to decode streams without peaks (see
+                // the choice below): its audio plays, its waveforms are
+                // placeholders.
+                console.warn("[player] no peaks.json and track too large to decode; waveforms unavailable");
                 return;
               }
               for (const stem of stems) {
@@ -1747,7 +1738,25 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
       };
       // Default: chunked streaming engine (fast start, low RAM). "fulldecode"
       // opts into the legacy decode-everything engine.
-      startEngine(mode === "chunked" ? "chunked" : "fulldecode");
+      //
+      // The streaming engine draws its waveforms from peaks.json. A job with
+      // none (the server builds it on the first request, so only a failed
+      // build gets here) needs the full decode for them, and it is chosen
+      // now, before anything plays. This used to start streaming and swap
+      // engines once the empty peaks came back: a take started in that
+      // moment recorded into the engine being destroyed, and its audio was
+      // lost. The peaks fetch began with the job fetch, so this rarely waits.
+      if (mode !== "chunked") {
+        startEngine("fulldecode");
+      } else {
+        _peaksPromise.then((peaks) => {
+          if (token !== visualRenderToken || multitrack !== mt) return;
+          const hasPeaks = !!peaks && Object.keys(peaks).length > 0;
+          const fits = estimateDecodedBytes(totalDuration, engineStemCount) <= MAX_ENGINE_DECODED_BYTES;
+          if (!hasPeaks && fits) console.warn("[player] no peaks.json; using full-decode engine for visuals");
+          startEngine(!hasPeaks && fits ? "fulldecode" : "chunked");
+        });
+      }
     } else {
       // Legacy streaming path: playback runs on <audio> elements with no
       // shared AudioContext, so there is no clock a click could lock to.
