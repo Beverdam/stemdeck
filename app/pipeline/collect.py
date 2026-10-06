@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
+import threading
 import time
+import uuid
 from pathlib import Path
 
 from app.core.config import (
@@ -249,6 +252,12 @@ def compute_stem_peaks(stems_dir: Path, stem_names: list[str]) -> dict[str, floa
     return rms_values
 
 
+# Serialises the read-modify-write of peaks.json between a take being saved
+# (merge_stem_peaks) and the first request of a job that had none
+# (fill_missing_peaks), which run on different threads.
+_PEAKS_WRITE_LOCK = threading.Lock()
+
+
 def merge_stem_peaks(
     stems_dir: Path,
     new_names: list[str],
@@ -269,37 +278,116 @@ def merge_stem_peaks(
     peaks.json as the stems, so the chunked engine needs no fallback. `remove`
     drops entries, for a deleted take."""
     path = stems_dir / "peaks.json"
-    peaks: dict[str, list[list[float]]] = {}
     rms_values: dict[str, float] = {}
-    if path.is_file():
-        try:
-            peaks = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.warning("could not read existing peaks.json in %s", stems_dir, exc_info=True)
+    scanned: dict[str, list[list[float]]] = {}
+    # A job that never had peaks.json (separated before it existed, or made
+    # by hand) gets one here for the first time. Written with the take alone,
+    # the studio would see peaks, stream the song, and draw no stem at all.
+    # Those extra stems are drawn only: their RMS is not returned.
+    backfill = (
+        []
+        if path.is_file() or remove
+        else [n for n in _stem_wav_names(stems_dir) if n not in new_names]
+    )
 
-    for name in remove or []:
-        peaks.pop(name, None)
-
-    for name in new_names:
+    for name in [*backfill, *new_names]:
         wav = (sources or {}).get(name) or stems_dir / f"{name}.wav"
         if not wav.is_file():
             continue
         try:
             result, rms = scan_stem(wav, _PEAK_POINTS)
-            rms_values[name] = rms
+            if name in new_names:
+                rms_values[name] = rms
             if result:
-                peaks[name] = result
+                scanned[name] = result
         except Exception:
             logger.warning("could not compute peaks for %s/%s", stems_dir.name, name, exc_info=True)
 
-    try:
-        tmp = stems_dir / "peaks.json.tmp"
-        tmp.write_text(json.dumps(peaks), encoding="utf-8")
-        tmp.replace(path)
-    except Exception:
-        logger.warning("could not write peaks.json for %s", stems_dir.name, exc_info=True)
+    # Read, change and write under one lock: a take saved while the first
+    # request of an old job builds its peaks must not lose either change.
+    with _PEAKS_WRITE_LOCK:
+        peaks: dict[str, list[list[float]]] = {}
+        if path.is_file():
+            try:
+                peaks = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                logger.warning("could not read existing peaks.json in %s", stems_dir, exc_info=True)
+        for name in remove or []:
+            peaks.pop(name, None)
+        peaks.update(scanned)
+        if not peaks and not path.is_file():
+            # Nothing to draw and no file yet: leave it to fill_missing_peaks.
+            return rms_values
+        try:
+            tmp = stems_dir / "peaks.json.tmp"
+            tmp.write_text(json.dumps(peaks), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            logger.warning("could not write peaks.json for %s", stems_dir.name, exc_info=True)
 
     return rms_values
+
+
+def _stem_wav_names(stems_dir: Path) -> list[str]:
+    return sorted(p.stem for p in stems_dir.glob("*.wav") if p.is_file())
+
+
+def fill_missing_peaks(stems_dir: Path, sources: dict[str, Path] | None = None) -> bool:
+    """Write peaks.json for a job that has none: every WAV in stems_dir, plus
+    `sources` (name -> WAV elsewhere: the recorded takes). Returns True when
+    peaks.json exists afterwards.
+
+    Jobs separated before peaks.json existed, or put together by hand, have
+    no peaks. The studio then had to decode every stem in the browser for its
+    waveforms, which meant swapping the streaming engine for the full-decode
+    one a moment after the song opened, and a take started in that moment was
+    recording into the engine being thrown away. Built once, on the first
+    request: one streamed pass per file, about 1 s for a three minute song of
+    seven stems. Entries that appear meanwhile (a take saved during the scan)
+    are kept, not overwritten.
+    """
+    path = stems_dir / "peaks.json"
+    if path.is_file():
+        return True
+    wanted: dict[str, Path] = {
+        name: stems_dir / f"{name}.wav" for name in _stem_wav_names(stems_dir)
+    }
+    for name, wav in (sources or {}).items():
+        if wav.is_file():
+            wanted[name] = wav
+    computed: dict[str, list[list[float]]] = {}
+    for name, wav in wanted.items():
+        try:
+            result, _rms = scan_stem(wav, _PEAK_POINTS)
+        except Exception:
+            logger.warning("could not compute peaks for %s/%s", stems_dir.name, name, exc_info=True)
+            continue
+        if result:
+            computed[name] = result
+    if not computed:
+        return False
+    with _PEAKS_WRITE_LOCK:
+        peaks: dict[str, list[list[float]]] = {}
+        if path.is_file():
+            try:
+                peaks = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                logger.warning("could not read peaks.json in %s", stems_dir, exc_info=True)
+        for name, result in computed.items():
+            peaks.setdefault(name, result)
+        tmp = stems_dir / f"peaks.json.{uuid.uuid4().hex}.tmp"
+        try:
+            tmp.write_text(json.dumps(peaks), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            logger.warning("could not write peaks.json for %s", stems_dir.name, exc_info=True)
+            return False
+        finally:
+            tmp.unlink(missing_ok=True)
+    logger.info(
+        "built missing peaks.json for %s (%d entries)", stems_dir.parent.name, len(computed)
+    )
+    return True
 
 
 def presence_for_split(

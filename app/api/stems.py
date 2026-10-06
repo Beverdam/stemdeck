@@ -35,6 +35,7 @@ from app.core.takes import take_dir
 from app.pipeline.audio_stats import vocal_envelope
 from app.pipeline.click_render import cache_key as click_cache_key
 from app.pipeline.click_render import count_in_beats, render_click_wav, render_count_in_wav
+from app.pipeline.collect import fill_missing_peaks
 from app.pipeline.take_render import AAC_ENCODE_ARGS, EXPORT_LIMITER_LOSSY, export_limiter
 
 logger = logging.getLogger("stemdeck.api")
@@ -889,7 +890,35 @@ async def _ensure_cached_mp3(src: Path) -> Path:
     return dest
 
 
-def _peaks_response(job_id: str, request: Request) -> Response:
+# One build at a time per job: the catalog and the player can both ask for
+# the peaks of a song that has none in the same moment.
+_peaks_build_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _build_missing_peaks(job_id: str, job_takes: list[dict]) -> None:
+    """Build peaks.json for a finished job that has none (see
+    fill_missing_peaks). Failures leave the job as it was: the studio then
+    decodes the stems in the browser, as it always did for such a job."""
+    stems_dir = (JOBS_DIR / job_id / "stems").resolve()
+    if not stems_dir.is_dir() or not stems_dir.is_relative_to(JOBS_DIR.resolve()):
+        return
+    lock = _peaks_build_locks.setdefault(job_id, asyncio.Lock())
+    async with lock:
+        if (stems_dir / "peaks.json").is_file():
+            return
+        sources: dict[str, Path] = {}
+        for take in job_takes:
+            folder = take_dir(job_id, str(take.get("id") or ""))
+            if folder is not None:
+                sources[take["id"]] = folder / "audio.wav"
+        try:
+            await asyncio.to_thread(fill_missing_peaks, stems_dir, sources)
+        except Exception:
+            logger.exception("could not build peaks for %s", job_id)
+    _peaks_build_locks.pop(job_id, None)
+
+
+async def _peaks_response(job_id: str, request: Request) -> Response:
     """Pre-computed waveform peaks for every stem, revalidated on each use.
 
     Not cacheable forever, because it is not fixed once a job is done. The
@@ -902,6 +931,10 @@ def _peaks_response(job_id: str, request: Request) -> Response:
     `no-cache` keeps a copy but asks before using it. The ETag makes asking
     cheap: an unchanged file is a 304 with no body, which FileResponse does not
     do by itself.
+
+    A finished job with no peaks.json (older or hand-made) has it built on
+    this first request, about a second for a three minute song, so it opens
+    on the streaming engine like any other. 404 only when that fails.
     """
     if not JOB_ID_RE.match(job_id):
         raise HTTPException(status_code=404, detail="job not found")
@@ -909,6 +942,8 @@ def _peaks_response(job_id: str, request: Request) -> Response:
     if job is None or job.status != "done":
         raise HTTPException(status_code=404, detail="job not ready")
     path = (JOBS_DIR / job_id / "stems" / "peaks.json").resolve()
+    if not path.is_file():
+        await _build_missing_peaks(job_id, list(job.takes or []))
     if not path.is_file() or not path.is_relative_to(JOBS_DIR.resolve()):
         raise HTTPException(status_code=404, detail="peaks not found")
     st = path.stat()
@@ -937,7 +972,7 @@ async def get_peaks(job_id: str, request: Request) -> Response:
     them, and this one is known before the job's state is, so the peaks fetch
     can still start in parallel with it.
     """
-    return _peaks_response(job_id, request)
+    return await _peaks_response(job_id, request)
 
 
 @router.get("/jobs/{job_id}/stems/peaks.json")
@@ -947,7 +982,7 @@ async def get_stem_peaks(job_id: str, request: Request) -> Response:
     Kept for anything that still asks here. It no longer claims to be
     immutable, since that was never true once splits could rewrite it.
     """
-    return _peaks_response(job_id, request)
+    return await _peaks_response(job_id, request)
 
 
 # The vocals stem's level every 40ms: fine enough to find the gap between two
