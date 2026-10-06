@@ -1065,6 +1065,9 @@ class RenderBody(BaseModel):
     # The studio EQ, the export's fx= value (app/pipeline/fx_filters.py). The
     # take gets its track's EQ; "" means no EQ.
     fx: str = Field(default="", max_length=stems_api.FX_PARAM_MAX_CHARS)
+    # The master, the export's master= value (app/pipeline/mastering.py);
+    # "" means no master.
+    master: str = Field(default="", max_length=stems_api.MASTER_PARAM_MAX_CHARS)
 
     @field_validator("stems")
     @classmethod
@@ -1079,6 +1082,7 @@ class _RenderAudio(NamedTuple):
     lanes: list[AudioLane]
     take_fx: str
     master_fx: str
+    names: list[str]  # the backing lanes' mixer names (for the master's cache key)
 
 
 def _render_lanes(
@@ -1097,7 +1101,7 @@ def _render_lanes(
     paths = [lane.path for lane, _ in lanes] + [take_audio]
     render_fx = stems_api.build_render_fx(names, paths, fx_req)
     out = [lane._replace(fx_filter=render_fx.lanes[i]) for i, (lane, _) in enumerate(lanes)]
-    return _RenderAudio(out, render_fx.lanes[-1], render_fx.master)
+    return _RenderAudio(out, render_fx.lanes[-1], render_fx.master, names[:-1])
 
 
 def _backing_lanes(job_id: str, take_id: str, body: RenderBody) -> list[tuple[AudioLane, str]]:
@@ -1162,8 +1166,48 @@ def _render_span(sidecar: dict[str, Any], song_sec: float, span: str) -> tuple[f
     return start, end - start
 
 
+class _MasterRetry(NamedTuple):
+    """How to render a mastered video again when its AAC decoded over the
+    ceiling: the command for a (trim_db, alt_aac) pair, and the ceiling."""
+
+    build: Any  # Callable[[float, bool], list[str]]
+    ceiling: float
+
+
+async def _verify_master(run_cmd, retry: _MasterRetry, dest: Path, job_id: str) -> None:
+    """Decode the rendered video's audio and render again, trimmed or with
+    the alternative AAC coder, while it is over the master's ceiling (the
+    rule of stems._render_master_verified)."""
+    trim, alt = 0.0, False
+    for attempt in range(stems_api.LOSSY_RETRIES + 1):
+        try:
+            out = await stems_api.measure_file(str(dest))
+        except stems_api.MeasureError as exc:
+            logger.warning("[%s] mastered video not measured: %s", job_id, exc)
+            return
+        if out.tp is None or out.tp <= retry.ceiling:
+            return
+        if attempt == stems_api.LOSSY_RETRIES:
+            logger.warning(
+                "[%s] mastered video still %.2f dB over its ceiling",
+                job_id,
+                out.tp - retry.ceiling,
+            )
+            return
+        if not alt:
+            alt = True
+        else:
+            trim += out.tp - retry.ceiling + stems_api.LOSSY_RETRY_MARGIN_DB
+        await run_cmd(retry.build(trim, alt))
+
+
 async def _render_task(
-    run: _RenderRun, job: Job, cmd: list[str], dest: Path, duration: float
+    run: _RenderRun,
+    job: Job,
+    cmd: list[str],
+    dest: Path,
+    duration: float,
+    retry: _MasterRetry | None = None,
 ) -> None:
     def cancelled() -> bool:
         return run.cancel.is_set() or registry_get(job.id) is not job
@@ -1182,16 +1226,22 @@ async def _render_task(
             if cancelled():
                 raise RenderCancelled()
             run.status = "running"
-            await asyncio.to_thread(
-                run_video_render,
-                cmd,
-                dest,
-                duration,
-                cancelled=cancelled,
-                report=report,
-                on_proc=on_proc,
-                timeout=TIMEOUT_VIDEO_RENDER,
-            )
+
+            async def run_cmd(c: list[str]) -> None:
+                await asyncio.to_thread(
+                    run_video_render,
+                    c,
+                    dest,
+                    duration,
+                    cancelled=cancelled,
+                    report=report,
+                    on_proc=on_proc,
+                    timeout=TIMEOUT_VIDEO_RENDER,
+                )
+
+            await run_cmd(cmd)
+            if retry is not None:
+                await _verify_master(run_cmd, retry, dest, job.id)
         run.status = "done"
         run.progress = 1.0
     except RenderCancelled:
@@ -1242,24 +1292,55 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
     frames = await asyncio.to_thread(_song_frames, job_id)
     start, duration = _render_span(sidecar, frames / TAKE_RATE, body.span)
     lanes = audio.lanes
-    cmd = build_video_render_cmd(
-        lanes,
-        folder / "audio.wav",
-        body.take_gain,
-        camera,
-        camera_start,
-        duration,
-        body.canvas,
-        body.fit,
-        body.mirror,
-        get_export_sample_rate(),
-        start_sec=start,
-        take_fx=audio.take_fx,
-        master_fx=audio.master_fx,
-    )
+    # The master, measured on the whole song with the take as one more lane
+    # (audio.wav is aligned to song 0), replaces the lossy export limiter.
+    master_settings = stems_api.parse_master_query(body.master)
+    master_chain = ""
+    retry: _MasterRetry | None = None
+    if master_settings is not None:
+        take_audio = folder / "audio.wav"
+        st = await asyncio.to_thread(take_audio.stat)
+        plan, rate_in = await stems_api.master_plan(
+            job_id,
+            [lane.path for lane in lanes] + [take_audio],
+            [f"{lane.fx_filter}{lane.pitch_filter}volume={lane.gain:.6f}" for lane in lanes]
+            + [f"{audio.take_fx}volume={body.take_gain:.6f}"],
+            audio.master_fx,
+            master_settings,
+            True,
+            [
+                *stems_api._take_versions(job_id, audio.names),
+                f"{take_id}@{st.st_size}:{st.st_mtime_ns}",
+            ],
+        )
+        master_chain = stems_api.plan_chain(plan, rate_in)
+
+    def make_cmd(trim_db: float = 0.0, alt_aac: bool = False) -> list[str]:
+        return build_video_render_cmd(
+            lanes,
+            folder / "audio.wav",
+            body.take_gain,
+            camera,
+            camera_start,
+            duration,
+            body.canvas,
+            body.fit,
+            body.mirror,
+            get_export_sample_rate(),
+            start_sec=start,
+            take_fx=audio.take_fx,
+            master_fx=audio.master_fx,
+            master_chain=master_chain,
+            trim_db=trim_db,
+            alt_aac=alt_aac,
+        )
+
+    cmd = make_cmd()
+    if master_settings is not None:
+        retry = _MasterRetry(make_cmd, master_settings.ceiling)
     run = _RenderRun()
     _renders[(job_id, take_id)] = run
-    task = asyncio.create_task(_render_task(run, job, cmd, folder / _RENDER_FILE, duration))
+    task = asyncio.create_task(_render_task(run, job, cmd, folder / _RENDER_FILE, duration, retry))
     _render_tasks.add(task)
     task.add_done_callback(_render_tasks.discard)
     logger.info(

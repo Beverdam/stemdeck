@@ -41,6 +41,7 @@ import { createPlaybackContext } from "./audioContext.js";
 import { effectivePitch } from "./pitchBus.js";
 import { addVisualOnlyStems, buildPlaybackStems } from "./playbackStems.js";
 import { applyAllLaneEq, exportFxParam } from "./eqEngine.js";
+import { exportMasterParam, setMixSource, resetForSong as resetMasterForSong } from "./masterEngine.js";
 import { vuLevel } from "./vuScale.js";
 import { createMetronome } from "./metronome.js";
 import { initBeatGrid, destroyBeatGrid } from "./beatgrid.js";
@@ -958,6 +959,7 @@ export function destroyPlayer() {
     }
   }
   resetMixerState();
+  resetMasterForSong();
   refreshMixerVisuals();
   setLaneControlsEnabled(false);
   // Reset static rows, then keep the pre-import shell to extractable stems
@@ -1235,6 +1237,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
     if (token === visualRenderToken) setWaveformLoading(false);
   }, 60000);
   setCurrentJobId(jobId);
+  resetMasterForSong();
   setTotalDuration(duration || 0);
   refreshMixerVisuals();
   const mixReady = loadMixIntoState(jobId, stems.map((s) => s.name))
@@ -2019,6 +2022,40 @@ function _effectiveMixGains() {
 // as the mix export, and saves the MP4 through the same desktop/browser split.
 export { _effectiveMixGains as currentMixLanes, _triggerDownload as triggerDownload };
 
+// The mix as the master measures it (masterEngine.js): the export's lanes,
+// gains, keys and EQ, without region, click or master. The server measures
+// the whole song for exactly this query (GET mixdown/loudness).
+function _mixQuery() {
+  if (!currentJobId) return null;
+  const { names, gains, pitches } = _effectiveMixGains();
+  if (!names.length) return null;
+  const q = new URLSearchParams({
+    stems: names.join(","),
+    gains: gains.map((g) => g.toFixed(3)).join(","),
+    ...(pitches.some((p) => p !== 0) ? { pitches: pitches.join(",") } : {}),
+  });
+  const fx = exportFxParam(names);
+  if (fx) q.set("fx", fx);
+  return { jobId: currentJobId, query: q.toString() };
+}
+setMixSource(_mixQuery);
+
+/** The mixdown URL of this mix for a span, with or without the master
+ * ("render and listen" in the master panel). */
+export function excerptUrl(ext, start, end, withMaster) {
+  const src = _mixQuery();
+  if (!src) return null;
+  const q = new URLSearchParams(src.query);
+  if (withMaster) {
+    const master = exportMasterParam();
+    if (!master) return null;
+    q.set("master", master);
+  }
+  q.set("start", start.toFixed(3));
+  q.set("end", end.toFixed(3));
+  return `/api/jobs/${src.jobId}/mixdown.${ext}?${q}`;
+}
+
 // Click-track export params. The click is synthesised in the browser during
 // playback, so the server can only reproduce it if it is told the rate and
 // accent mode the user was monitoring with. Opt-in: baking a permanent click
@@ -2080,6 +2117,10 @@ function _mixdownUrl(ext, region) {
   // export without EQ keeps exactly the URL (and cache entry) it had.
   const fx = exportFxParam(names);
   if (fx) q.set("fx", fx);
+  // The master (loudness, compressor, limiter), only when it is on. A region
+  // gets the whole song's master gain: the server measures the full mix.
+  const master = exportMasterParam();
+  if (master) q.set("master", master);
   if (region) {
     q.set("start", loopStart.toFixed(3));
     q.set("end", loopEnd.toFixed(3));
@@ -2133,6 +2174,8 @@ export function downloadCurrentVideo(onTransferStart) {
   });
   const fx = exportFxParam(names);
   if (fx) q.set("fx", fx);
+  const master = exportMasterParam();
+  if (master) q.set("master", master);
   _clickParams(q);
   const safe = _currentTitle
     .replace(/[^a-zA-Z0-9]+/g, "_")

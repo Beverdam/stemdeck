@@ -22,6 +22,7 @@
 //   dry path at gain 1, also bit-identical to the input.
 
 import { eqSections, nodeQ } from "./eqMath.js";
+import { createMasterEffect } from "./masterFx.js";
 
 export const PARAM_RAMP = 0.02; // seconds
 export const XFADE = 0.02; // seconds
@@ -189,7 +190,18 @@ export function createEngineFx(ctx, membersOf) {
   const taps = createTapRegistry(ctx);
   const master = createFxSlot(ctx);
   let masterEq = null;
-  master.output.connect(ctx.destination);
+  // After the master EQ: the master effect (masterFx.js), created the first
+  // time mastering is on and dropped once it is off again, crossfaded with a
+  // straight path around it. Off, that path is at exactly 1 and nothing else
+  // is connected, so the output is bit-identical to the master EQ's. `tail`
+  // is the end of the chain, the stable tap for recorders and streams.
+  const tail = ctx.createGain();
+  const around = ctx.createGain();
+  master.output.connect(around);
+  around.connect(tail);
+  tail.connect(ctx.destination);
+  let mfx = null; // { effect, wet }
+  let mfxDrop = 0;
 
   return {
     /** Wire gain -> slot -> analyser for one source and give it its EQ. */
@@ -205,7 +217,7 @@ export function createEngineFx(ctx, membersOf) {
     /** The node the engine's master gain connects to. */
     masterInput: master.input,
     /** The end of the master chain: what reaches the speakers. */
-    masterOutput: master.output,
+    masterOutput: tail,
     setLaneEq(name, eq, opts = {}) {
       laneEq.set(name, eq);
       let found = false;
@@ -222,6 +234,51 @@ export function createEngineFx(ctx, membersOf) {
       return true;
     },
     getMasterEq: () => masterEq,
+    /**
+     * The live master: `params` for masterFx.set(), or null to take it out
+     * of the graph (20 ms crossfade both ways).
+     */
+    setMasterFx(params, { immediate = false } = {}) {
+      if (params) {
+        if (mfxDrop) { clearTimeout(mfxDrop); mfxDrop = 0; }
+        if (!mfx) {
+          const effect = createMasterEffect(ctx);
+          const wet = ctx.createGain();
+          wet.gain.value = 0;
+          master.output.connect(effect.input);
+          effect.output.connect(wet);
+          wet.connect(tail);
+          mfx = { effect, wet };
+          effect.set(params, { immediate: true });
+        } else {
+          mfx.effect.set(params, { immediate });
+        }
+        rampTo(around.gain, 0, ctx, immediate, XFADE);
+        rampTo(mfx.wet.gain, 1, ctx, immediate, XFADE);
+        return true;
+      }
+      if (!mfx) return false;
+      const old = mfx;
+      rampTo(around.gain, 1, ctx, immediate, XFADE);
+      rampTo(old.wet.gain, 0, ctx, immediate, XFADE);
+      const drop = () => {
+        mfxDrop = 0;
+        if (mfx !== old) return;
+        try { master.output.disconnect(old.effect.input); } catch { /* gone */ }
+        old.effect.dispose();
+        try { old.wet.disconnect(); } catch { /* gone */ }
+        mfx = null;
+      };
+      if (immediate) drop();
+      else mfxDrop = setTimeout(drop, RELEASE_MS);
+      return true;
+    },
+    /** The live master's In and Out nodes (export level), or null when off. */
+    getMasterFxNodes() {
+      return mfx && !mfxDrop ? { input: mfx.effect.inTap, output: mfx.effect.outTap } : null;
+    },
+    masterFxReduction: () => (mfx ? mfx.effect.reduction() : null),
+    masterFxLatency: () => (mfx && !mfxDrop ? mfx.effect.latencySec : 0),
     getLaneTap(name, which, opts) {
       const nodes = membersOf(name)
         .filter((s) => s.fx)
@@ -244,7 +301,10 @@ export function createEngineFx(ctx, membersOf) {
     },
     dispose() {
       taps.releaseAll();
+      if (mfxDrop) clearTimeout(mfxDrop);
+      mfx?.effect.dispose();
       master.dispose();
+      for (const n of [around, tail]) { try { n.disconnect(); } catch { /* noop */ } }
     },
   };
 }
@@ -307,5 +367,10 @@ export function engineFxApi(fx) {
     // After the master chain, before the speakers: the tap point for anything
     // that records or streams the mix (03-eq.md section 14).
     getMasterOutputNode: () => fx.masterOutput,
+    supportsMaster: true,
+    setMasterFx: (params, opts) => fx.setMasterFx(params, opts),
+    getMasterFxNodes: () => fx.getMasterFxNodes(),
+    masterFxReduction: () => fx.masterFxReduction(),
+    masterFxLatency: () => fx.masterFxLatency(),
   };
 }

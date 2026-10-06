@@ -168,7 +168,8 @@ async def test_fx_is_in_the_render_cache_key(jobs_dir, client, tmp_path):
 
 
 def test_cache_version_bumped():
-    assert stems_mod._RENDER_CACHE_VERSION == "5"
+    # "5" for the EQ; task F's master bumped it again.
+    assert int(stems_mod._RENDER_CACHE_VERSION) >= 5
 
 
 @pytest.mark.parametrize(

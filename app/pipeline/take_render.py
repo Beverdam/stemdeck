@@ -73,6 +73,15 @@ EXPORT_LIMITER_LOSSY = (
 # measured.
 # A low-bitrate tool; at 192 kbps it saves nothing worth a click.
 AAC_ENCODE_ARGS = ["-c:a", "aac", "-b:a", "192k", "-aac_is", "0"]
+# The fallback for a mastered video whose AAC still decoded over its ceiling
+# (stems._render_master_verified): the default "twoloop" coder sometimes
+# sends a single block several dB over its input even without intensity
+# stereo (measured +3.6 dBFS on a hot song limited at -1.6 dB, at a level a
+# lower input did not fix: not monotonic). The "fast" coder stayed within
+# 0.8 dB of its input at every level tried on four mastered songs. It is the
+# fallback, not the default, because it is the encoder's simpler rate control
+# (sound not compared by ear).
+AAC_ENCODE_ARGS_ALT = [*AAC_ENCODE_ARGS, "-aac_coder", "fast"]
 
 
 def export_limiter(lossy: bool) -> str:
@@ -332,6 +341,9 @@ def build_video_render_cmd(
     start_sec: float = 0.0,
     take_fx: str = "",
     master_fx: str = "",
+    master_chain: str = "",
+    trim_db: float = 0.0,
+    alt_aac: bool = False,
 ) -> list[str]:
     """One ffmpeg command: backing mix + take audio + one camera tile -> MP4.
 
@@ -347,7 +359,12 @@ def build_video_render_cmd(
     time and is moved into the video's time here.
 
     `take_fx` is the take's EQ (its track's), `master_fx` the master EQ, both
-    "" or a filter prefix ending in a comma, as the lanes' fx_filter."""
+    "" or a filter prefix ending in a comma, as the lanes' fx_filter.
+
+    `master_chain` is the master (app/pipeline/mastering.py: compressor, gain,
+    true-peak limiter), which replaces the lossy export limiter; `trim_db` and
+    `alt_aac` are the retry of a master whose AAC decoded over its ceiling
+    (stems._render_master_verified)."""
     width, height = CANVAS_SIZES[canvas]
     start_sample = max(0, int(round(start_sec * TAKE_RATE)))
     start_sec = start_sample / TAKE_RATE
@@ -368,13 +385,14 @@ def build_video_render_cmd(
     ]
     filters.append(f"[{take_idx}:a]{cut}{take_fx}volume={take_gain:.6f}[a{take_idx}]")
     n = take_idx + 1
+    end = master_chain or EXPORT_LIMITER_LOSSY
+    if trim_db > 0:
+        end += f",volume={10.0 ** (-trim_db / 20.0):.8f}"
     if n > 1:
         labels = "".join(f"[a{i}]" for i in range(n))
-        filters.append(
-            f"{labels}amix=inputs={n}:normalize=0,{master_fx}{EXPORT_LIMITER_LOSSY}[aout]"
-        )
+        filters.append(f"{labels}amix=inputs={n}:normalize=0,{master_fx}{end}[aout]")
     else:
-        filters.append(f"[a0]{master_fx}{EXPORT_LIMITER_LOSSY}[aout]")
+        filters.append(f"[a0]{master_fx}{end}[aout]")
 
     filters.append(f"color=c=black:s={width}x{height}:r={VIDEO_FPS}:d={duration_sec:.6f}[bg]")
     filters.append(
@@ -400,7 +418,7 @@ def build_video_render_cmd(
         "yuv420p",
         "-r",
         str(VIDEO_FPS),
-        *AAC_ENCODE_ARGS,
+        *(AAC_ENCODE_ARGS_ALT if alt_aac else AAC_ENCODE_ARGS),
         "-ar",
         str(audio_rate),
         "-t",

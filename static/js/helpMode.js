@@ -71,6 +71,16 @@ const HELP = [
   ['.daw-meta-card[data-meta="stability"]', "help.meta.stability"],
   [".stem-presence-panel .stem-card[data-stem]", "help.presence", presenceName],
   ["#ruler-time", "help.waves", null, "help.wavesTitle"],
+  // The Master drawer (masterPanel.js). Its power button and its EQ reuse
+  // the EQ panels' classes, so these come before the EQ entries.
+  [".master-power", "help.masterPower", null, "master.title"],
+  [".master-presets", "help.masterPresets", null, "master.presetsAria"],
+  [".master-target, .master-ceiling", "help.masterFields", null, "master.helpFieldsTitle"],
+  [".master-glue", "help.masterGlue", null, "master.glue"],
+  [".master-listen", "help.masterListen", null, "master.listen"],
+  [".master-readout", "help.masterReadout", null, "master.helpReadoutTitle"],
+  [".master-excerpt", "help.masterExcerpt", null, "master.excerpt"],
+  [".master-meters", "help.masterMeters", null, "master.meters"],
   // EQ tab and panels. Inside .waves-column and the mixer rows, so before them.
   [".eq-tab", "help.eqTab"],
   [".eq-power", "help.eqPower"],
@@ -102,7 +112,9 @@ const HELP = [
   ["#t-metro", "help.click"],
   ["#t-metro-vol-btn", "help.clickVolume"],
   ["#t-metro-more", "help.clickMore"],
+  ["#t-master-btn", "help.masterChip", null, "master.title"],
   ["#t-export-btn", "help.export"],
+  ["#t-export-master", "help.masterExportRow", null, "master.title"],
 ];
 
 // Every option in Settings, by tab: the tab and option names are the dialog's
