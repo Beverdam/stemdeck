@@ -341,3 +341,39 @@ def test_take_render_carries_the_master_chain():
     assert f"{chain},volume=" in graph
     assert "EXPORT" not in graph and graph.count("alimiter") == 1
     assert cmd[cmd.index("-aac_coder") + 1] == "fast"
+
+
+async def test_a_measurement_whose_client_left_is_stopped(jobs_dir, monkeypatch):
+    """The studio drops a measurement when the mix changes again; the server
+    stops it (its ffmpeg is killed by the cancel) instead of finishing it."""
+    from fastapi import HTTPException
+
+    _job(jobs_dir)
+    state = {"cancelled": False}
+
+    async def slow_plan(*args, **kwargs):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    class GoneRequest:
+        async def is_disconnected(self):
+            return True
+
+    monkeypatch.setattr(stems_mod, "master_plan", slow_plan)
+    monkeypatch.setattr(stems_mod, "_DISCONNECT_POLL_SEC", 0.01)
+    with pytest.raises(HTTPException) as err:
+        await stems_mod.get_mixdown_loudness(
+            GoneRequest(),
+            JOB,
+            stems="vocals,bass",
+            gains="1,1",
+            pitches="",
+            fx="",
+            master=STREAMING,
+            lossy=False,
+        )
+    assert err.value.status_code == 499
+    assert state["cancelled"] is True

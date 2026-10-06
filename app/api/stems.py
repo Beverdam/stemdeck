@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -184,6 +185,8 @@ _master_plan_locks: dict[str, asyncio.Lock] = {}
 # rendered again with its output trimmed (_render_master_verified).
 LOSSY_RETRIES = 3
 LOSSY_RETRY_MARGIN_DB = 0.1
+# How often a loudness request checks that its client is still there.
+_DISCONNECT_POLL_SEC = 0.5
 
 
 def _mixdown_cache_key(
@@ -1803,6 +1806,7 @@ async def get_mixdown(
 
 @router.get("/jobs/{job_id}/mixdown/loudness")
 async def get_mixdown_loudness(
+    request: Request,
     job_id: str,
     stems: str = Query(..., description="Comma-separated lane names to sum"),
     gains: str = Query(..., description="Comma-separated linear gains, parallel to stems"),
@@ -1815,7 +1819,11 @@ async def get_mixdown_loudness(
     loudness before, after the compressor and after the master, the gain and
     the compressor threshold. The studio's Master readout and its live
     preview read it. The whole song is always measured, so there is no
-    start/end; a mix measured once is answered from the cache."""
+    start/end; a mix measured once is answered from the cache.
+
+    The studio asks again every time the mix settles and drops the older
+    request, so a measurement whose client has gone away is stopped (its
+    ffmpeg killed) rather than left to delay the one that is wanted."""
     if not JOB_ID_RE.match(job_id):
         raise HTTPException(status_code=404, detail="job not found")
     names, parsed_gains = _parse_lane_gains(stems, gains)
@@ -1834,18 +1842,29 @@ async def get_mixdown_loudness(
     render_fx = await asyncio.to_thread(
         build_render_fx, [lane.name for lane in render_lanes], paths, fx_req
     )
-    plan, _rate = await master_plan(
-        job_id,
-        paths,
-        [
-            _lane_chain(render_fx.lanes[i], lane.pitch, lane.gain)
-            for i, lane in enumerate(render_lanes)
-        ],
-        render_fx.master,
-        settings,
-        lossy,
-        _take_versions(job_id, names),
+    task = asyncio.create_task(
+        master_plan(
+            job_id,
+            paths,
+            [
+                _lane_chain(render_fx.lanes[i], lane.pitch, lane.gain)
+                for i, lane in enumerate(render_lanes)
+            ],
+            render_fx.master,
+            settings,
+            lossy,
+            _take_versions(job_id, names),
+        )
     )
+    while not task.done():
+        await asyncio.wait({task}, timeout=_DISCONNECT_POLL_SEC)
+        if not task.done() and await request.is_disconnected():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            # Nobody is listening; the status is for the log.
+            raise HTTPException(status_code=499, detail="client went away")
+    plan, _rate = task.result()
     return master_plan_view(plan)
 
 
