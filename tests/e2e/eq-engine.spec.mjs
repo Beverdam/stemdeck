@@ -277,6 +277,14 @@ test("in the studio: a bell boosts the lane, bypass is exact, the EQ is saved an
     const bypassed = await snapshot();
     eqApi.setBypass("other", false);
     await sleep(300);
+    // A/B preview: plays flat without saving, then back to the saved EQ.
+    eqApi.previewLaneEq("other", { params: { bands: [] } });
+    await sleep(300);
+    const preview = await snapshot();
+    const savedDuringPreview = eqApi.getLaneEq("other").params.bands.length;
+    eqApi.previewLaneEq("other", null);
+    await sleep(300);
+    const restored = await snapshot();
     const fx = eqApi.exportFxParam(["other", "vocals"]);
     const stored = JSON.parse(localStorage.getItem("stemdeck:mix:e2e0deadbeef") || "null");
     const db = (s) => 20 * Math.log10(rms(s.post) / rms(s.pre));
@@ -287,6 +295,9 @@ test("in the studio: a bell boosts the lane, bypass is exact, the EQ is saved an
       boostDb: db(boosted),
       expectedDb,
       bypassExact: bypassed.pre.every((v, i) => v === bypassed.post[i]),
+      previewExact: preview.pre.every((v, i) => v === preview.post[i]),
+      savedDuringPreview,
+      restoredDb: db(restored),
       fx,
       sampleRate: eqApi.liveSampleRate(),
       storedLater: stored,
@@ -299,6 +310,9 @@ test("in the studio: a bell boosts the lane, bypass is exact, the EQ is saved an
   expect(Math.abs(measured.boostDb - measured.expectedDb)).toBeLessThan(0.1);
   expect(measured.boostDb).toBeGreaterThan(10);
   expect(measured.bypassExact).toBe(true);
+  expect(measured.previewExact).toBe(true);
+  expect(measured.savedDuringPreview).toBe(1);
+  expect(Math.abs(measured.restoredDb - measured.expectedDb)).toBeLessThan(0.1);
   // Only the lane whose EQ changes the sound is in the export parameter.
   const wire = JSON.parse(Buffer.from(measured.fx, "base64url").toString("utf8"));
   expect(wire).toEqual({ v: 1, lanes: { other: [{ id: "eq", out: 0, b: [["bell", 1000, 12, 1, 12]] }] } });

@@ -7,8 +7,9 @@
 // AudioContext clock — sample-accurate, zero streaming connections during playback,
 // no drift. Works identically on WKWebView, Safari, and Chrome.
 //
-// Graph:  per-stem AudioBufferSourceNode -> GainNode (vol/mute/solo) -> AnalyserNode (VU)
-//                                                                    -> masterGain -> SoundTouchNode -> destination
+// Graph:  per-stem AudioBufferSourceNode -> GainNode (vol/mute/solo) -> fx slot (EQ, fxChain.js)
+//          -> AnalyserNode (VU) -> pitch bus -> SoundTouchNode -> masterGain -> master fx slot
+//          -> destination
 //
 // Used behind a feature flag (see player.js) so it can be A/B'd against the legacy
 // streaming path before cutover.

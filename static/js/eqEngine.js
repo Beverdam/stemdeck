@@ -95,6 +95,19 @@ export function resetLane(laneId) {
   return setLaneEq(laneId, flatEq());
 }
 
+/**
+ * Play a different EQ on the lane without saving or announcing it: an A/B
+ * "compare" (preview the flat or bypassed version), or soloing one band
+ * (preview a single band-pass at that band). Pass null to go back to the
+ * lane's saved EQ. Never reaches the store or the export.
+ */
+export function previewLaneEq(laneId, descriptor) {
+  if (!entryOf(laneId)) return null;
+  const eq = descriptor === null ? getLaneEq(laneId) : normalizeEq(descriptor);
+  pushToEngine(laneId, eq);
+  return eq;
+}
+
 /** True when the lane's EQ changes the sound (for the "EQ on" indicator). */
 export function isLaneActive(laneId) {
   return !eqIsFlat(getLaneEq(laneId));

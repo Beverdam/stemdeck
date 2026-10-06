@@ -13,7 +13,9 @@
 // The backend's FileResponse already handles Range requests natively (Starlette
 // 1.3.x), so no server-side changes are needed.
 //
-// Graph: per-stem AudioBufferSourceNode -> GainNode -> masterGain -> SoundTouchNode -> destination
+// Graph: per-stem AudioBufferSourceNode -> GainNode -> fx slot (EQ, fxChain.js)
+//        -> AnalyserNode -> pitch bus -> SoundTouchNode -> masterGain
+//        -> master fx slot -> destination
 
 const CHUNK_SEC = 5;      // seconds of audio per chunk
 const LOOKAHEAD_SEC = 12; // schedule next chunk this far ahead of playhead
