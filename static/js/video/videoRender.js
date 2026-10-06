@@ -32,11 +32,13 @@ export async function saveCameraOffset(jobId, takeId, cameraOffsetMs) {
  * Ask for a render. `mix` is the backing as heard: { names, gains, pitches } with the
  * take itself left out, and `takeGain` the take lane's own level. `span` is
  * "take" (from the count-in to where the take stopped) or "song" (all of it).
- * `fx` is the export EQ parameter (base64url), "" for none.
+ * `fx` is the export EQ parameter (base64url), "" for none; `master` the
+ * export's master= value, "" for none.
  * Resolves the server's status object ({status, progress, error, url}).
  */
 export async function requestRender(jobId, takeId, {
   cameraOffsetMs, mix, takeGain = 1, canvas = "16:9", mirror = false, span = "take", fx = "",
+  master = "",
 }) {
   const body = {
     stems: mix?.names || [],
@@ -54,6 +56,8 @@ export async function requestRender(jobId, takeId, {
   // The lanes' EQs (eqEngine.exportFxParam), only when one changes the sound.
   // The take gets its track's EQ on the server.
   if (fx) body.fx = fx;
+  // The master (masterEngine.exportMasterParam), only when it is on.
+  if (master) body.master = master;
   const res = await fetch(`${_base(jobId, takeId)}/render`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

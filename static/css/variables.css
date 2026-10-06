@@ -94,6 +94,9 @@
   --eq-band-4: #8fb4ff;
   --eq-band-5: #b9e07a;
   --eq-band-6: #d49cf0;
+  /* The Master drawer (mastering.css): its settings column fits without
+     scrolling at this height. */
+  --master-drawer-h: 364px;
 
   /* Motion */
   --t-fast: 80ms;

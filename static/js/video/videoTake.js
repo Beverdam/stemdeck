@@ -18,6 +18,7 @@ import { t, applyTranslations, onLanguageChange } from "../i18n.js";
 import { showError } from "../job.js";
 import { currentMixLanes, triggerDownload } from "../player.js";
 import { exportFxParam } from "../eqEngine.js";
+import { exportMasterParam } from "../masterEngine.js";
 import {
   requestCamera, renderCameraPermission, getRememberedCamera,
   onTakeEvent, registerTakeParticipant, uploadCameraPart,
@@ -446,6 +447,7 @@ function _takeRow(jobId, take, signal, songTitle) {
       const fx = exportFxParam(take.track_id ? [...names, take.track_id] : names);
       await requestRender(jobId, take.id, {
         cameraOffsetMs: offset, mix: { names, gains, pitches }, takeGain, span: span.value, fx,
+        master: exportMasterParam(),
       });
     } catch (err) {
       console.warn("[video] render request failed:", err);
