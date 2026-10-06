@@ -1287,6 +1287,22 @@ const en = {
   "video.ready": "Video ready",
   "video.download": "Download MP4",
   "video.failed": "The video could not be made: {reason}",
+  "eq.panel.general": "Parametric EQ",
+  "eq.panel.drum": "Drum EQ",
+  "eq.panel.bass": "Bass EQ",
+  "eq.panel.guitar": "Guitar EQ",
+  "eq.panel.keys": "Keys EQ",
+  "eq.panel.voice": "Voice EQ",
+  "eq.panel.regionAria": "{panel} for {name}",
+  "eq.tab.openAria": "Open the {panel} for {name}",
+  "eq.tab.closeAria": "Close the {panel} for {name}",
+  "eq.tab.titleActive": "{panel}: on",
+  "eq.tab.titleBypassed": "{panel}: bypassed",
+  "eq.power.on": "On",
+  "eq.power.bypassed": "Bypassed",
+  "eq.power.bypassTitle": "Bypass this EQ. Its settings are kept.",
+  "eq.power.enableTitle": "Turn this EQ back on",
+  "eq.power.aria": "EQ on for {name}",
 };
 
 const pl = {

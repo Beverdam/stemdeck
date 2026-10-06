@@ -73,7 +73,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // ─── Place in the stack ───
 {
   check("lanes step by LANE_ORDER_STEP", laneOrder(0) === 0 && laneOrder(3) === 3 * LANE_ORDER_STEP);
-  check("a take lane sits right after its track", takeLaneOrder(4, 0) === laneOrder(4) + 1);
+  check("a take lane sits right after its track and its EQ row", takeLaneOrder(4, 0) === laneOrder(4) + 2);
   check("take lanes keep their order", takeLaneOrder(4, 0) < takeLaneOrder(4, 1) && takeLaneOrder(4, 1) < takeLaneOrder(4, 2));
   check("the last take lane is still before the next track", takeLaneOrder(4, 49) < laneOrder(5));
   check("even past the cap, it never reaches the next track", takeLaneOrder(4, 500) < laneOrder(5));

@@ -69,9 +69,13 @@ export function laneOrder(index) {
   return index * LANE_ORDER_STEP;
 }
 
-/** The CSS order of the k-th take lane (0 = newest) under the lane at `index`. */
+/**
+ * The CSS order of the k-th take lane (0 = newest) under the lane at `index`.
+ * +1 is the track's EQ panel row (eq/eqPanelKinds.js eqRowOrder), so the
+ * takes start at +2.
+ */
 export function takeLaneOrder(index, k) {
-  return index * LANE_ORDER_STEP + 1 + Math.min(k, LANE_ORDER_STEP - 2);
+  return index * LANE_ORDER_STEP + 2 + Math.min(k, LANE_ORDER_STEP - 3);
 }
 
 /**

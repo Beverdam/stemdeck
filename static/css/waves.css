@@ -670,6 +670,10 @@
   min-width: 0;
   position: relative;
   overflow: hidden;
+  /* Clips the same, but without becoming a scroll container, so the EQ tab
+     and an open EQ panel (eq.css) can stick to the visible left edge of
+     .wave-scroll at any zoom. Browsers without `clip` keep `hidden`. */
+  overflow: clip;
   min-height: 274px;
   --wave-gutter: 0px;
 }

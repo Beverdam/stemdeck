@@ -1,0 +1,202 @@
+/* EQ tab on each lane and the EQ panel row it opens (static/js/eq/).
+   Colours and sizes are tokens from variables.css. */
+
+/* ── The tab, at the bottom-left of a waveform lane ── */
+
+/* Spans the lane so the tab can stick to the visible left edge when the
+   lanes are zoomed and scrolled: a sticky child is held inside its parent's
+   box, and this box is the whole lane. */
+.stem-waveform-row > .eq-tab-dock {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.eq-tab {
+  position: sticky;
+  left: 6px;
+  margin: 0 0 4px 6px;
+  height: var(--eq-tab-h);
+  min-width: 34px;
+  padding: 0 6px 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--eq-tab-radius);
+  background: var(--bg-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.eq-tab:hover { color: var(--fg); border-color: var(--muted-2); }
+/* A small chevron: down when closed, up when the panel is open. */
+.eq-tab::after {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-1px) rotate(45deg);
+  transition: transform var(--t-fast);
+  opacity: 0.8;
+}
+.eq-tab.open::after { transform: translateY(1px) rotate(-135deg); }
+.eq-tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.eq-tab.open {
+  color: var(--accent);
+  border-color: var(--gold-line);
+  background: color-mix(in srgb, var(--bg-2) 80%, var(--accent));
+}
+
+/* "EQ on": a gold dot when the EQ changes the sound, a hollow one when it is
+   set but bypassed, nothing when it is flat. */
+.eq-tab-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+}
+.eq-tab.active .eq-tab-dot {
+  background: var(--accent);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.eq-tab.bypassed:not(.active) .eq-tab-dot { border-color: var(--muted); }
+
+/* ── The panel row, waveform side ── */
+
+.stem-waveform-row.eq-panel-lane {
+  background: var(--eq-panel-bg);
+  border-bottom: 2px solid var(--border);
+  box-sizing: border-box;
+  min-height: 0;
+}
+
+/* Spans the visible waveform area at any zoom: sticky to the scroller's
+   left edge, as wide as the scroller's viewport (--eq-view-w, eqRows.js). */
+.eq-panel-body {
+  position: sticky;
+  left: 0;
+  width: var(--eq-view-w, 100%);
+  max-width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  pointer-events: auto;
+  overflow: hidden;
+  box-shadow: inset 3px 0 0 var(--stem-color, var(--accent));
+}
+
+/* ── The panel row, mixer side ── */
+
+.lane-header.mx-row.eq-panel-row {
+  align-items: stretch;
+  padding: 8px 10px 8px 12px;
+  background: var(--eq-panel-bg);
+  max-height: none;
+}
+.lane-header.mx-row.eq-panel-row::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--stem-color, var(--accent));
+  opacity: 0.8;
+}
+
+.eq-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.eq-side-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.eq-side-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.eq-side-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.eq-side-lane {
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.eq-side-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 0;
+  flex: 1;
+}
+
+/* Small buttons of the panel, in the M/S family. */
+.eq-btn,
+.eq-power {
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.eq-btn:hover:not(:disabled),
+.eq-power:hover { color: var(--fg); border-color: var(--muted-2); }
+.eq-btn:disabled { opacity: 0.4; cursor: default; }
+.eq-btn:focus-visible,
+.eq-power:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.eq-btn[aria-pressed="true"] {
+  background: var(--gold-soft);
+  color: var(--accent);
+  border-color: var(--gold-line);
+}
+
+/* On: gold, like an engaged S. Bypassed: muted, struck through by its label. */
+.eq-power { min-width: 64px; }
+.eq-power.on {
+  background: var(--gold-soft);
+  color: var(--accent);
+  border-color: var(--gold-line);
+}
+.eq-power::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+}
+.eq-power.on::before { background: currentColor; }
