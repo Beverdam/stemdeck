@@ -227,7 +227,6 @@ let tracks = {};
 let _deletedJobIds = new Set();
 let _currentTrackId = null;
 // The open track's tags as the last render() saw them. See setCurrentTrack().
-let _renderedTagsKey = "";
 let _loadTrackToken = 0;
 // Imports submitted from the form, mapped to the load token at that moment. A
 // finished one opens in the studio only if nothing has been opened since (#747).
@@ -1212,12 +1211,8 @@ export function setResplitTarget(track) {
 
 export function setCurrentTrack(trackId) {
   _currentTrackId = trackId;
-  // The library's Tags section shows the open track's tags, so it is rebuilt
-  // when those are not what the last render() drew. Compared by tags rather
-  // than by id: loadTrackIntoStudio() can bring a track's tags in from the
-  // server while that same track is already the open one. Anything else is
-  // patched in place, since a full render() rebuilds the whole sidebar.
-  if (openTrackTags().join("\n") !== _renderedTagsKey) { render(); return; }
+  // The open track is marked in place, since a full render() rebuilds the
+  // whole sidebar.
   for (const el of document.querySelectorAll(".cat-item.active")) el.classList.remove("active");
   for (const el of document.querySelectorAll(`.cat-item[data-id="${trackId}"]`)) el.classList.add("active");
   for (const el of document.querySelectorAll(".strip-thumb.active")) el.classList.remove("active");
@@ -1783,12 +1778,6 @@ function wireLibraryDeleteKeys() {
 // ─── Rendering helpers ───
 
 /** The open track's tags, deduplicated, or none when it is in the Trash. */
-function openTrackTags() {
-  const track = tracks[_currentTrackId];
-  if (!track || getTrashFolder()?.items.includes(_currentTrackId)) return [];
-  return [...new Set(track.tags ?? [])];
-}
-
 function getAllTags(trashIds) {
   const counts = {};
   for (const [id, track] of Object.entries(tracks)) {
@@ -2226,8 +2215,6 @@ function render() {
   const catalog = document.getElementById("catalogPanel");
   const searchInput = document.getElementById("catalogSearch");
   if (!list) return;
-  const openTags = openTrackTags();
-  _renderedTagsKey = openTags.join("\n");
 
   list.innerHTML = "";
   if (strip) strip.innerHTML = "";
@@ -2347,44 +2334,9 @@ function render() {
     return;
   }
 
-  // Tags section: the open track's tags only. Every tag in the library was a
-  // wall of chips with nothing to say which song they came from. The count is
-  // still library-wide, since it is how many tracks the chip's filter finds.
-  // setCurrentTrack() re-renders when the open track's tags change.
-  if (openTags.length) {
-    const counts = new Map(getAllTags(trashIds));
-    const section = makeSectionEl(i18nT("library.tags"));
-    section.classList.add("lib-tags-section");
-    const row = document.createElement("div");
-    row.className = "lib-tags-row";
-    const activeTag = catalogSearchQuery.startsWith("#") ? catalogSearchQuery.slice(1) : null;
-    for (const tag of openTags) {
-      const count = counts.get(tag) ?? 1;
-      const chip = document.createElement("button");
-      chip.className = `lib-tag-chip${activeTag === tag ? " active" : ""}`;
-      chip.type = "button";
-      chip.dataset.tag = tag;
-      chip.textContent = tag;
-      const countSpan = document.createElement("span");
-      countSpan.className = "lib-tag-count";
-      countSpan.textContent = String(count);
-      chip.appendChild(countSpan);
-      chip.addEventListener("click", () => {
-        const input = document.getElementById("catalogSearch");
-        if (catalogSearchQuery === `#${tag}`) {
-          catalogSearchQuery = "";
-          if (input) input.value = "";
-        } else {
-          catalogSearchQuery = `#${tag}`;
-          if (input) input.value = `#${tag}`;
-        }
-        render();
-      });
-      row.appendChild(chip);
-    }
-    section.appendChild(row);
-    list.appendChild(section);
-  }
+  // No Tags section under the collections: the maintainer asked for it gone.
+  // A tag still filters the library when typed into search as #tag, with the
+  // suggestions under the search box (showTagSuggestions).
 
   renderStrip(strip, nonTrash);
   updateQueueBadge();
