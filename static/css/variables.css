@@ -71,6 +71,30 @@
   --radius-sm: 8px;
   --radius-xs: 6px;
 
+  /* EQ tab and panels (eq.css). The tab is the M/S buttons' family: the
+     same 5px corner, a little lower so it sits on the lane's bottom edge. */
+  --eq-tab-h:      16px;
+  --eq-tab-radius: 5px;
+  --eq-panel-bg:   #0d1216;
+  --eq-graph-bg:   #090c0f;
+  --eq-grid:       rgba(148,163,184,0.09);
+  --eq-grid-zero:  rgba(148,163,184,0.26);
+  --eq-label:      #6b757e;
+  --eq-spectrum:   rgba(148,163,184,0.20);
+  --eq-spectrum-line: rgba(148,163,184,0.42);
+  --eq-curve-fill: rgba(244,183,64,0.10);
+  --eq-plate:      #161d23;
+  --eq-plate-edge: #26313a;
+  --eq-knob:       #222c34;
+  --eq-knob-cap:   #2c3741;
+  /* Band handles, in turn (a band keeps its colour while it exists). */
+  --eq-band-1: #f4b740;
+  --eq-band-2: #5ec8c0;
+  --eq-band-3: #e97a6a;
+  --eq-band-4: #8fb4ff;
+  --eq-band-5: #b9e07a;
+  --eq-band-6: #d49cf0;
+
   /* Motion */
   --t-fast: 80ms;
   --t-base: 120ms;

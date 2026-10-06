@@ -15,6 +15,8 @@ import {
   syncTakeFolderOrder, selectTake,
 } from "./capture/takeLanes.js";
 import { laneOrder, takeLaneOrder } from "./capture/takeFolderModel.js";
+import { setEqContext, syncEqRows, syncEqRowOrder, eqPanelsHeight } from "./eq/eqRows.js";
+import { laneLayout } from "./eq/eqPanelKinds.js";
 import {
   mixerEl, multitrackContainer, bpmChip, keyChip, stemsChip, timeEl,
   titleEl, npThumb, rulerTime, wavesGrid, playBtn,
@@ -135,7 +137,7 @@ function applyStemSelectionFilter(presentNames) {
   app?.style.setProperty("--visible-track-count", String(visibleTrackCount));
   app?.style.setProperty(
     "--wave-widget-track-stack-h",
-    `${(visibleTrackCount * WAVEFORM_LANE_HEIGHT) + ((visibleTrackCount - 1) * WAVEFORM_SEPARATOR_HEIGHT)}px`,
+    `${(visibleTrackCount * WAVEFORM_LANE_HEIGHT) + ((visibleTrackCount - 1) * WAVEFORM_SEPARATOR_HEIGHT) + eqPanelsHeight()}px`,
   );
   for (const sel of _STEM_ROW_SELECTORS) {
     for (const el of document.querySelectorAll(sel)) {
@@ -160,7 +162,9 @@ function applyStemSelectionFilter(presentNames) {
     //
     // In steps of LANE_ORDER_STEP, so an open take folder's lanes fit between
     // its track and the next lane (syncTakeFolderOrder, below).
-    row.style.order = stem === "original" ? "-1" : String(laneOrder(order.indexOf(stem)));
+    // "original" one step above the first lane, so its EQ row (order + 1)
+    // still sits between it and the next lane.
+    row.style.order = String(laneOrder(stem === "original" ? -1 : order.indexOf(stem)));
     row.classList.toggle("hidden", !available);
     row.removeAttribute("aria-disabled");
     for (const el of row.querySelectorAll("button, .lane-knob, .lane-dl")) {
@@ -177,6 +181,7 @@ function applyStemSelectionFilter(presentNames) {
     }
   }
   syncTakeFolderOrder();
+  syncEqRowOrder();
   for (const row of document.querySelectorAll(".energy-row[data-stem]")) {
     row.classList.toggle("hidden", !shown(row.dataset.stem));
   }
@@ -575,6 +580,9 @@ function renderAllOverviewWaveformsFromPeaks(stems, peaksData) {
     renderOverviewWaveformPath(name, pts, norm, STEM_COLORS[name] || "#a0a0a0", bars, i);
   });
   renderTakeFolderLanes(ensureOverviewWaveformLayer(), laneNames, peaksData, norm, bars);
+  // The EQ tabs live in the lane rows just rewritten, and an open EQ panel
+  // goes right under its lane.
+  syncEqRows();
   // The live waveform of a take being recorded (capture/liveWave.js) re-reads
   // its lane's place and hands over to these bars on this event.
   document.dispatchEvent(new CustomEvent("stemdeck:overview-drawn"));
@@ -941,6 +949,7 @@ export function destroyPlayer() {
   }
   renderPlaceholderTracks();
   clearOverviewWaveforms();
+  setEqContext({ jobId: null, lanes: [], enabled: false });
   for (const row of mixerEl.querySelectorAll(".lane-header")) {
     const dl = row.querySelector(".lane-dl");
     if (dl) {
@@ -1010,6 +1019,7 @@ export function renderEmptyShell() {
   document.querySelector(".app")?.classList.add("no-track");
   stopStemVuLoop();
   syncTakeLanes(null, []); // no track, no takes
+  setEqContext({ jobId: null, lanes: [], enabled: false });
   ensureMixerStateDefaults();
   mixerEl.innerHTML = "";
   // lead_vocals/backing_vocals (#275) get rows too, built once here like the
@@ -1147,11 +1157,21 @@ function _syncVisibleCount() {
     "--visible-track-count", String(_baseVisibleCount + takeFolderRowCount()),
   );
   syncTakeFolderOrder();
+  syncEqRowOrder();
 }
 
 // A take folder opened or closed: the stack has more or fewer rows, so both
 // columns are laid out again and the lanes redrawn, without reloading audio.
 document.addEventListener("stemdeck:take-folders-changed", () => {
+  if (!currentJobId) return;
+  _syncVisibleCount();
+  if (_laneCount > 0) _applyLaneHeight(_laneCount);
+  rerenderOverviewWaveforms();
+});
+
+// An EQ panel opened or closed under a lane: the same, with a taller row
+// (eq/eqRows.js). The redraw puts the panel rows in place.
+document.addEventListener("stemdeck:eq-rows-changed", () => {
   if (!currentJobId) return;
   _syncVisibleCount();
   if (_laneCount > 0) _applyLaneHeight(_laneCount);
@@ -1172,12 +1192,13 @@ function _applyLaneHeight(count) {
   //
   // So the row is the unit. Divide the panel by the row count, and give the
   // mixer and the waveform column exactly the same total.
-  const rowH = panelH > 0 && count > 0
-    ? Math.max(WAVEFORM_LANE_HEIGHT + WAVEFORM_SEPARATOR_HEIGHT, Math.floor(panelH / count))
-    : WAVEFORM_LANE_HEIGHT + WAVEFORM_SEPARATOR_HEIGHT;
+  //
+  // An open EQ panel is a row of its own fixed height in both columns
+  // (eq/eqRows.js); the lanes share what the panels leave.
+  const { rowH, stackH } = laneLayout(panelH, count, eqPanelsHeight(), WAVEFORM_LANE_HEIGHT + WAVEFORM_SEPARATOR_HEIGHT);
   const appEl = document.querySelector(".app");
   appEl?.style.setProperty("--lane-h", `${rowH}px`);
-  appEl?.style.setProperty("--wave-widget-track-stack-h", `${count * rowH}px`);
+  appEl?.style.setProperty("--wave-widget-track-stack-h", `${stackH}px`);
   // The drawable height inside a row, which is what the multitrack is given.
   return rowH - WAVEFORM_SEPARATOR_HEIGHT;
 }
@@ -1377,6 +1398,8 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   document.querySelector(".app")?.classList.toggle("engine-waveforms", useEngine);
   // Take folders open only where their lanes can be drawn: the SVG overlay.
   setTakeFoldersEnabled(useEngine);
+  // EQ panels too: their rows live in the same overlay.
+  setEqContext({ jobId, lanes: orderedNames, enabled: useEngine });
   _syncVisibleCount();
   if (engineTooLarge) {
     console.warn(
