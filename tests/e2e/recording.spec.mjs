@@ -217,10 +217,13 @@ test.describe("recording a take", () => {
     // Hold the engine's clock: the take can never be placed against the song.
     await page.evaluate(async () => {
       const st = await import("/js/state.js");
+      await st.audioEngine.ready;
       st.audioEngine.isClockReady = () => false;
     });
+    // Stopped at once: too little audio to keep. A take that captured more
+    // is kept at an estimated place (recording-no-peaks.spec.mjs), because
+    // real audio is never thrown away.
     await pressRecord(page);
-    await page.waitForTimeout(600);
     await recBtn(page).click();
     await expect(page.locator("#recStatus")).toHaveText(/nothing was saved/, { timeout: 10000 });
     expect(log.finishes.length).toBe(0);

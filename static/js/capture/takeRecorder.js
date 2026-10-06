@@ -8,7 +8,9 @@
 //      included. Recording does not touch the count-in code.
 //   4. The first time the engine's clock is ready, its output mapping is read
 //      once and its schedule epoch kept. A seek, loop jump, pause, rate change
-//      or the end of the song bumps the epoch, and the take stops there.
+//      or the end of the song bumps the epoch, and the take stops there. If
+//      the engine itself goes away (its context closes: the song reloaded),
+//      the take stops there too and keeps what it captured.
 //   5. Stop: the worklet flushes, video participants finish their uploads,
 //      the last audio part is acknowledged, then /finish renders audio.wav.
 //   6. The user listens, then keeps it or discards it (DELETE).
@@ -19,12 +21,17 @@
 import {
   createTake, deleteTake, finishTake, AudioPartQueue,
 } from "./takeUpload.js";
-import { firstSampleSongSec, endSongSec, interleave, perfMsAtCtx } from "./takeMath.js";
+import {
+  firstSampleSongSec, endSongSec, interleave, perfMsAtCtx, keepUnplacedTake, estimatedMapping,
+} from "./takeMath.js";
 
 const listeners = new Set();
 const audioListeners = new Set();
 const participants = new Set();
 export const PARTICIPANT_TIMEOUT_MS = 60_000;
+// How often a take checks that its engine is still there. Batches stop
+// arriving when the context closes, so this cannot ride on them.
+const ENGINE_WATCH_MS = 250;
 
 /**
  * Events: {type:"armed", jobId, takeId, trackId, primary, ctxTimeAtFrame0, perfMsAtFrame0, sampleRate}
@@ -138,11 +145,16 @@ export function buildSidecar({
  * path (count-in included); `stopPlayback()` stops it. `onAutoStop(reason)`
  * is told when the transport ended the take on its own.
  *
+ * `startSongSec` is where the playhead stood: the estimate a take falls
+ * back on if it never reads the engine's clock (see estimatedMapping).
+ *
  * Returns a session: { state, takeId, stop(), keep(), discard(), ... }.
  * States: starting, recording, stopping, review, kept, discarded, failed.
+ * Once in review, `session.placement` is "clock" or "estimated", and
+ * `session.engineLost` says the engine went away while it recorded.
  */
 export function startTake({
-  engine, capture, jobId, label, trackId, recorder, primary = true,
+  engine, capture, jobId, label, trackId, recorder, primary = true, startSongSec = 0,
   startPlayback, stopPlayback, onAutoStop,
 }) {
   const ctx = capture.ctx;
@@ -161,6 +173,8 @@ export function startTake({
     ctxTimeAtFrame0: null,
     perfMsAtFrame0: null,
     error: null,
+    placement: null,
+    engineLost: false,
     stop,
     keep,
     discard,
@@ -183,6 +197,22 @@ export function startTake({
       primary,
     });
   };
+
+  // The engine is gone when its context has closed (destroy() closes the
+  // context it made) or it says so. Nothing reaches the recorder after that.
+  const engineGone = () => ctx.state === "closed" || engine.isDestroyed?.() === true;
+  const engineWatch = setInterval(() => {
+    if (session.state !== "recording" && session.state !== "starting") {
+      clearInterval(engineWatch);
+      return;
+    }
+    if (!engineGone()) return;
+    clearInterval(engineWatch);
+    console.warn("[takes] the engine this take records into went away; stopping the take");
+    session.engineLost = true;
+    onAutoStop?.("engine");
+    stop({ fromTransport: true });
+  }, ENGINE_WATCH_MS);
 
   const watchClock = () => {
     if (session.state !== "recording") return;
@@ -245,6 +275,7 @@ export function startTake({
 
   async function fail(reason, err) {
     if (session.state === "failed") return;
+    clearInterval(engineWatch);
     console.warn(`[takes] take failed (${reason}):`, err);
     const wasRecording = session.state === "recording" || session.state === "starting";
     session.state = "failed";
@@ -261,8 +292,13 @@ export function startTake({
 
   async function stop({ fromTransport = false } = {}) {
     if (session.state !== "recording" && session.state !== "starting") return session;
-    await startP.catch(() => {});
+    // A closed context never answers "started" either.
+    await new Promise((resolve) => {
+      const t = setInterval(() => { if (engineGone()) { clearInterval(t); resolve(); } }, ENGINE_WATCH_MS);
+      startP.catch(() => {}).then(() => { clearInterval(t); resolve(); });
+    });
     if (session.state === "failed") return session;
+    clearInterval(engineWatch);
     session.state = "stopping";
     emit({ type: "stopping", jobId, takeId: session.takeId, trackId });
     const res = await rec.stop();
@@ -275,11 +311,19 @@ export function startTake({
       return session;
     }
     if (!session.mapping) {
-      // Stopped before the song began (inside the count-in, or the engine
-      // never started): there is nothing to place against the song.
-      await fail("too-short");
-      return session;
+      // The engine never reported a running clock: Stop came before the song
+      // began, or the engine went away first. The audio decides, not the
+      // clock. A take that captured real audio is kept, placed where the
+      // playhead stood, and the user is told to check it; it used to be
+      // deleted as "too short" however long it had recorded.
+      if (!keepUnplacedTake(session.frames, capture.sampleRate)) {
+        await fail("too-short");
+        return session;
+      }
+      console.warn(`[takes] take ${session.takeId} has no song clock; keeping ${(session.frames / capture.sampleRate).toFixed(1)} s at an estimated place`);
+      session.mapping = estimatedMapping(session.ctxTimeAtFrame0, startSongSec, capture.roundTripSeconds);
     }
+    session.placement = session.mapping.estimated ? "estimated" : "clock";
     const video = await collectParticipants(session.takeId);
     try {
       await queue.drain();

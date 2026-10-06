@@ -830,6 +830,8 @@ export function createChunkedAudioEngine(stems, { onTime, onEnded, context } = {
     sourceTimeToCtxTime,
     ctxTimeToSourceTime,
     getScheduleEpoch: () => _epoch,
+    // A take recording into this engine stops when it goes (takeRecorder.js).
+    isDestroyed: () => destroyed,
     // `playing` flips before the async chunk fetch resolves, so the clock is
     // only trustworthy once _audioStarted is set.
     isClockReady: () => playing && _audioStarted,

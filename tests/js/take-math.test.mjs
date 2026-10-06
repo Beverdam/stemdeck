@@ -14,6 +14,7 @@ import {
   estimateRoundTripSec, median, makeBurst, findBurst, measureRoundTrips,
   summariseCalibration, interleave, maxFramesPerPart, recordBlockReason,
   CAL_CLICKS, CAL_SPACING_SEC, PART_MAX_BYTES,
+  keepUnplacedTake, estimatedMapping, KEEP_UNPLACED_MIN_SEC,
 } from "../../static/js/capture/takeMath.js";
 import { buildSidecar } from "../../static/js/capture/takeRecorder.js";
 import { AudioPartQueue, uploadPart } from "../../static/js/capture/takeUpload.js";
@@ -217,6 +218,33 @@ async function uploads() {
   let threw = false;
   try { await uploadPart("e2e0deadbeef", "t0011aabb", "camera", 0, new Uint8Array(PART_MAX_BYTES + 1)); } catch { threw = true; }
   check("a part over 4 MB is refused before sending", threw);
+}
+
+// ─── A take that never read the engine's clock ───
+{
+  // Judged by the audio captured, never by the missing clock: a four minute
+  // take whose engine went away used to be deleted as "too short".
+  check("four minutes of audio are kept", keepUnplacedTake(4 * 60 * 48000, 48000));
+  check("half a second is kept", keepUnplacedTake(KEEP_UNPLACED_MIN_SEC * 44100, 44100));
+  check("a double click's few frames are not", !keepUnplacedTake(4096, 48000));
+  check("no rate, nothing to judge: not kept", !keepUnplacedTake(48000, 0));
+
+  // Frame 0 lands where the playhead stood, less the round trip, like a
+  // take placed by the clock with no count-in.
+  const m = estimatedMapping(12.5, 30, 0.02);
+  check("estimated: frame 0 at the playhead", approx(firstSampleSongSec(12.5, m, 0.02), 30));
+  check("estimated: later frames follow at tempo 1", approx(songTimeAtCtx(14.5, m, 0.02), 32));
+  check("estimated mapping says so", m.estimated === true && m.epoch === null);
+  check("a bad playhead falls back to the top", estimatedMapping(1, NaN, 0).startOffset === 0);
+  check("a negative playhead is clamped to the top", estimatedMapping(1, -3, 0).startOffset === 0);
+  const sc = buildSidecar({
+    mapping: m, ctxTimeAtFrame0: 12.5, perfMsAtFrame0: 1000, frames: 48000 * 3,
+    capture: { sampleRate: 48000, channels: 1, roundTripSeconds: 0.02, calibrated: false, estimate: {} },
+    dropped: 0,
+  });
+  check("estimated sidecar: first sample at the playhead", approx(sc.timeline.first_sample_song_sec, 30, 1e-6), JSON.stringify(sc.timeline));
+  check("estimated sidecar: no count-in invented", sc.timeline.count_in_sec === 0, JSON.stringify(sc.timeline));
+  check("estimated sidecar: three seconds long", approx(sc.timeline.end_song_sec - sc.timeline.first_sample_song_sec, 3, 1e-6));
 }
 
 await uploads();

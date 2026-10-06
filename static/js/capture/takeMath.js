@@ -32,6 +32,36 @@ export function endSongSec(firstSongSec, frames, sampleRate, rate = 1) {
 }
 
 /**
+ * Shortest take kept when it never read the song's clock. Below this, Stop
+ * came before anything worth keeping was captured (a double click on Record).
+ * Above it the take holds real audio, and real audio is never thrown away.
+ */
+export const KEEP_UNPLACED_MIN_SEC = 0.5;
+
+/** True when a take with no clock mapping still holds audio worth keeping. */
+export function keepUnplacedTake(frames, sampleRate) {
+  return sampleRate > 0 && frames / sampleRate >= KEEP_UNPLACED_MIN_SEC;
+}
+
+/**
+ * The mapping for a take that recorded but never read the engine's clock
+ * (the engine it was bound to went away before playing). Frame 0 is put
+ * where the playhead stood when Record was pressed: the transport starts a
+ * moment after frame 0, so this is right to within that moment plus any
+ * count-in, and the user is told to check it and nudge.
+ */
+export function estimatedMapping(ctxTimeAtFrame0, startSongSec, roundTripSec) {
+  return {
+    startCtxTime: ctxTimeAtFrame0 - (roundTripSec || 0),
+    startOffset: Number.isFinite(startSongSec) ? Math.max(0, startSongSec) : 0,
+    rate: 1,
+    pipelineLatencySeconds: 0,
+    epoch: null,
+    estimated: true,
+  };
+}
+
+/**
  * Where the backend puts raw frame 0 once a nudge is applied. The server is
  * the one place the nudge is folded in; this mirrors it for the UI readout.
  */
