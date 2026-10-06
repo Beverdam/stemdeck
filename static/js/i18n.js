@@ -1380,6 +1380,17 @@ const en = {
   "eq.preset.guitarMix": "Guitar: sit in the mix",
   "eq.preset.guitarWarm": "Guitar: warm",
   "eq.preset.guitarFizz": "Guitar: tame the fizz",
+  "eq.keys.cut": "Cut",
+  "eq.keys.lowcut": "Low cut",
+  "eq.keys.body": "Body",
+  "eq.keys.warmth": "Warmth",
+  "eq.keys.presence": "Presence",
+  "eq.keys.focus": "Focus",
+  "eq.keys.air": "Air",
+  "eq.keys.tone": "Tone",
+  "eq.preset.keysBright": "Keys: brighter",
+  "eq.preset.keysWarm": "Keys: warmer",
+  "eq.preset.keysThin": "Keys: thin out the lows",
 };
 
 const pl = {

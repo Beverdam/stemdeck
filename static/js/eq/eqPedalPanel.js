@@ -120,7 +120,6 @@ export function mountPanel({ lane, kind, body, controls }) {
         fillFrom: k.fillFrom,
         onInput: (v, { first }) => change(k.key, v, first),
       });
-      if (k.hideName) knob.el.classList.add("no-name");
       knob.spec = k;
       knob.sectionKey = sec.section;
       knobs.set(k.key, knob);
@@ -194,6 +193,8 @@ export function mountPanel({ lane, kind, body, controls }) {
       const name = t(knob.spec.name);
       const sec = t(knob.sectionKey);
       knob.relabel(name, sec === name ? name : t("eq.knob.aria", { section: sec, name }));
+      // "Body" under "BODY" says it twice: one name per knob is enough.
+      knob.el.classList.toggle("no-name", sec === name || !!knob.spec.hideName);
       knob.set(knob.value());
     }
     toolbar.relabel();

@@ -30,6 +30,7 @@ const LOADERS = {
   drum: () => import("./eqGraphPanel.js"),
   bass: () => import("./eqPedalPanel.js"),
   guitar: () => import("./eqPedalPanel.js"),
+  keys: () => import("./eqPedalPanel.js"),
 };
 
 const TITLE_KEYS = {
