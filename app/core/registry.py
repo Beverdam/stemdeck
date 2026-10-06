@@ -440,6 +440,7 @@ def _recover_done_job(job_dir: Path) -> Job | None:
         lufs=meta.get("lufs"),
         peak_db=meta.get("peak_db"),
         dynamic_range=meta.get("dynamic_range"),
+        loudness_version=meta.get("loudness_version"),
         tempo_stability=meta.get("tempo_stability"),
         stem_presence=meta.get("stem_presence"),
         sections=meta.get("sections"),

@@ -222,6 +222,12 @@ def settle_cancelled(job: Job) -> bool:
     return True
 
 
+# Bumped when the loudness card's measurement changes, so songs analysed with
+# an older one are measured again. 1 (no field) was the mono 22 kHz, first 180 s
+# reading; 2 is BS.1770-4 on the whole stereo mix (analyze.measure_loudness).
+LOUDNESS_VERSION = 2
+
+
 @dataclass
 class Job:
     id: str
@@ -235,9 +241,13 @@ class Job:
     key: str | None = None
     scale: str | None = None  # "Major" / "Natural Minor"
     key_confidence: int | None = None  # 0-100 percent
-    lufs: float | None = None  # ITU-R BS.1770 integrated loudness (dB)
-    peak_db: float | None = None  # sample peak in dBFS (close to true peak)
-    dynamic_range: float | None = None  # peak_db - integrated LUFS (dB)
+    lufs: float | None = None  # ITU-R BS.1770-4 integrated loudness of the stereo mix (LUFS)
+    peak_db: float | None = None  # true peak in dBTP
+    dynamic_range: float | None = None  # peak_db - lufs: peak-to-loudness ratio (dB), not LRA
+    # Which loudness measurement wrote the three fields above. Songs analysed
+    # before 2 hold a mono 22 kHz first-180-s reading, about 4 LU too low; they
+    # are measured again the first time they are opened (jobs._upgrade_loudness).
+    loudness_version: int | None = None
     tempo_stability: int | None = None  # 0-100, beat interval consistency
     stem_presence: dict[str, int] | None = None  # per-stem RMS 0-100
     sections: list[dict] | None = None  # [{id, name, kind?, start, end, color}]
@@ -391,6 +401,7 @@ class Job:
             "lufs": self.lufs,
             "peak_db": self.peak_db,
             "dynamic_range": self.dynamic_range,
+            "loudness_version": self.loudness_version,
             "tempo_stability": self.tempo_stability,
             "stem_presence": self.stem_presence,
             "sections": self.sections,
