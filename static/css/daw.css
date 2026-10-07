@@ -898,13 +898,13 @@ input, textarea { font-family: inherit; }
 .queue-row:hover .queue-top { opacity: 0.65; }
 .queue-top:hover { background: rgba(232, 168, 56, 0.16); color: var(--accent); opacity: 1; }
 .queue-top:disabled { opacity: 0.3; cursor: default; }
-/* A row's actions float over its right edge and show on hover or keyboard
-   focus (#724). In the flow they cost the title their width on every row at
-   rest, which is where titles were being cut short, and a second button in
-   the flow would have cost it again. The fade lets a long title run under
-   them instead of stopping at a hard edge. */
+/* A row's actions float over its bottom-right corner and show on hover or
+   keyboard focus (#724). In the flow they cost the title their width on every
+   row at rest, which is where titles were being cut short. In the corner they
+   sit beside the second line (the duration, short) rather than over the
+   title, and the fade lets a long line run under them. */
 .cat-actions {
-  position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+  position: absolute; bottom: 4px; right: 6px;
   display: flex; gap: 2px; padding-left: 16px;
   background: linear-gradient(to right, transparent, var(--panel-2) 14px);
   opacity: 0; pointer-events: none;
@@ -912,17 +912,16 @@ input, textarea { font-family: inherit; }
 }
 .cat-item:hover .cat-actions,
 .cat-item:focus-within .cat-actions { opacity: 1; pointer-events: auto; }
-.cat-del, .cat-fav {
+.cat-del {
   width: 20px; height: 20px; border: 0; border-radius: 5px;
   background: transparent; color: var(--muted); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   padding: 0; flex-shrink: 0; transition: background var(--t-fast), color var(--t-fast);
 }
 .cat-del:hover { background: rgba(21,31,39,0.8); color: var(--danger); }
-.cat-fav:hover { background: rgba(21,31,39,0.8); color: var(--fg); }
-.cat-fav.active, .cat-fav.active:hover { color: #e54e4e; }
 /* A stopped song (#748) offers Extract at rest: it is the row's only way on. */
-.cat-item.is-stopped .cat-actions { opacity: 1; pointer-events: auto; }
+.cat-item.is-stopped .cat-actions,
+.cat-item.can-retry .cat-actions { opacity: 1; pointer-events: auto; }
 
 /* Trash rows look like library rows. On hover the second line becomes the
    hint, and a hold fills the row from the left over --hold-ms (set from

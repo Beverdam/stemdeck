@@ -1494,12 +1494,10 @@ function paintFavButton(btn, on) {
 }
 
 /**
- * Flip a track's favourite, from whichever heart was pressed.
- *
- * The Now Playing heart used to be the only one, and it disappears with its
- * card below 1460 px (#724), which left no way to favourite at all. Library
- * rows have one too now, and every heart goes through here so none of them can
- * disagree with the store or with each other.
+ * Flip a track's favourite: the Now Playing heart. Library rows had one too
+ * (#724), from when the card hid below 1460 px; the card stays on screen in a
+ * compact form since #735, so the rows no longer carry a heart. A row shows a
+ * favourite by its mark (.is-fav).
  */
 export function toggleFavorite(trackId) {
   const track = tracks[trackId];
@@ -1515,27 +1513,6 @@ export function toggleFavorite(trackId) {
   render();
 }
 
-function favButtonHtml(track) {
-  const on = Boolean(track.favorite);
-  const label = i18nT(on ? "track.unfavoriteTitle" : "track.favoriteTitle", {
-    title: track.title ?? i18nT("track.unknown"),
-  });
-  return `<button class="cat-fav${on ? " active" : ""}" type="button" aria-pressed="${on}"
-      title="${esc(i18nT(on ? "track.unfavorite" : "track.favorite"))}" aria-label="${esc(label)}">
-      <svg viewBox="0 0 24 24" width="12" height="12" fill="${on ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2" aria-hidden="true">
-        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-      </svg>
-    </button>`;
-}
-
-function wireFavButton(el, trackId) {
-  el.querySelector(".cat-fav")?.addEventListener("click", (e) => {
-    // The row itself loads the track on click.
-    e.stopPropagation();
-    toggleFavorite(trackId);
-  });
-}
-
 function wireTrackDragAndLoad(el, trackId) {
   el.draggable = true;
   el.addEventListener("dragstart", (e) => {
@@ -1543,7 +1520,7 @@ function wireTrackDragAndLoad(el, trackId) {
   });
   el.addEventListener("dragend", () => endDrag(el));
   el.addEventListener("click", (e) => {
-    if (e.target.closest(".cat-del, .cat-fav")) return;
+    if (e.target.closest(".cat-del, .cat-extract")) return;
     loadTrackIntoStudio(trackId);
   });
 }
@@ -1874,9 +1851,7 @@ function renderRecentItem(trackId) {
       <div class="cat-sub">${trackSublineHtml(track)}</div>
     </div>
     <div class="cat-status${PROCESSING_STATUSES.has(track.status) ? " processing" : isUnavailable ? " unavailable" : ""}"></div>
-    <div class="cat-actions">${favButtonHtml(track)}</div>
   `;
-  wireFavButton(el, trackId);
   wireTrackDragAndLoad(el, trackId);
   return el;
 }
@@ -1932,9 +1907,29 @@ function makeStripItem({ className = "", id, title, html, color, trackId }) {
 // as it was, and this is the one way to run it again: the user decides when it
 // gets the GPU, never Restore and never a reload.
 function extractButtonHtml(track) {
-  const label = i18nT("track.extractAgainOf", { title: displayTitle(track.title) });
-  return `<button class="cat-extract" type="button" title="${esc(i18nT("track.extractAgain"))}"
-            aria-label="${esc(label)}">${esc(i18nT("track.extractAgain"))}</button>`;
+  // A failed import says Try again; a stopped one, Extract. Both run it again.
+  const failed = track.status === "error";
+  const text = i18nT(failed ? "job.tryAgain" : "track.extractAgain");
+  const label = i18nT(failed ? "track.tryAgainOf" : "track.extractAgainOf", { title: displayTitle(track.title) });
+  return `<button class="cat-extract" type="button" title="${esc(text)}"
+            aria-label="${esc(label)}">${esc(text)}</button>`;
+}
+
+/**
+ * A failed link import can be tried again: the server quarantines a failed
+ * job and forgets it on restart, so this is a new import of the same link,
+ * which takes over the failed row (addTrackToLibrary, by source). A failed
+ * upload has no file left to try with.
+ */
+function canRetryImport(track) {
+  return track.status === "error" && isReimportableSource(track.sourceUrl);
+}
+
+function retryFailedImport(trackId) {
+  const track = tracks[trackId];
+  if (!track || !canRetryImport(track)) return;
+  dismissFailuresByJobId(trackId);
+  importFromUrl(track.sourceUrl, { title: track.title, stems: track.selectedStems });
 }
 
 async function extractStoppedTrack(trackId) {
@@ -1964,7 +1959,7 @@ function renderTrackItem(trackId, { inTrash = false } = {}) {
 
   const el = document.createElement("div");
   const isUnavailable = track.status === "unavailable";
-  el.className = `cat-item${trackId === _currentTrackId ? " active" : ""}${isUnavailable ? " unavailable" : ""}${!inTrash && track.favorite ? " is-fav" : ""}${!inTrash && track.status === "stopped" ? " is-stopped" : ""}${inTrash ? " in-trash" : ""}${inTrash && _trashSelection.has(trackId) ? " selected" : ""}`;
+  el.className = `cat-item${trackId === _currentTrackId ? " active" : ""}${isUnavailable ? " unavailable" : ""}${!inTrash && track.favorite ? " is-fav" : ""}${!inTrash && track.status === "stopped" ? " is-stopped" : ""}${!inTrash && canRetryImport(track) ? " can-retry" : ""}${inTrash ? " in-trash" : ""}${inTrash && _trashSelection.has(trackId) ? " selected" : ""}`;
   el.dataset.id = trackId;
 
   el.innerHTML = `
@@ -1974,7 +1969,7 @@ function renderTrackItem(trackId, { inTrash = false } = {}) {
       <div class="cat-sub">${trackSublineHtml(track, { inTrash })}</div>${inTrash ? `<div class="cat-sub trash-hint">${esc(i18nT("trash.holdToRestore"))}</div>` : ""}
     </div>
     <div class="cat-status${PROCESSING_STATUSES.has(track.status) ? " processing" : isUnavailable ? " unavailable" : ""}"></div>
-    ${inTrash ? `<div class="trash-hold" aria-hidden="true"></div>` : `<div class="cat-actions">${track.status === "stopped" ? extractButtonHtml(track) : ""}${favButtonHtml(track)}<button class="cat-del" type="button" title="${esc(i18nT("track.moveToTrash"))}">
+    ${inTrash ? `<div class="trash-hold" aria-hidden="true"></div>` : `<div class="cat-actions">${track.status === "stopped" || canRetryImport(track) ? extractButtonHtml(track) : ""}<button class="cat-del" type="button" title="${esc(i18nT("track.moveToTrash"))}">
       ${TRASH_ICON_SVG}
     </button></div>`}
   `;
@@ -1987,9 +1982,9 @@ function renderTrackItem(trackId, { inTrash = false } = {}) {
   el.querySelector(".cat-extract")?.addEventListener("click", (e) => {
     e.stopPropagation();
     e.currentTarget.disabled = true;
-    extractStoppedTrack(trackId);
+    if (track.status === "error") retryFailedImport(trackId);
+    else extractStoppedTrack(trackId);
   });
-  wireFavButton(el, trackId);
 
   if (inTrash) {
     el.title = i18nT("trash.holdToRestore");
