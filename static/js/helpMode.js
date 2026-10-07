@@ -186,7 +186,10 @@ function findEntry(target) {
 
 function isVisible(el) {
   const r = el.getBoundingClientRect();
-  return r.width > 0 && r.height > 0;
+  if (r.width > 0 && r.height > 0) return true;
+  // display: contents draws no box of its own (a lane's key value in the
+  // side-rail header): it is visible when what it holds is.
+  return getComputedStyle(el).display === "contents" && [...el.children].some(isVisible);
 }
 
 /** The control's own label, which the app already translates. Visible text

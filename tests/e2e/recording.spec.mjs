@@ -276,12 +276,13 @@ test.describe("Settings, Recording tab", () => {
     await openStudio(page);
     await openTab(page);
 
-    // Picking an input stores it under the key new tracks default to.
-    const sel = page.locator("#setRecInput");
+    // Picking the audio interface stores it under the key new audio tracks
+    // default to. The first option is None.
+    const sel = page.locator("#setRecInterface");
     await expect.poll(() => sel.locator("option").count(), { timeout: 10000 }).toBeGreaterThan(1);
     const id = await sel.locator("option").nth(1).getAttribute("value");
     await sel.selectOption(id);
-    expect(await page.evaluate(() => localStorage.getItem("stemdeck:capture:device:audioinput"))).toBe(id);
+    expect(await page.evaluate(() => localStorage.getItem("stemdeck:capture:device:audioinput:instrument"))).toBe(id);
     await expect(page.locator("#setRecLatency")).toHaveText(/estimated/, { timeout: 10000 });
 
     // The latency test plays its clicks and finishes. The fake device hears

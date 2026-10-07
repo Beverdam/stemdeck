@@ -88,8 +88,9 @@ test("the input selector lists each channel and the stereo pair", async ({ page 
   expect(new Set(texts).size).toBe(texts.length);
   expect(texts.some((x) => /default|communications/i.test(x))).toBe(false);
   await expect(select.locator("optgroup")).toHaveAttribute("label", "Instrument (audio interface)");
-  // A stereo interface defaults to the pair.
-  await expect(select.locator("option:checked")).toHaveText(`${dev} · Input 1+2`);
+  // A new track records one input, the first: a one-cable source recorded
+  // as the pair played on one speaker. The pair is chosen by hand.
+  await expect(select.locator("option:checked")).toHaveText(`${dev} · Input 1`);
 
   // Choosing a single channel is stored with the track and records mono.
   const log = watchTakes(page);
@@ -360,8 +361,12 @@ test("Settings > Recording lists each input once, by kind, without the default a
   await openStudio(page);
   await page.locator("#settingsBtn").click();
   await page.locator('.settings-tab[data-tab="recording"]').click();
-  const sel = page.locator("#setRecInput");
-  await expect.poll(() => sel.locator("option").allTextContents(), { timeout: 10000 })
-    .toEqual(["Fake Audio Input 1", "Fake Audio Input 2"]);
-  await expect(sel.locator("optgroup")).toHaveAttribute("label", "Instrument (audio interface)");
+  // Two pickers, the microphone and the audio interface: each offers None,
+  // then every input once.
+  for (const id of ["#setRecMic", "#setRecInterface"]) {
+    const sel = page.locator(id);
+    await expect.poll(() => sel.locator("option").allTextContents(), { timeout: 10000 })
+      .toEqual(["None", "Fake Audio Input 1", "Fake Audio Input 2"]);
+    await expect(sel.locator("optgroup")).toHaveAttribute("label", "Instrument (audio interface)");
+  }
 });

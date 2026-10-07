@@ -65,7 +65,8 @@ test.describe("help mode", () => {
     // Headed by what the button does, not by its one letter.
     await expect(tip(page).locator("b")).toHaveText("Mute Drums");
 
-    const drumsKey = page.locator(".lane-key").filter({ has: page.locator('[aria-label*="Drums"]') }).locator(".lane-key-value").first();
+    // The number: its value wrapper is display: contents and has no box.
+    const drumsKey = page.locator(".lane-key").filter({ has: page.locator('[aria-label*="Drums"]') }).locator(".lane-key-num").first();
     await drumsKey.hover({ force: true });
     await expect(tip(page).locator("b")).toHaveText("Key of Drums");
   });

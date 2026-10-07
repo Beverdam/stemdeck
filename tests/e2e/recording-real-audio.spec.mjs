@@ -433,12 +433,12 @@ test.describe("real audio hardware: the track rows", () => {
 });
 
 test.describe("real audio hardware: Settings > Recording", () => {
-  test("one input list, voice and instrument, and the meter moves on the interface", async ({ page }) => {
+  test("the interface picker lists voice and instrument, and its meter moves", async ({ page }) => {
     await page.setViewportSize({ width: 1400, height: 900 });
     await openStudio(page);
     await page.locator("#settingsBtn").click();
     await page.locator('.settings-tab[data-tab="recording"]').click();
-    const sel = page.locator("#setRecInput");
+    const sel = page.locator("#setRecInterface");
     await expect.poll(async () => sel.locator("optgroup").count(), { timeout: 15000 }).toBe(2);
     const groups = await sel.evaluate((s) => [...s.querySelectorAll("optgroup")].map((g) => ({
       label: g.label, options: [...g.querySelectorAll("option")].map((o) => o.textContent),
@@ -456,7 +456,8 @@ test.describe("real audio hardware: Settings > Recording", () => {
     await page.waitForTimeout(2000);
     let best = 0;
     for (let i = 0; i < 15; i++) {
-      const tr = await page.locator(".rec-settings-meter .rec-meter-fill").evaluate((e) => e.style.transform);
+      // The second meter: the microphone's comes first.
+      const tr = await page.locator(".rec-settings-meter .rec-meter-fill").nth(1).evaluate((e) => e.style.transform);
       best = Math.max(best, parseFloat(tr.replace(/[^0-9.]/g, "")) || 0);
       await page.waitForTimeout(100);
     }
