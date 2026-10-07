@@ -855,12 +855,13 @@ export function createChunkedAudioEngine(stems, { onTime, onEnded, context } = {
     // only trustworthy once _audioStarted is set.
     isClockReady: () => playing && _audioStarted,
     // Same contract as audioEngine.getOutputMapping: the inputs of
-    // _getCurrentTime, frozen at one instant, for placing recorded frames.
+    // _getCurrentTime, frozen at one instant, for placing recorded frames,
+    // with the live master's look-ahead (audioEngine.js says why).
     getOutputMapping: () => ({
       startCtxTime: _startCtxTime,
       startOffset: _startOffset,
       rate: _playbackRate,
-      pipelineLatencySeconds: _pipelineLatencySeconds(),
+      pipelineLatencySeconds: _pipelineLatencySeconds() + fx.masterFxLatency(),
       epoch: _epoch,
       playing: playing && _audioStarted,
     }),

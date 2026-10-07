@@ -455,11 +455,14 @@ export function createAudioEngine(stems, { onTime, onEnded, context } = {}) {
     // place a captured frame in song time with the same formula as now():
     // song = (ctx - startCtxTime - pipelineLatencySeconds) * rate + startOffset.
     // Read once isClockReady() is true; the epoch says when it stops holding.
+    // The live master's look-ahead is in it too: with the master on, the song
+    // reaches the speakers 12 ms later, and a take played against what was
+    // heard would land 12 ms late without it (the export's master has none).
     getOutputMapping: () => ({
       startCtxTime,
       startOffset,
       rate: _playbackRate,
-      pipelineLatencySeconds: pipelineLatencySeconds(),
+      pipelineLatencySeconds: pipelineLatencySeconds() + fx.masterFxLatency(),
       epoch: _epoch,
       playing,
     }),
