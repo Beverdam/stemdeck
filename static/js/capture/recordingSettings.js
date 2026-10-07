@@ -1,4 +1,5 @@
-// Settings > Recording: the input, the camera and the latency test.
+// Settings > Recording: the two inputs (a microphone and an audio
+// interface, each with its level), the latency test, and the camera.
 //
 // These are set once per machine rather than per take, so they live in
 // Settings and the recording panel keeps only what changes from take to take
@@ -20,7 +21,7 @@ import { createPlaybackContext } from "../audioContext.js";
 import { checkCaptureSupport, renderPermissionState, requestMedia } from "./capturePermission.js";
 import { buildDevicePicker, getRememberedDevice } from "./captureDevices.js";
 import { openCapture, meterFraction } from "./captureGraph.js";
-import { buildInputPicker } from "./trackInputs.js";
+import { buildRolePicker } from "./trackInputs.js";
 import { runCalibration } from "./latencyCalibration.js";
 import {
   announce, getCameraQuality, setCameraQuality, getMirrorPreview, setMirrorPreview, CAMERA_QUALITIES,
@@ -64,16 +65,39 @@ export function buildRecordingPane(pane) {
   pane.replaceChildren();
   pane.classList.add("rec-settings");
 
-  // ── Input ──
-  const inputSel = el("select", "settings-select rec-settings-select");
-  inputSel.id = "setRecInput";
-  inputSel.dataset.i18nAriaLabel = "settings.rec.input.title";
-  const meter = el("div", "rec-meter rec-settings-meter");
-  meter.setAttribute("aria-hidden", "true");
-  const meterFill = el("div", "rec-meter-fill");
-  meter.append(meterFill);
-  const permission = el("div", "rec-permission");
-  permission.hidden = true;
+  // ── Inputs: the microphone and the audio interface ──
+  // Each has its picker, its level and its permission message, and is open
+  // while the tab shows, so either can be checked by playing into it.
+  const inputs = {};
+  for (const [role, id] of [["voice", "setRecMic"], ["instrument", "setRecInterface"]]) {
+    const sel = el("select", "settings-select rec-settings-select");
+    sel.id = id;
+    sel.dataset.i18nAriaLabel = role === "voice" ? "settings.rec.mic.title" : "settings.rec.iface.title";
+    const meter = el("div", "rec-meter rec-settings-meter");
+    meter.setAttribute("aria-hidden", "true");
+    const fill = el("div", "rec-meter-fill");
+    meter.append(fill);
+    const permission = el("div", "rec-permission");
+    permission.hidden = true;
+    inputs[role] = { role, sel, meter, fill, permission, capture: null, opening: null, picker: null };
+  }
+  // Which input the latency test measures.
+  const testSeg = el("div", "rec-settings-test");
+  testSeg.setAttribute("role", "radiogroup");
+  testSeg.dataset.i18nAriaLabel = "settings.rec.latency.which";
+  const testBtns = ["instrument", "voice"].map((role) => {
+    const b = el("button", "rec-seg-btn");
+    b.type = "button";
+    b.dataset.role = role;
+    b.setAttribute("role", "radio");
+    b.dataset.i18n = role === "voice" ? "settings.rec.mic.title" : "settings.rec.iface.title";
+    testSeg.append(b);
+    return b;
+  });
+  // Picked by the user, or null: then the interface, else the microphone.
+  let testChoice = null;
+  const testRole = () => testChoice
+    || (inputs.instrument.sel.value || !inputs.voice.sel.value ? "instrument" : "voice");
 
   // ── Latency ──
   const latency = el("p", "rec-settings-latency");
@@ -128,8 +152,11 @@ export function buildRecordingPane(pane) {
   camStatus.hidden = true;
 
   pane.append(
-    section(row("settings.rec.input.title", "settings.rec.input.desc", inputSel), meter, permission),
-    section(row("settings.rec.latency.title", "settings.rec.latency.desc", calBtn), latency, calInstr, calProgress, calStatus),
+    section(
+      row("settings.rec.mic.title", "settings.rec.mic.desc", inputs.voice.sel), inputs.voice.meter, inputs.voice.permission,
+      row("settings.rec.iface.title", "settings.rec.iface.desc", inputs.instrument.sel), inputs.instrument.meter, inputs.instrument.permission,
+    ),
+    section(row("settings.rec.latency.title", "settings.rec.latency.desc", calBtn), testSeg, latency, calInstr, calProgress, calStatus),
     section(
       row("settings.rec.camera.title", "settings.rec.camera.desc", camSel),
       row("settings.rec.quality.title", "settings.rec.quality.desc", qualSel),
@@ -141,9 +168,7 @@ export function buildRecordingPane(pane) {
   applyTranslations(pane);
 
   let active = false;
-  let capture = null;
   let tempCtx = null;
-  let opening = null;
   let raf = 0;
   let camStream = null;
   let camToken = 0;
@@ -159,34 +184,46 @@ export function buildRecordingPane(pane) {
     return tempCtx ? { audioContext: tempCtx } : null;
   }
 
-  function closeMic() {
-    capture?.close();
-    capture = null;
+  function closeInput(inp) {
+    inp.capture?.close();
+    inp.capture = null;
+    inp.fill.style.transform = "scaleX(0)";
     renderLatency();
   }
 
-  async function openMic() {
-    if (capture && !capture.closed) return capture;
-    if (opening) return opening;
+  /** Open a role's device, or nothing for None. Resolves the capture or null. */
+  async function openInput(inp) {
+    if (inp.capture && !inp.capture.closed) return inp.capture;
+    if (inp.opening) return inp.opening;
+    if (!inp.sel.value) { renderPermissionState(inp.permission, null, "audio"); return null; }
     const engine = engineForCapture();
     if (!engine) return null;
     if (engine.audioContext.state === "suspended") {
       engine.audioContext.resume().catch((e) => console.warn("[rec] resume failed:", e));
     }
-    opening = openCapture(engine, { deviceId: inputSel.value || getRememberedDevice("audioinput") }).then((res) => {
-      opening = null;
-      renderPermissionState(permission, res.reason, "audio");
+    const deviceId = inp.sel.value;
+    inp.opening = openCapture(engine, { deviceId }).then((res) => {
+      inp.opening = null;
+      renderPermissionState(inp.permission, res.reason, "audio");
       if (!res.capture) return null;
-      if (!active) { res.capture.close(); return null; }
-      capture = res.capture;
-      micPicker.refresh();
+      // Closed meanwhile, or another device picked while this one opened.
+      if (!active || inp.sel.value !== deviceId) { res.capture.close(); return null; }
+      inp.capture = res.capture;
+      inp.picker?.refresh();
       renderLatency();
-      return capture;
+      return inp.capture;
     });
-    return opening;
+    return inp.opening;
   }
 
   function renderLatency() {
+    for (const b of testBtns) {
+      const on = b.dataset.role === testRole();
+      b.setAttribute("aria-checked", String(on));
+      b.classList.toggle("active", on);
+      b.disabled = !inputs[b.dataset.role].sel.value;
+    }
+    const capture = inputs[testRole()].capture;
     if (!capture) {
       latency.textContent = t("rec.latency.unknown");
       return;
@@ -198,17 +235,30 @@ export function buildRecordingPane(pane) {
   function meterLoop() {
     raf = 0;
     if (!active) return;
-    const peak = capture && !capture.closed ? capture.level() : 0;
-    meterFill.style.transform = `scaleX(${meterFraction(peak).toFixed(3)})`;
-    meterFill.classList.toggle("clip", peak >= 0.99);
+    for (const inp of Object.values(inputs)) {
+      const peak = inp.capture && !inp.capture.closed ? inp.capture.level() : 0;
+      inp.fill.style.transform = `scaleX(${meterFraction(peak).toFixed(3)})`;
+      inp.fill.classList.toggle("clip", peak >= 0.99);
+    }
     raf = requestAnimationFrame(meterLoop);
   }
 
-  const micPicker = buildInputPicker(inputSel, () => {
-    announce("audioinput");
-    closeMic();
-    if (active) openMic();
-  });
+  for (const inp of Object.values(inputs)) {
+    inp.picker = buildRolePicker(inp.sel, inp.role, () => {
+      announce("audioinput");
+      closeInput(inp);
+      if (active) openInput(inp);
+    });
+  }
+  // The test measures the interface by default (a loop from its output to
+  // its input is the usual way), the microphone when no interface is set.
+  for (const b of testBtns) {
+    b.addEventListener("click", () => {
+      testChoice = b.dataset.role;
+      calStatus.textContent = "";
+      renderLatency();
+    });
+  }
 
   calBtn.addEventListener("click", async () => {
     if (calibrating) return;
@@ -216,14 +266,15 @@ export function buildRecordingPane(pane) {
       calStatus.textContent = t("settings.rec.stopFirst");
       return;
     }
-    const c = await openMic();
+    const tested = inputs[testRole()];
+    const c = await openInput(tested);
     if (!c) {
       calStatus.textContent = t("rec.cal.needInputSettings");
       return;
     }
     calibrating = true;
     calBtn.disabled = true;
-    inputSel.disabled = true;
+    for (const inp of Object.values(inputs)) inp.sel.disabled = true;
     calBar.style.transform = "scaleX(0)";
     calStatus.textContent = t("rec.cal.running");
     try {
@@ -242,7 +293,7 @@ export function buildRecordingPane(pane) {
     } finally {
       calibrating = false;
       calBtn.disabled = false;
-      inputSel.disabled = false;
+      for (const inp of Object.values(inputs)) inp.picker.refresh();
       renderLatency();
     }
   });
@@ -298,14 +349,21 @@ export function buildRecordingPane(pane) {
       active = true;
       calStatus.textContent = "";
       calBar.style.transform = "scaleX(0)";
+      testChoice = null;
       renderLatency();
       const support = checkCaptureSupport();
       if (!support.ok) {
-        renderPermissionState(permission, support.reason, "audio");
+        for (const inp of Object.values(inputs)) renderPermissionState(inp.permission, support.reason, "audio");
         renderPermissionState(camStatus, support.reason, "video");
         return;
       }
-      openMic();
+      // After each picker has its devices: before that it has no value.
+      for (const inp of Object.values(inputs)) {
+        inp.picker.refresh().then(() => {
+          renderLatency();
+          if (active) openInput(inp);
+        });
+      }
       startCamera();
       raf = requestAnimationFrame(meterLoop);
     },
@@ -315,7 +373,7 @@ export function buildRecordingPane(pane) {
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
       stopCamera();
-      closeMic();
+      for (const inp of Object.values(inputs)) closeInput(inp);
       if (tempCtx) {
         tempCtx.close().catch(() => {});
         tempCtx = null;
@@ -323,7 +381,7 @@ export function buildRecordingPane(pane) {
     },
     dispose() {
       this.leave();
-      micPicker.dispose();
+      for (const inp of Object.values(inputs)) inp.picker.dispose();
       camPicker.dispose();
     },
   };

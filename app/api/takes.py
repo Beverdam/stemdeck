@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -55,6 +56,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, 
 from app.api import stems as stems_api
 from app.core.config import (
     EXTRA_STEM_NAMES,
+    FILMSTRIP_FRAME_HEIGHT,
+    FILMSTRIP_MAX_FRAMES,
     JOB_ID_RE,
     JOBS_DIR,
     STEM_NAMES,
@@ -66,9 +69,12 @@ from app.core.config import (
     TAKE_PART_MAX_BYTES,
     TAKE_SLACK_SEC,
     TAKES_DIRNAME,
+    TIMEOUT_FILMSTRIP,
     TIMEOUT_VIDEO_RENDER,
     TRACK_ID_RE,
     TRACK_MAX_PER_JOB,
+    ffmpeg_executable,
+    ffprobe_executable,
 )
 from app.core.models import Job, _set
 from app.core.registry import get as registry_get
@@ -1004,6 +1010,158 @@ async def get_take_camera(job_id: str, take_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="take has no camera")
     media = "video/webm" if path.suffix == ".webm" else "video/mp4"
     return FileResponse(path.resolve(), media_type=media)
+
+
+# ---------------------------------------------------------------------------
+# Filmstrip: the frames a video track draws along its lane
+
+
+_FILMSTRIP_IMAGE = "filmstrip.jpg"
+_FILMSTRIP_META = "filmstrip.json"
+_filmstrip_locks: dict[str, threading.Lock] = {}
+_filmstrip_locks_guard = threading.Lock()
+
+
+def _probe_video(path: Path) -> tuple[float, int, int]:
+    """(duration in seconds, width, height) of the first video stream."""
+    proc = subprocess.run(
+        [
+            ffprobe_executable(),
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height:format=duration",
+            "-of",
+            "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT_FILMSTRIP,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip()[-400:] or "ffprobe failed")
+    data = json.loads(proc.stdout or "{}")
+    stream = (data.get("streams") or [{}])[0]
+    try:
+        duration = float((data.get("format") or {}).get("duration") or 0.0)
+    except ValueError:
+        duration = 0.0
+    if duration <= 0:
+        # A WebM written as MediaRecorder streams it has no duration in its
+        # header: decode it and read how far the decoder got.
+        duration = _decoded_duration(path)
+    return duration, int(stream.get("width") or 0), int(stream.get("height") or 0)
+
+
+_DECODE_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _decoded_duration(path: Path) -> float:
+    proc = subprocess.run(
+        [ffmpeg_executable(), "-nostdin", "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT_FILMSTRIP,
+    )
+    times = _DECODE_TIME_RE.findall(proc.stderr or "")
+    if not times:
+        return 0.0
+    h, m, sec = times[-1]
+    return int(h) * 3600 + int(m) * 60 + float(sec)
+
+
+def build_filmstrip(camera: Path, folder: Path) -> dict[str, Any]:
+    """The take's filmstrip, built once and kept beside the camera file
+    until the camera file changes: {interval, count, frame_width,
+    frame_height, duration}. One JPEG row of `count` frames, one every
+    `interval` seconds from the first frame."""
+    image = folder / _FILMSTRIP_IMAGE
+    meta_path = folder / _FILMSTRIP_META
+    with _filmstrip_locks_guard:
+        lock = _filmstrip_locks.setdefault(str(folder), threading.Lock())
+    with lock:
+        cam_mtime = camera.stat().st_mtime
+        if image.is_file() and meta_path.is_file() and image.stat().st_mtime >= cam_mtime:
+            try:
+                return json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                logger.warning("unreadable %s, building it again", meta_path)
+        duration, width, height = _probe_video(camera)
+        if duration <= 0 or width <= 0 or height <= 0:
+            raise RuntimeError("the camera file has no readable video")
+        frame_h = FILMSTRIP_FRAME_HEIGHT
+        frame_w = max(2, round(width * frame_h / height / 2) * 2)
+        interval = max(1.0, duration / FILMSTRIP_MAX_FRAMES)
+        # Whole intervals only: ffmpeg gives no frame for a last part-interval,
+        # and the tile filter would pad its place in black.
+        count = max(1, min(FILMSTRIP_MAX_FRAMES, math.floor(duration / interval)))
+        tmp = folder / f".{_FILMSTRIP_IMAGE}.{uuid.uuid4().hex}.jpg"
+        try:
+            proc = subprocess.run(
+                [
+                    ffmpeg_executable(),
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(camera),
+                    "-vf",
+                    f"fps=1/{interval:.4f},scale={frame_w}:{frame_h},tile={count}x1",
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "5",
+                    str(tmp),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT_FILMSTRIP,
+            )
+            if proc.returncode != 0 or not tmp.is_file():
+                raise RuntimeError(proc.stderr.strip()[-400:] or "ffmpeg failed")
+            os.replace(tmp, image)
+        finally:
+            tmp.unlink(missing_ok=True)
+        meta = {
+            "interval": round(interval, 4),
+            "count": count,
+            "frame_width": frame_w,
+            "frame_height": frame_h,
+            "duration": round(duration, 4),
+        }
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        return meta
+
+
+@router.get("/{job_id}/takes/{take_id}/filmstrip")
+async def get_take_filmstrip(job_id: str, take_id: str) -> dict[str, Any]:
+    """How to draw the take's frames along its lane: the filmstrip's layout
+    and where it is (filmstrip.jpg). Built on first request."""
+    _job, folder, _entry_ = _finished_or_404(job_id, take_id)
+    camera = camera_file(folder)
+    if camera is None or not camera.resolve().is_relative_to(JOBS_DIR.resolve()):
+        raise HTTPException(status_code=404, detail="take has no camera")
+    try:
+        meta = await asyncio.to_thread(build_filmstrip, camera.resolve(), folder)
+    except subprocess.TimeoutExpired as err:
+        logger.warning("[%s] filmstrip for %s timed out", job_id, take_id)
+        raise HTTPException(status_code=504, detail="the filmstrip took too long") from err
+    except (OSError, RuntimeError, ValueError):
+        logger.exception("[%s] filmstrip for %s failed", job_id, take_id)
+        raise HTTPException(status_code=500, detail="could not read the camera file") from None
+    return {**meta, "url": f"/api/jobs/{job_id}/takes/{take_id}/filmstrip.jpg"}
+
+
+@router.get("/{job_id}/takes/{take_id}/filmstrip.jpg", response_model=None)
+async def get_take_filmstrip_image(job_id: str, take_id: str) -> FileResponse:
+    _job, folder, _entry_ = _finished_or_404(job_id, take_id)
+    path = (folder / _FILMSTRIP_IMAGE).resolve()
+    if not path.is_relative_to(JOBS_DIR.resolve()) or not path.is_file():
+        raise HTTPException(status_code=404, detail="no filmstrip yet")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
 
 # ---------------------------------------------------------------------------

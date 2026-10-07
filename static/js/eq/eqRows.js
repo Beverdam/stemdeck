@@ -16,6 +16,7 @@
 // The panel rows exist only where the waveform column is the SVG overlay (the
 // Web Audio engine path), like take folders: player.js says so.
 
+import { isPractice, onModeChange } from "../mode.js";
 import { STEM_COLORS, STEM_DISPLAY, isTakeName } from "../constants.js";
 import { mixerEl } from "../state.js";
 import { t, onLanguageChange } from "../i18n.js";
@@ -46,6 +47,10 @@ const TITLE_KEYS = {
 };
 
 let _enabled = false;
+// What player.js asked for (an engine that can run the EQ) and whether the
+// mode allows it (mode.js: Practice has no EQ). Enabled when both say so.
+let _want = false;
+let _allowed = !isPractice();
 let _jobId = null;
 let _lanes = [];
 let _store = null;
@@ -111,9 +116,19 @@ export function setEqContext({ jobId, lanes, enabled }) {
   }
   _jobId = jobId || null;
   _lanes = Array.isArray(lanes) ? lanes.filter(laneHasPanel) : [];
-  _enabled = !!enabled && !!_jobId;
+  _want = !!enabled;
+  _enabled = _want && _allowed && !!_jobId;
   if (!_enabled) for (const lane of [..._rows.keys()]) dropRows(lane);
 }
+
+// Practice and DAW: the tabs and the open panels go or come back, and the
+// studio lays the lanes out again for the panels' height.
+onModeChange(() => {
+  _allowed = !isPractice();
+  _enabled = _want && _allowed && !!_jobId;
+  syncEqRows();
+  document.dispatchEvent(new CustomEvent("stemdeck:eq-rows-changed"));
+});
 
 /** Open or close a lane's panel, and ask the studio to lay the lanes out again. */
 export function setPanelOpen(lane, open) {

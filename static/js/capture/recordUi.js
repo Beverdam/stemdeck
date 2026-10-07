@@ -29,8 +29,7 @@ import { laneLabel } from "../constants.js";
 import { applyMix, refreshMixerVisuals } from "../mixer.js";
 import { togglePlayPause, toggleLoop } from "../transport.js";
 import { checkCaptureSupport, renderPermissionState } from "./capturePermission.js";
-import { getRememberedDevice } from "./captureDevices.js";
-import { openCapture, meterFraction } from "./captureGraph.js";
+import { openCapture, openSilentCapture, meterFraction } from "./captureGraph.js";
 import { loadCalibration } from "./latencyCalibration.js";
 import { SETTINGS_EVENT } from "./captureSettings.js";
 import { openRecordingSettings } from "./recordingSettings.js";
@@ -38,9 +37,9 @@ import { recordBlockReason } from "./takeMath.js";
 import { startTake, onTakeEvent } from "./takeRecorder.js";
 import {
   requestTakesReload, armedTracks, getTracks, setArmed, trackInput, addTrack, initTrackControls,
-  refreshTrackInputs, showTrackNote,
+  refreshTrackInputs, showTrackNote, autoPickChannel,
 } from "./takeLanes.js";
-import { channelsNeeded } from "./trackInputs.js";
+import { channelsNeeded, defaultInputId } from "./trackInputs.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -62,6 +61,14 @@ let wantCapture = false;
 // refused): no retry until the armed tracks or their inputs change.
 let armBlocked = null;
 let armRaf = 0;
+// Per armed mono track: how long its input has been silent while another
+// input of the device had signal (autoPick).
+const silentRuns = new Map();
+// Below this an input is silent (-60 dBFS); above this it carries a source
+// (-40 dBFS). Frames at about 60 a second: one second of both.
+const AUTO_SILENT = 0.001;
+const AUTO_SIGNAL = 0.01;
+const AUTO_FRAMES = 60;
 
 const MUTE_KEY = (jobId) => `stemdeck:rec:mute:${jobId}`;
 
@@ -119,16 +126,36 @@ function liveCapture() {
 }
 
 /**
+ * The armed tracks that record sound. A video track is picture only: it
+ * never opens an input, so it is left out of everything about the input
+ * (which device opens, the meters, monitoring).
+ */
+function audioArmed() {
+  return armedTracks().filter((tr) => tr.kind !== "video");
+}
+
+/**
+ * Whether the open panel should open the input for its meter: with nothing
+ * armed (the Settings default device), or with an audio track armed. With
+ * only video tracks armed, nothing is heard, so no microphone opens.
+ */
+function panelWantsInput() {
+  return armedTracks().length === 0 || audioArmed().length > 0;
+}
+
+/**
  * What the input should be opened as: the armed tracks' device with enough
  * channels for all of them, or (nothing armed) the Settings default device.
  */
 function wantedInput() {
-  const armed = armedTracks();
+  const armed = audioArmed();
   if (armed.length) {
     const inputs = armed.map(trackInput);
-    return { deviceId: inputs[0].device_id || "", channelCount: channelsNeeded(inputs) };
+    // At least the pair, so a track on one input can see where the signal
+    // is (autoPick) on a two-input interface.
+    return { deviceId: inputs[0].device_id || "", channelCount: Math.max(2, channelsNeeded(inputs)) };
   }
-  return { deviceId: getRememberedDevice("audioinput"), channelCount: 2 };
+  return { deviceId: defaultInputId(), channelCount: 2 };
 }
 
 function captureMatches(want) {
@@ -169,12 +196,12 @@ async function ensureCapture(want = wantedInput()) {
       res.capture.close();
       return { capture: null, reason: "unknown" };
     }
-    if (deviceId && res.capture.fellBack && armedTracks().length) {
+    if (deviceId && res.capture.fellBack && audioArmed().length) {
       // The armed track's device is gone and the browser opened another:
       // a meter or a monitor on the wrong input would mislead.
       res.capture.close();
       armBlocked = deviceId;
-      showTrackNote(t("rec.status.trackInputMissing", { name: armedTracks()[0]?.name || "" }));
+      showTrackNote(t("rec.status.trackInputMissing", { name: audioArmed()[0]?.name || "" }));
       return { capture: null, reason: null, missing: true };
     }
     capture = res.capture;
@@ -196,7 +223,7 @@ async function ensureCapture(want = wantedInput()) {
 /** Monitoring plays what the armed tracks record; with none armed, the whole device. */
 function routeMonitor(c) {
   if (!c || c.closed) return;
-  const armed = armedTracks();
+  const armed = audioArmed();
   c.setMonitorChannels(armed.length ? armed.map((tr) => trackInput(tr).channels) : null);
 }
 
@@ -209,7 +236,7 @@ function startArmMeter() {
   if (armRaf) return;
   const loop = () => {
     armRaf = 0;
-    const armed = armedTracks();
+    const armed = audioArmed();
     const rows = document.querySelectorAll(".lane-header.track-lane .lane-vu");
     if (!armed.length) {
       for (const vu of rows) vu.style.removeProperty("--vu-in");
@@ -235,10 +262,39 @@ function startArmMeter() {
       const track = armed.find((tr) => tr.id === id);
       const peak = c ? c.channelLevel(trackInput(track).channels) : 0;
       vu.style.setProperty("--vu-in", `${Math.round(meterFraction(peak) * 100)}%`);
+      autoPick(c, track, peak);
     }
+    for (const id of silentRuns.keys()) if (!ids.has(id)) silentRuns.delete(id);
     armRaf = requestAnimationFrame(loop);
   };
   armRaf = requestAnimationFrame(loop);
+}
+
+/**
+ * An armed track on one input that stays silent while another input of the
+ * same device carries a source (a drum loop on input 2, the track on input
+ * 1) moves to that input, once, after a second of both. Not while
+ * recording, and never a track whose input the user picked (takeLanes.js).
+ */
+function autoPick(c, track, peak) {
+  const chans = trackInput(track).channels;
+  const n = c?.deviceChannels || 0;
+  if (!c || group || chans.length !== 1 || n < 2 || peak >= AUTO_SILENT) {
+    silentRuns.delete(track.id);
+    return;
+  }
+  let best = -1;
+  let bestPeak = AUTO_SIGNAL;
+  for (let ch = 0; ch < n; ch++) {
+    if (ch === chans[0]) continue;
+    const p = c.channelLevel([ch]);
+    if (p > bestPeak) { best = ch; bestPeak = p; }
+  }
+  const run = best < 0 ? 0 : (silentRuns.get(track.id)?.ch === best ? silentRuns.get(track.id).frames + 1 : 1);
+  if (best < 0) { silentRuns.delete(track.id); return; }
+  if (run < AUTO_FRAMES) { silentRuns.set(track.id, { ch: best, frames: run }); return; }
+  silentRuns.delete(track.id);
+  autoPickChannel(track.id, best).then((moved) => { if (moved) routeMonitor(liveCapture()); });
 }
 
 function onDeviceLost() {
@@ -278,7 +334,7 @@ function openPanel() {
   placePanel();
   // Opening the panel is the moment to show a live meter and real device
   // names, both of which need the input open.
-  if (support.ok && audioEngine) ensureCapture().then(placePanel);
+  if (support.ok && audioEngine && panelWantsInput()) ensureCapture().then(placePanel);
   startMeter();
 }
 
@@ -301,9 +357,10 @@ function startMeter() {
     meterRaf = 0;
     if (!panelOpen()) return;
     const c = liveCapture();
-    if (!c && wantCapture && audioEngine && !opening && !group) ensureCapture();
-    // With tracks armed, what they record; else the whole device.
-    const armed = armedTracks();
+    if (!c && wantCapture && audioEngine && !opening && !group && panelWantsInput()) ensureCapture();
+    // With tracks armed, what they record; else the whole device. A video
+    // track records no sound, so it adds nothing to the meter.
+    const armed = audioArmed();
     const peak = !c ? 0 : armed.length
       ? Math.max(...armed.map((tr) => c.channelLevel(trackInput(tr).channels)))
       : c.level();
@@ -424,6 +481,12 @@ function renderRecButton() {
   btn.setAttribute("aria-label", t(key));
   btn.title = t(active ? "rec.stopRecording" : "rec.recordTitle");
   btn.disabled = saving;
+}
+
+/** Close the recording panel (its camera and input go with it): mode.js
+ * Practice has no recording. */
+export function closeRecordPanel() {
+  closePanel();
 }
 
 export function isRecording() {
@@ -561,37 +624,54 @@ async function startRecording() {
     }
     if (audioEngine !== eng) return;
   }
-  const inputs = tracks.map(trackInput);
+  // Sound comes from the audio tracks' input; a video track records none.
+  const audioTracks = tracks.filter((tr) => tr.kind !== "video");
+  const inputs = new Map(audioTracks.map((tr) => [tr.id, trackInput(tr)]));
   // A track's device is not connected: say which, rather than record from
   // whatever the browser would open instead.
-  const gone = tracks.find((_, i) => inputs[i].missing);
+  const gone = audioTracks.find((tr) => inputs.get(tr.id).missing);
   if (gone) {
     openPanel();
     setStatus("rec.status.trackInputMissing", { name: gone.name });
     return;
   }
-  const want = { deviceId: inputs[0].device_id || "", channelCount: channelsNeeded(inputs) };
-  const { capture: c, reason, missing } = await ensureCapture(want);
-  if (!c) {
-    openPanel();
-    if (missing) setStatus("rec.status.trackInputMissing", { name: tracks[0].name });
-    else renderInputProblem(reason);
-    return;
+  let c = null;
+  if (audioTracks.length) {
+    const first = inputs.get(audioTracks[0].id);
+    const want = { deviceId: first.device_id || "", channelCount: channelsNeeded([...inputs.values()]) };
+    const res = await ensureCapture(want);
+    c = res.capture;
+    if (!c) {
+      openPanel();
+      if (res.missing) setStatus("rec.status.trackInputMissing", { name: audioTracks[0].name });
+      else renderInputProblem(res.reason);
+      return;
+    }
+    // The device chosen for the track is not connected, and the browser
+    // opened another one instead: recording that would put the wrong input
+    // on the track without a word.
+    if (want.deviceId && c.fellBack) {
+      closeCapture();
+      openPanel();
+      setStatus("rec.status.trackInputMissing", { name: audioTracks[0].name });
+      return;
+    }
   }
-  // The device chosen for the track is not connected, and the browser opened
-  // another one instead: recording that would put the wrong input on the
-  // track without a word.
-  if (want.deviceId && c.fellBack) {
-    closeCapture();
-    openPanel();
-    setStatus("rec.status.trackInputMissing", { name: tracks[0].name });
-    return;
+  let silent = null;
+  if (audioTracks.length < tracks.length) {
+    const res = await openSilentCapture(eng);
+    silent = res.capture;
+    if (!silent) {
+      openPanel();
+      setStatus("rec.status.failed");
+      return;
+    }
   }
-  if (audioEngine !== eng) return;
-  beginTakes(eng, c, tracks, inputs);
+  if (audioEngine !== eng) { silent?.close(); return; }
+  beginTakes(eng, { audio: c, silent }, tracks, inputs);
 }
 
-function beginTakes(eng, c, tracks, inputs) {
+function beginTakes(eng, caps, tracks, inputs) {
   const jobId = currentJobId;
   // Loop recording is not in this version: one pass, one take per track.
   if (loopEnabled) toggleLoop();
@@ -604,12 +684,14 @@ function beginTakes(eng, c, tracks, inputs) {
   setStatus("rec.status.recording");
   const recorders = [];
   const sessions = tracks.map((track, i) => {
-    const recorder = c.createRecorder(inputs[i].channels);
+    const video = track.kind === "video";
+    const cap = video ? caps.silent : caps.audio;
+    const recorder = cap.createRecorder(video ? [0] : inputs.get(track.id).channels);
     recorders.push(recorder);
     const first = i === 0;
     return startTake({
       engine: eng,
-      capture: c,
+      capture: cap,
       jobId,
       trackId: track.id,
       recorder,
@@ -627,8 +709,9 @@ function beginTakes(eng, c, tracks, inputs) {
       },
     });
   });
-  group = { sessions, recorders, jobId, tracks };
-  for (const track of tracks) mountLive(track.id);
+  group = { sessions, recorders, jobId, tracks, silent: caps.silent };
+  // A live waveform of a video track would draw its silence.
+  for (const track of tracks) if (track.kind !== "video") mountLive(track.id);
   renderRecButton();
   watchGroup(group, eng);
 }
@@ -685,6 +768,7 @@ function onGroupDone(g, eng) {
     if (id) document.querySelector(`.stem-waveform-row[data-stem="${id}"]`)?.classList.remove("take-recording");
   });
   for (const r of g.recorders) r.dispose();
+  g.silent?.close();
   restoreTakeMutes();
   if (audioEngine === eng && !eng.isPlaying()) {
     try { eng.setTime?.(startPos); } catch (e) { console.warn(e); }
@@ -753,7 +837,7 @@ function onSettingsChanged(ev) {
     // A new device means a new stream. A take in progress keeps its input.
     if (isRecording()) return;
     closeCapture();
-    if (panelOpen()) ensureCapture().then(placePanel);
+    if (panelOpen() && panelWantsInput()) ensureCapture().then(placePanel);
     refreshTrackInputs();
   } else if (kind === "calibration") {
     const c = liveCapture();
@@ -822,11 +906,13 @@ export function initRecordUi() {
     const live = liveCapture();
     if (live && !captureMatches(wantedInput())) closeCapture();
     else if (live) routeMonitor(live);
-    const armed = armedTracks().length;
+    const armed = audioArmed().length;
     if (armed && audioEngine && checkCaptureSupport().ok) {
       ensureCapture().then(() => { if (panelOpen()) placePanel(); });
       startArmMeter();
-    } else if (!armed && !panelOpen() && !group) {
+    } else if (!armed && (!panelOpen() || !panelWantsInput()) && !group) {
+      // Nothing that records sound is armed: the input closes (only video
+      // tracks armed, or none and the panel shut).
       closeCapture();
     } else if (panelOpen()) {
       ensureCapture().then(placePanel);

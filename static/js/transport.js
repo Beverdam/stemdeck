@@ -156,6 +156,8 @@ export function buildRuler(durationSec) {
   }
 }
 
+let _laneLayer = null;
+
 export function updatePlayheadMarker(currentSec) {
   if (!playheadMarker || !totalDuration) return;
   const m = rulerTime.querySelector(".playhead-marker");
@@ -167,6 +169,25 @@ export function updatePlayheadMarker(currentSec) {
     // styles are interpreted in unzoomed layout pixels.
     const pct = Math.max(0, Math.min(100, (currentSec / totalDuration) * 100));
     m.style.left = `${pct}%`;
+    // The same line over the lanes (waves.css), above a video track's frames.
+    if (!_laneLayer?.isConnected) _laneLayer = document.querySelector(".stem-waveform-layer");
+    if (_laneLayer) {
+      _laneLayer.style.setProperty("--lane-playhead", `${pct}%`);
+      // Ends at the last lane: the + track row under it is not a lane.
+      const rows = _laneLayer.querySelectorAll(":scope > .stem-waveform-row");
+      const last = rows[rows.length - 1];
+      _laneLayer.style.setProperty("--lane-playhead-h", last ? `${last.offsetTop + last.offsetHeight}px` : "0px");
+      // The ruler's own line (waves.css .playhead-marker::after) shows through
+      // where no lane covers it: end it at the last lane too. Rects are in
+      // screen pixels and the app may be CSS-zoomed; the ruler's height in
+      // both units gives the factor back to layout pixels.
+      if (last) {
+        const zoom = rulerTime.getBoundingClientRect().height / (rulerTime.offsetHeight || 1) || 1;
+        const span = (last.getBoundingClientRect().bottom - m.getBoundingClientRect().top) / zoom;
+        // ::after starts 8px down and adds 26px to the variable.
+        m.style.setProperty("--wave-playhead-h", `${Math.max(0, span - 8 - 26)}px`);
+      }
+    }
   }
 }
 

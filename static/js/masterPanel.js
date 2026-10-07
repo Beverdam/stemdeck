@@ -17,6 +17,7 @@ import { fmtDb, LOSSY_CEILING_DBTP } from "./masterMath.js";
 import { audioEngine, totalDuration } from "./state.js";
 import { transport, togglePlayPause } from "./transport.js";
 import { excerptUrl } from "./player.js";
+import { onModeChange } from "./mode.js";
 
 const EXCERPT_SEC = 30;
 const METER_MS = 100;
@@ -604,6 +605,8 @@ export function initMasterPanel() {
   });
   eq.onChange(({ laneId }) => { if (laneId === eq.MASTER || laneId === null) paint(); });
   onLanguageChange(() => { relabel(); paintChip(); });
+  // Practice mode has no master: its drawer closes.
+  onModeChange((m) => { if (m === "practice") setOpen(false); });
   for (const id of ["t-fmt-wav", "t-fmt-mp3", "t-fmt-flac", "t-fmt-ogg", "t-fmt-mp4"]) {
     document.getElementById(id)?.addEventListener("click", () => paint());
   }

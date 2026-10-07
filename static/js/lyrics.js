@@ -129,6 +129,9 @@ let nothingKnownFor = null;
 // versions offered or none. Opening the tab again shows it rather than asking
 // LRCLIB the same question.
 const answered = new Map();
+// Tracks imported with Detect lyrics off whose lyrics the user asked to look
+// up from the tab, this session: the tab then looks them up like any other.
+const lookUpAsked = new Set();
 // The vocals stem's level over time for one track, { hop, db }, which times
 // the wipe to the singing (lyricsLookup.js wordTimings). Only the open
 // track's is kept: it is asked for again, cheaply, when a track comes back.
@@ -1377,6 +1380,23 @@ async function serverLyrics(trackId) {
   }
 }
 
+/**
+ * Whether the track was imported with Detect lyrics off (its job's
+ * auto_lyrics is false). Such a track never had lyrics looked for, and the
+ * tab does not look them up by itself either: it says why and offers to.
+ * A track from before the setting existed (null) is looked up as before.
+ */
+async function detectLyricsWasOff(trackId) {
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(trackId)}`);
+    if (!res.ok) return false;
+    return (await res.json())?.auto_lyrics === false;
+  } catch (err) {
+    console.warn("job state fetch failed", err);
+    return false;
+  }
+}
+
 /** The lyrics a track's file carried, from the server, or "" if unavailable. */
 async function embeddedLyrics(trackId) {
   try {
@@ -1499,6 +1519,19 @@ async function loadForCurrentTrack() {
     }, []);
     return;
   }
+  if (!lookUpAsked.has(info.id) && await detectLyricsWasOff(info.id)) {
+    if (token !== loadToken) return;
+    setStatus(t("lyrics.detectOff"), "muted");
+    const now = el("button", "lyrics-link", t("lyrics.lookUpNow"));
+    now.type = "button";
+    now.addEventListener("click", () => {
+      lookUpAsked.add(info.id);
+      loadForCurrentTrack();
+    });
+    versionsEl.replaceChildren(now);
+    return;
+  }
+  if (token !== loadToken) return;
   if (!song) {
     setStatus(t("lyrics.nothingKnown"), "muted");
     nothingKnownFor = info.id;

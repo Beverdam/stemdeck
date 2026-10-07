@@ -16,6 +16,7 @@
 import { mixerState, audioEngine, masterVolume, currentJobId } from "./state.js";
 import { persistMix } from "./mixer.js";
 import * as eq from "./eqEngine.js";
+import { isPractice, onModeChange } from "./mode.js";
 import {
   MASTER_ID, applyPreset, encodeMasterParam, holdFall, kWeightingCoefficients,
   loudnessFromMeanSquares, masterIsOn, meanSquareTail, normalizeMaster, peakDb,
@@ -104,7 +105,9 @@ export function getMaster() {
 }
 
 export function isMasterOn() {
-  return masterIsOn(getMaster()) && !!stored();
+  // Practice mode (mode.js) has no master: off, live and in exports, with
+  // the saved master kept for DAW mode.
+  return !isPractice() && masterIsOn(getMaster()) && !!stored();
 }
 
 /**
@@ -327,6 +330,13 @@ export function onChange(cb) {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
+
+// Practice and DAW: the master goes off or comes back as saved.
+onModeChange(() => {
+  applyToEngine();
+  watch();
+  emit("master");
+});
 
 // ─── Meters (approximate, for the panel) ───
 

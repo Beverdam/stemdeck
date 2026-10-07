@@ -13,6 +13,7 @@
 // pushed once the engine is ready (applyAllLaneEq), and the response curve is
 // computed from the descriptor, not read from nodes.
 
+import { isPractice, onModeChange } from "./mode.js";
 import { mixerState, audioEngine } from "./state.js";
 import { persistMix } from "./mixer.js";
 import {
@@ -50,9 +51,12 @@ function emit(laneId, eq) {
 
 function pushToEngine(laneId, eq, opts) {
   if (!audioEngine?.supportsEq) return;
+  // Practice mode (mode.js) bypasses every EQ, live and in exports, without
+  // touching what is saved: the filters stay warm behind a crossfade.
+  const live = isPractice() ? { ...eq, bypass: true } : eq;
   try {
-    if (laneId === MASTER) audioEngine.setMasterEq(eq, opts);
-    else audioEngine.setLaneEq(laneId, eq, opts);
+    if (laneId === MASTER) audioEngine.setMasterEq(live, opts);
+    else audioEngine.setLaneEq(laneId, live, opts);
   } catch (err) {
     console.warn("[eq] could not apply the EQ to the engine:", err);
   }
@@ -188,7 +192,20 @@ export function applyAllLaneEq() {
  * base64url JSON, or "" when no EQ changes the sound.
  */
 export function exportFxParam(laneNames) {
+  // Practice mode: the export sounds like what plays, with no EQ.
+  if (isPractice()) return "";
   const lanes = {};
   for (const name of laneNames || []) lanes[name] = getLaneEq(name);
   return encodeFxParam(lanes, getLaneEq(MASTER));
 }
+
+// Practice and DAW: the saved EQs go to the engine again, bypassed in
+// Practice, as they are in DAW. Ramped like any change, so playback does not
+// click.
+onModeChange(() => {
+  for (const name of Object.keys(mixerState)) {
+    if (name === MASTER) continue;
+    pushToEngine(name, getLaneEq(name));
+  }
+  pushToEngine(MASTER, getLaneEq(MASTER));
+});

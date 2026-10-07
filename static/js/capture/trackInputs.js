@@ -84,16 +84,16 @@ export function choicesFor(device) {
 }
 
 /**
- * The channels a new track records by default: a microphone's one input, an
- * interface's first pair (a mixer's stereo bus, a stereo keyboard), or its
- * only channel. A plain number is a channel count.
+ * The channels a new track records by default: one input, the first. A
+ * guitar, a mic or a drum loop is one cable, and the pair recorded one
+ * source as stereo with a silent side: on one speaker, 3 dB quieter. A
+ * stereo source (a keyboard, a mixer's bus) picks 1+2 by hand. An armed
+ * track whose input stays silent while another input of the device has
+ * signal moves to it (recordUi.js). The argument is kept for callers that
+ * pass a device or a channel count.
  */
-export function defaultChannels(device) {
-  if (device && typeof device === "object") {
-    if (device.kind === "voice") return [0];
-    return (Number(device.channels) || 1) >= 2 ? [0, 1] : [0];
-  }
-  return (Number(device) || 1) >= 2 ? [0, 1] : [0];
+export function defaultChannels(_device) {
+  return [0];
 }
 
 /** Two track inputs share one device (and so one clock). Null and "" are the default input. */
@@ -224,9 +224,87 @@ export async function listInputDevices({ unlock = false } = {}) {
 }
 
 /** The input a new track starts with: the Settings default device, its default channels. */
-export async function defaultTrackInput() {
+// ── The two inputs set in Settings > Recording ──
+//
+// A microphone (what one sings or speaks into) and an audio interface (where
+// instruments plug in), chosen separately. Kept per browser like the camera,
+// under these roles. "none" is an explicit None; nothing stored means the
+// choice was never made, and the single input chosen before there were two
+// is carried over to the role its device belongs to.
+
+export const INPUT_ROLES = Object.freeze(["voice", "instrument"]);
+const NONE = "none";
+
+function roleKey(role) {
+  return `audioinput:${role}`;
+}
+
+/** The stored choice for a role: a device id, NONE, or "" when never set. */
+export function storedRole(role) {
+  return getRememberedDevice(roleKey(role));
+}
+
+/**
+ * Choose a role's device: an id, or "" for None. Its name is kept too: a
+ * device's id can change (the desktop app, a browser that resets them), and
+ * the name finds it again.
+ */
+export function rememberRole(role, deviceId, name = "") {
+  rememberDevice(roleKey(role), deviceId || NONE);
+  rememberDevice(`${roleKey(role)}:name`, deviceId ? name : "");
+}
+
+/**
+ * The device a role uses now: the one chosen in Settings (if connected), or
+ * when never chosen, the earlier single choice if it is this kind of device,
+ * else the system's default of this kind, else the first of this kind. Null
+ * for None or when nothing of the kind is connected.
+ */
+export function roleDevice(role, devices) {
+  if (!devices?.length) return null;
+  const stored = storedRole(role);
+  if (stored === NONE) return null;
+  if (stored) {
+    const dev = devices.find((d) => d.deviceId === stored);
+    if (dev) return dev;
+    // The id changed: the same device by its name, when only one has it.
+    const name = getRememberedDevice(`${roleKey(role)}:name`);
+    const byName = name ? devices.filter((d) => d.name === name) : [];
+    if (byName.length === 1) return byName[0];
+  }
+  const legacy = getRememberedDevice("audioinput");
+  const old = legacy ? devices.find((d) => d.deviceId === legacy && d.kind === role) : null;
+  if (old) return old;
+  const kind = devices.filter((d) => d.kind === role);
+  return kind.find((d) => d.systemDefault) || kind[0] || null;
+}
+
+/**
+ * The device a new track or an unset input records from: for an audio
+ * track the interface, then the microphone; for a video track the
+ * microphone, then the interface; then any device.
+ */
+export function defaultInputDevice(devices, trackKind = "audio") {
+  const order = trackKind === "video" ? ["voice", "instrument"] : ["instrument", "voice"];
+  for (const role of order) {
+    const dev = roleDevice(role, devices);
+    if (dev) return dev;
+  }
+  return pickDefaultDevice(devices, getRememberedDevice("audioinput"));
+}
+
+/** Without the device list: the id the default input is stored under, or "". */
+export function defaultInputId() {
+  for (const role of ["instrument", "voice"]) {
+    const id = storedRole(role);
+    if (id && id !== NONE) return id;
+  }
+  return getRememberedDevice("audioinput");
+}
+
+export async function defaultTrackInput(trackKind = "audio") {
   const devices = await listInputDevices({ unlock: true });
-  const dev = pickDefaultDevice(devices, getRememberedDevice("audioinput"));
+  const dev = defaultInputDevice(devices, trackKind);
   if (!dev) return null;
   return { device_id: dev.deviceId, device_label: dev.name || null, channels: defaultChannels(dev) };
 }
@@ -238,7 +316,7 @@ export async function defaultTrackInput() {
  * id is kept, so Record refuses rather than record from another input.
  * `rememberedId` defaults to the Settings choice.
  */
-export function resolveInput(input, devices, rememberedId = getRememberedDevice("audioinput")) {
+export function resolveInput(input, devices, rememberedId = defaultInputDevice(devices)?.deviceId || "") {
   if (input && Array.isArray(input.channels) && input.channels.length) {
     const dev = findDevice(input, devices);
     if (dev) {
@@ -323,6 +401,47 @@ export function fillInputSelect(select, devices, { withChannels = false, missing
 }
 
 export const MISSING = "__missing__";
+
+/**
+ * One of Settings > Recording's two input pickers (`role` "voice" for the
+ * microphone, "instrument" for the audio interface): None, then every input
+ * grouped as voice and instrument, the role's device selected, following
+ * plugs and unplugs. `onChange(deviceId)` runs when the user picks (not on
+ * refreshes); "" is None.
+ */
+export function buildRolePicker(selectEl, role, onChange) {
+  let disposed = false;
+  let names = new Map();
+  async function refresh() {
+    const devices = await listInputDevices();
+    if (disposed) return devices;
+    names = new Map(devices.map((d) => [d.deviceId, d.name]));
+    fillInputSelect(selectEl, devices);
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = t("settings.rec.none");
+    selectEl.prepend(none);
+    selectEl.value = roleDevice(role, devices)?.deviceId || "";
+    selectEl.disabled = devices.length === 0;
+    return devices;
+  }
+  const onPick = () => {
+    rememberRole(role, selectEl.value, names.get(selectEl.value) || "");
+    onChange?.(selectEl.value);
+  };
+  selectEl.addEventListener("change", onPick);
+  const onDeviceChange = () => { refresh(); };
+  navigator.mediaDevices?.addEventListener?.("devicechange", onDeviceChange);
+  refresh();
+  return {
+    refresh,
+    dispose() {
+      disposed = true;
+      selectEl.removeEventListener("change", onPick);
+      navigator.mediaDevices?.removeEventListener?.("devicechange", onDeviceChange);
+    },
+  };
+}
 
 /**
  * Settings > Recording's input picker: one list, voice and instrument, the

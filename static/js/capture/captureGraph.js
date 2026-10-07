@@ -67,6 +67,132 @@ export function audioConstraints(deviceId, channelCount = 2) {
 }
 
 /**
+ * A capture with no input: what a video track's take records. A video track
+ * is picture only, so no microphone opens and nothing is heard; the take
+ * still records (silence) through the same recorder, because its first
+ * frame is what places the camera in the song (the server's
+ * camera_start_sec), exactly as an audio take is placed. Its round trip is
+ * the output half only: there is no input to wait for.
+ * Resolves { capture, reason: null } or { capture: null, reason }.
+ */
+export async function openSilentCapture(engine) {
+  const ctx = engine?.audioContext;
+  if (!ctx) return { capture: null, reason: "unknown" };
+  if (!ctx.audioWorklet) {
+    return { capture: null, reason: window.isSecureContext === false ? "insecure-context" : "unsupported" };
+  }
+  try {
+    await loadWorklet(ctx);
+  } catch (e) {
+    console.warn("[capture] recorder worklet failed to load:", e);
+    return { capture: null, reason: "unsupported" };
+  }
+  const silence = ctx.createConstantSource();
+  silence.offset.value = 0;
+  silence.start();
+  const sink = ctx.createGain();
+  sink.gain.value = 0;
+  sink.connect(ctx.destination);
+  const nodes = [];
+  const fin = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
+  const roundTrip = fin(ctx.outputLatency) + fin(ctx.baseLatency);
+  let closed = false;
+  const capture = {
+    ctx,
+    engine,
+    stream: null,
+    track: null,
+    sampleRate: ctx.sampleRate,
+    channels: 1,
+    deviceChannels: 1,
+    requestedDeviceId: "",
+    fellBack: false,
+    deviceId: "",
+    deviceLabel: "",
+    silent: true,
+    estimate: {
+      outputLatencyMs: Number.isFinite(ctx.outputLatency) ? ctx.outputLatency * 1000 : null,
+      baseLatencyMs: Number.isFinite(ctx.baseLatency) ? ctx.baseLatency * 1000 : null,
+      inputLatencyMs: null,
+    },
+    estimatedSec: roundTrip,
+    roundTripSeconds: roundTrip,
+    calibrated: false,
+    calibration: null,
+    createRecorder() {
+      const node = new AudioWorkletNode(ctx, "capture-recorder", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,
+        channelCountMode: "explicit",
+        channelInterpretation: "discrete",
+        processorOptions: { channels: 1 },
+      });
+      silence.connect(node);
+      node.connect(sink);
+      nodes.push(node);
+      let onBatch = null;
+      let waitStarted = null;
+      let waitStopped = null;
+      node.port.onmessage = (e) => {
+        const m = e.data || {};
+        if (m.type === "batch") onBatch?.(m);
+        else if (m.type === "started") { waitStarted?.(m); waitStarted = null; }
+        else if (m.type === "stopped") { waitStopped?.(m); waitStopped = null; }
+      };
+      return {
+        channels: 1,
+        sourceChannels: [0],
+        start(batchCb) {
+          onBatch = batchCb;
+          return new Promise((resolve) => {
+            waitStarted = resolve;
+            node.port.postMessage({ type: "start" });
+          });
+        },
+        stop() {
+          return new Promise((resolve) => {
+            let timer = 0;
+            const done = (m) => {
+              clearTimeout(timer);
+              waitStopped = null;
+              onBatch = null;
+              resolve(m);
+            };
+            if (ctx.state === "closed") { done({ type: "stopped", dropped: 0, contextClosed: true }); return; }
+            waitStopped = done;
+            node.port.postMessage({ type: "stop" });
+            timer = setTimeout(() => done({ type: "stopped", dropped: 0, timedOut: true }), STOP_ANSWER_MS);
+          });
+        },
+        dispose() {
+          try { node.port.postMessage({ type: "dispose" }); } catch (e) { console.warn(e); }
+          try { node.disconnect(); } catch { /* not connected */ }
+        },
+      };
+    },
+    applyCalibration() {},
+    level() { return 0; },
+    channelLevel() { return 0; },
+    setMonitorChannels() {},
+    setMonitor() {},
+    setTrim() {},
+    onDeviceLost() { return () => {}; },
+    get closed() { return closed; },
+    close() {
+      if (closed) return;
+      closed = true;
+      for (const n of [silence, sink, ...nodes]) {
+        try { n.disconnect(); } catch { /* not connected */ }
+      }
+      try { silence.stop(); } catch { /* already stopped */ }
+    },
+  };
+  return { capture, reason: null };
+}
+
+/**
  * Open an input on `engine`'s AudioContext.
  * Resolves { capture, reason: null } or { capture: null, reason }.
  */

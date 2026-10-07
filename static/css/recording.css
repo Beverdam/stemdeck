@@ -595,3 +595,162 @@
 /* A track that is recording shows the take being recorded (the live lane,
    liveWave.js), not the take it is about to replace. */
 .stem-waveform-row.take-recording > .stem-waveform-svg { visibility: hidden; }
+
+/* ── A track's tools in its key column (takeLanes.js) ──
+   Preview (a video track) and Delete, as cells like the rail's. */
+.mx-keyrail-tools {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.track-tool {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.track-tool:hover { background: var(--panel-2); color: var(--fg); }
+.track-tool:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.track-tool.track-delete:hover,
+.track-tool.track-delete.armed { color: var(--danger); }
+.track-tool.track-delete.armed { background: color-mix(in srgb, var(--danger) 18%, transparent); }
+html:not(.mode-daw) .mx-keyrail-tools { display: none; }
+
+/* ── A video track's frames along its lane (video/videoLane.js) ── */
+.lane-filmstrip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0.9;
+  border-radius: 3px;
+}
+
+/* ── The video preview window (video/videoPreview.js) ── */
+.video-preview {
+  position: fixed;
+  z-index: 65;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  min-height: 150px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  background: #000;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  resize: both;
+}
+.video-preview[hidden] { display: none; }
+.video-preview:focus { outline: none; }
+.video-preview:focus-visible { outline: 2px solid var(--focus-ring); }
+.video-preview-bar {
+  position: relative;
+  flex: 0 0 26px;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.video-preview-bar:active { cursor: grabbing; }
+/* Left of the X, never under it. */
+.video-preview-title {
+  flex: 0 1 calc(50% - 22px);
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The X in the middle of the top bar. */
+.video-preview-close {
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  transform: translateX(-50%);
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.video-preview-close:hover { background: var(--panel-2); color: var(--fg); }
+.video-preview-close:focus-visible { outline: 2px solid var(--focus-ring); }
+.video-preview-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.video-preview-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.video-preview-video[hidden] { display: none; }
+.video-preview-empty {
+  margin: 0;
+  padding: 0 16px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.video-preview-empty[hidden] { display: none; }
+
+/* Settings > Recording: which input the latency test measures. */
+.rec-settings-test {
+  display: inline-flex;
+  margin: 2px 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.rec-seg-btn {
+  padding: 4px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.rec-seg-btn + .rec-seg-btn { border-left: 1px solid var(--border-strong); }
+.rec-seg-btn.active { background: var(--panel-3); color: var(--accent); }
+.rec-seg-btn:disabled { opacity: 0.45; cursor: default; }
+.rec-seg-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+
+/* A video track is picture only (its take's audio is silence, kept for
+   timing): no waveform on its lane, and no fader, level, M, S, EQ or
+   download in its row. Its rail keeps its column, empty, so the rows line up. */
+.stem-waveform-row.video-lane .stem-waveform-svg,
+.stem-waveform-row.video-lane .lane-drag-nugget { display: none; }
+.lane-header.track-video .mx-faderline,
+.lane-header.track-video .mx-rail > * { display: none; }
+/* The level keeps its height so the name sits where it does on other rows.
+   As specific as daw.css's .mx-card .lane-vu.mx-meter, which loads later. */
+.lane-header.track-video .lane-vu.mx-meter { visibility: hidden; }

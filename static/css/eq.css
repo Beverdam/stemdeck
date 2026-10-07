@@ -76,6 +76,10 @@
    left edge, as wide as the scroller's viewport (--eq-view-w, eqRows.js). */
 .eq-panel-body {
   position: sticky;
+  /* Above the lanes' playhead line (waves.css), which stops at the panel:
+     opaque, so the line does not show through. */
+  z-index: 2;
+  background: var(--eq-panel-bg);
   left: 0;
   width: var(--eq-view-w, 100%);
   max-width: 100%;

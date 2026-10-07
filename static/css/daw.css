@@ -310,15 +310,6 @@ input, textarea { font-family: inherit; }
   line-height: 1.15;
 }
 .structure-toggle-main { display: inline-flex; align-items: center; gap: 6px; }
-/* Says what the feature is, quietly and where the choice is actually made,
-   rather than as a badge on the results after the fact. */
-.structure-toggle-note {
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  opacity: 0.62;
-}
 
 /* "All" toggle */
 .stem-choice-all {
@@ -3240,6 +3231,15 @@ input, textarea { font-family: inherit; }
   color: var(--fg-2);
   transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
 }
+/* Record keeps its own colours inside the transport group, whose rule above
+   (three classes) outranked .rec-btn.recording in recording.css: the button
+   showed neither its red dot nor the solid red of a take being recorded. */
+.footer-group-transport .daw-iconbtn.btn-transport.rec-btn { color: var(--danger); }
+.footer-group-transport .daw-iconbtn.btn-transport.rec-btn.recording {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--fg);
+}
 .footer-group-transport .daw-iconbtn.btn-transport:hover {
   background: var(--panel-3);
   color: var(--fg);
@@ -5333,55 +5333,66 @@ input, textarea { font-family: inherit; }
   background: var(--border-strong);
 }
 
-/* Detect structure reads as a switch rather than a word you press. The button
-   keeps its markup and its aria-pressed, so nothing about how it works
-   changes; the pill and its knob are drawn from the two pseudo elements.
-   Grid because the switch sits left of the label and spans both the label and
-   the EXPERIMENTAL note under it. */
-.daw-composer > .structure-toggle {
+/* Detect structure and Detect lyrics read as switches rather than words you
+   press, stacked in the one segment above Extract stems. Each button keeps
+   its aria-pressed, so nothing about how it works changes; the pill and its
+   knob are drawn from the two pseudo elements, the label beside them. */
+.daw-composer > .detect-toggles {
   grid-column: 2;
   grid-row: 1;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: var(--composer-action-w);
+}
+.detect-toggles > .structure-toggle {
   position: relative;
   display: grid;
   grid-template-columns: auto 1fr;
   align-items: center;
-  column-gap: 9px;
-  padding: 0 14px;
+  column-gap: 8px;
+  min-width: 0;
+  width: 100%;
+  height: 18px;
+  min-height: 0;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
   text-align: left;
+  font-size: 11.5px;
 }
-.daw-composer > .structure-toggle::before {
+.detect-toggles > .structure-toggle::before {
   content: "";
-  grid-row: 1 / 3;
-  width: 34px;
-  height: 19px;
+  width: 26px;
+  height: 14px;
   border-radius: 999px;
   background: var(--panel-3);
   border: 1px solid var(--border-strong);
+  box-sizing: border-box;
   transition: background var(--t-fast);
 }
-.daw-composer > .structure-toggle::after {
+.detect-toggles > .structure-toggle::after {
   content: "";
   position: absolute;
-  left: 17px;
-  width: 15px;
-  height: 15px;
+  left: 12px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
   border-radius: 50%;
   background: var(--fg-2);
   transition: transform var(--t-fast), background var(--t-fast);
 }
-.daw-composer > .structure-toggle[aria-pressed="true"]::before {
+.detect-toggles > .structure-toggle[aria-pressed="true"]::before {
   background: var(--accent);
   border-color: var(--accent);
 }
-.daw-composer > .structure-toggle[aria-pressed="true"]::after {
-  transform: translateX(15px);
+.detect-toggles > .structure-toggle[aria-pressed="true"]::after {
+  transform: translateX(12px);
   background: #1a1a1a;
 }
-.daw-composer > .structure-toggle .structure-toggle-main { grid-column: 2; }
-.daw-composer > .structure-toggle .structure-toggle-note {
-  grid-column: 2;
-  text-align: left;
-}
+.detect-toggles > .structure-toggle .structure-toggle-main { grid-column: 2; }
 
 /* Row two, and the only thing on it. A 100% basis is what forces the wrap. */
 .daw-composer > .daw-stem-section {
@@ -5390,8 +5401,7 @@ input, textarea { font-family: inherit; }
   min-width: 0;
 }
 
-/* The two actions keep their shared width and stop being full-bleed. */
-.daw-composer > .structure-toggle,
+/* The action keeps the toggles' width and stops being full-bleed. */
 .daw-composer > .daw-process-btn {
   align-self: center;
   min-height: 40px;
@@ -6080,3 +6090,72 @@ input, textarea { font-family: inherit; }
 .help-tip-h { break-after: avoid; margin-top: 8px; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
 .help-tip-row { break-inside: avoid; margin-top: 3px; }
 .help-tip-row span { color: var(--fg); font-weight: 600; }
+
+/* ── Modes (static/js/mode.js) ──
+   The DAW controls show only with mode-daw on <html>: hidden by default, so a
+   page in Practice never shows them while it loads. Practice is the simple
+   practice studio: no Record, no adding tracks (a song's existing tracks
+   still play, without their arm and input controls), no EQ, no master. */
+html:not(.mode-daw) #t-rec,
+html:not(.mode-daw) #t-rec-opts,
+html:not(.mode-daw) #recPanel,
+html:not(.mode-daw) .add-track-row,
+html:not(.mode-daw) .add-track-spacer,
+html:not(.mode-daw) .mx-rail > .mx-eq-slot,
+html:not(.mode-daw) .track-lane .mx-actions,
+html:not(.mode-daw) #t-master-btn,
+html:not(.mode-daw) #t-export-master,
+html:not(.mode-daw) #master-drawer {
+  display: none !important;
+}
+
+.rail-mode[aria-expanded="true"] { background: var(--panel); color: var(--fg-2); }
+
+.mode-menu {
+  position: fixed;
+  z-index: 70;
+  width: 250px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.mode-menu[hidden] { display: none; }
+.mode-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+.mode-item:hover:not([aria-disabled="true"]),
+.mode-item:focus-visible { background: var(--panel-2); color: var(--fg); outline: none; }
+.mode-item[aria-disabled="true"] { cursor: default; opacity: 0.55; }
+.mode-item-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; }
+.mode-item-check { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted-2); box-sizing: border-box; }
+.mode-item[aria-checked="true"] .mode-item-check { background: var(--accent); border-color: var(--accent); }
+.mode-item[aria-checked="true"] .mode-item-name { color: var(--accent); }
+.mode-item-soon {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+.mode-item-desc { padding-left: 15px; font-size: 11px; line-height: 1.35; color: var(--muted); }
+.mode-note { margin: 4px 6px 2px; font-size: 11px; color: var(--accent); }
+.mode-note[hidden] { display: none; }

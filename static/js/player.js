@@ -15,6 +15,8 @@ import {
   syncTakeFolderOrder, selectTake,
 } from "./capture/takeLanes.js";
 import { laneOrder, takeLaneOrder } from "./capture/takeFolderModel.js";
+import { isPractice, onModeChange } from "./mode.js";
+import { addFilmstrip, isVideoLane } from "./video/videoLane.js";
 import { setEqContext, syncEqRows, syncEqRowOrder, eqPanelsHeight } from "./eq/eqRows.js";
 import { laneLayout } from "./eq/eqPanelKinds.js";
 import {
@@ -183,7 +185,10 @@ function applyStemSelectionFilter(presentNames) {
   }
   syncTakeFolderOrder();
   syncEqRowOrder();
-  placeAddTrackRow(laneOrder(order.filter((n) => !isTakeName(n)).length) - 1);
+  // The mixer numbers lanes with Original at -1, the waveform column with
+  // Original at 0: the same place, one step apart when there is an Original.
+  const mixOrder = laneOrder(order.filter((n) => !isTakeName(n)).length) - 1;
+  placeAddTrackRow(mixOrder, mixOrder + (presentNames.has("original") ? laneOrder(1) : 0));
   for (const row of document.querySelectorAll(".energy-row[data-stem]")) {
     row.classList.toggle("hidden", !shown(row.dataset.stem));
   }
@@ -324,9 +329,9 @@ function ensureOverviewWaveformLayer() {
 // (takeLanes.js) and the waveform column an empty row of the same height at
 // the same place, so the lanes under it stay level in both columns.
 let _addTrackRowOrder = "";
-function placeAddTrackRow(order) {
-  _addTrackRowOrder = String(order);
-  setAddTrackOrder(order);
+function placeAddTrackRow(mixOrder, waveOrder) {
+  _addTrackRowOrder = String(waveOrder);
+  setAddTrackOrder(mixOrder);
   ensureAddTrackSpacer();
 }
 
@@ -473,6 +478,11 @@ function renderOverviewWaveformPath(stemName, peaks, norm, color, barCount, orde
     </svg>
   `;
   addLaneDragNugget(row, stemName);
+  // A video track's frames (video/videoLane.js). It is picture only: its
+  // take's audio is silence, kept for timing, so no waveform is shown.
+  const videoLane = isTakeName(stemName) && isVideoLane(stemName);
+  row.classList.toggle("video-lane", videoLane);
+  if (videoLane) addFilmstrip(row, stemName);
   if (slot) row.appendChild(slot);
 }
 
@@ -1213,6 +1223,13 @@ document.addEventListener("stemdeck:eq-rows-changed", () => {
   rerenderOverviewWaveforms();
 });
 
+// Practice and DAW: the add-track row and the EQ panels come and go.
+onModeChange(() => {
+  if (!currentJobId) return;
+  _syncVisibleCount();
+  if (_laneCount > 0) _applyLaneHeight(_laneCount);
+});
+
 function _applyLaneHeight(count) {
   // Open take folders are rows like any lane, in both columns.
   count += takeFolderRowCount();
@@ -1231,7 +1248,9 @@ function _applyLaneHeight(count) {
   //
   // An open EQ panel is a row of its own fixed height in both columns
   // (eq/eqRows.js); the lanes share what the panels leave.
-  const { rowH, stackH } = laneLayout(panelH, count, eqPanelsHeight() + ADD_TRACK_ROW_HEIGHT, WAVEFORM_LANE_HEIGHT + WAVEFORM_SEPARATOR_HEIGHT, LANE_ROW_MAX_HEIGHT);
+  // The add-track row is DAW's only (mode.js): Practice has none.
+  const addRow = isPractice() ? 0 : ADD_TRACK_ROW_HEIGHT;
+  const { rowH, stackH } = laneLayout(panelH, count, eqPanelsHeight() + addRow, WAVEFORM_LANE_HEIGHT + WAVEFORM_SEPARATOR_HEIGHT, LANE_ROW_MAX_HEIGHT);
   const appEl = document.querySelector(".app");
   appEl?.style.setProperty("--lane-h", `${rowH}px`);
   appEl?.style.setProperty("--wave-widget-track-stack-h", `${stackH}px`);

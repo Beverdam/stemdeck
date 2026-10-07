@@ -30,7 +30,7 @@ check("odd count: no pair for the last", keys(3) === "1,2,3,1+2", keys(3));
 check("pairs are 0-based channel indexes", JSON.stringify(channelChoices(4).at(-1).channels) === "[2,3]");
 check("junk counts as one channel", keys(0) === "1" && keys(NaN) === "1");
 check("capped at 64 channels", channelChoices(500).filter((c) => c.channels.length === 1).length === 64);
-check("default on a stereo count is the pair", JSON.stringify(defaultChannels(2)) === "[0,1]");
+check("default on a stereo count is its first input", JSON.stringify(defaultChannels(2)) === "[0]");
 check("default on mono is channel 1", JSON.stringify(defaultChannels(1)) === "[0]");
 check("same device by id", sameDevice({ device_id: "a" }, { device_id: "a" }));
 check("different devices", !sameDevice({ device_id: "a" }, { device_id: "b" }));
@@ -82,7 +82,7 @@ const cam = devices.find((d) => d.kind === "voice");
 check("a microphone offers one input", JSON.stringify(choicesFor(cam).map((c) => c.channels)) === "[[0]]");
 check("the mixer offers 1, 2 and 1+2", choicesFor(mg).map((c) => c.key).join(",") === "1,2,1+2");
 check("a new microphone track records its one input", JSON.stringify(defaultChannels(cam)) === "[0]");
-check("a new interface track records the pair", JSON.stringify(defaultChannels(mg)) === "[0,1]");
+check("a new interface track records one input, not a half-silent pair", JSON.stringify(defaultChannels(mg)) === "[0]");
 check("Settings default: remembered first", pickDefaultDevice(devices, "id-mgxu") === mg);
 check("Settings default: else the system default", pickDefaultDevice(devices, "") === cam);
 check("Settings default: a forgotten id falls to the system default", pickDefaultDevice(devices, "gone") === cam);
@@ -99,7 +99,7 @@ check("resolve: an unplugged device is missing, its id kept", r2.missing && r2.d
 const r3 = resolveInput({ device_id: "id-cam", device_label: "Logitech StreamCam", channels: [0, 1] }, devices, "");
 check("resolve: a microphone records one channel even if a pair was stored", JSON.stringify(r3.channels) === "[0]" && r3.kind === "voice");
 const r4 = resolveInput(null, devices, "id-mgxu");
-check("resolve: no input of its own is the Settings device", r4.device_id === "id-mgxu" && JSON.stringify(r4.channels) === "[0,1]");
+check("resolve: no input of its own is the Settings device, on one input", r4.device_id === "id-mgxu" && JSON.stringify(r4.channels) === "[0]");
 const r5 = resolveInput({ device_id: "gone", channels: [0] }, [], "");
 check("resolve: no device list yet is not reported missing", !r5.missing);
 

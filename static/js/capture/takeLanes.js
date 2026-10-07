@@ -31,8 +31,8 @@
 // way the vocal split brings in its new lanes.
 
 import { isTakeName, setTakeLanes } from "../constants.js";
-import { mixerEl, currentJobId } from "../state.js";
-import { ensureMixerStateDefaults, renderMixerRow } from "../mixer.js";
+import { mixerEl, currentJobId, mixerState } from "../state.js";
+import { applyMix, ensureMixerStateDefaults, renderMixerRow } from "../mixer.js";
 import { t } from "../i18n.js";
 import { showError } from "../job.js";
 import { patchTake, deleteTake, createTrack, patchTrack, deleteTrack } from "./takeUpload.js";
@@ -41,7 +41,7 @@ import {
   LANE_ORDER_STEP, takeLaneOrder, nudgeText,
 } from "./takeFolderModel.js";
 import {
-  defaultTrackInput, listInputDevices, resolveInput, sameDevice, fillInputSelect, choiceText, MISSING,
+  defaultTrackInput, listInputDevices, resolveInput, sameDevice, fillInputSelect, choiceText, channelText, MISSING,
 } from "./trackInputs.js";
 
 export const NUDGE_MIN_MS = -2000;
@@ -68,6 +68,9 @@ function setAddEnabled(on) {
   for (const b of _addBtns) b.disabled = !on;
 }
 const _armed = new Set();
+// Tracks whose input the user picked in this session: never moved to the
+// input that has signal (autoPickChannel), whatever it hears.
+const _userPicked = new Set();
 let _devices = [];
 // Take folders need the SVG lane overlay (player.js, the Web Audio engine
 // path). On the opt-out streaming path the lanes are WaveSurfer canvases fixed
@@ -161,17 +164,22 @@ export function showTrackNote(text) {
 /**
  * Arm or disarm a track. Tracks armed together must share a device: the
  * others are disarmed (with a note) when this one is on a different device,
- * because separate devices run on separate clocks.
+ * because separate devices run on separate clocks. A video track records no
+ * sound, so it has no device to share: it arms beside any audio track (a
+ * guitar on the interface and the camera, together).
  */
 export function setArmed(trackId, on) {
   const track = _tracks.find((tr) => tr.id === trackId);
   if (!track) return;
   if (!on) {
     _armed.delete(trackId);
+  } else if (track.kind === "video") {
+    _armed.add(trackId);
   } else {
     const mine = trackInput(track);
     let dropped = false;
     for (const other of armedTracks()) {
+      if (other.kind === "video") continue;
       if (other.id !== trackId && !sameDevice(trackInput(other), mine)) {
         _armed.delete(other.id);
         dropped = true;
@@ -235,6 +243,16 @@ function buildRow(track) {
   row.classList.add("take-lane", "track-lane");
   row.classList.toggle("track-empty", !track.url);
   row.classList.toggle("track-video", track.kind === "video");
+  // A video track is picture only: no input to choose, no level to show.
+  const video = track.kind === "video";
+  // Its M and S are hidden: a solo or mute left on it from before would
+  // silence the song (or nothing) with no button to undo it.
+  const st = mixerState[track.id];
+  if (video && st && (st.soloed || st.muted)) {
+    st.soloed = false;
+    st.muted = false;
+    applyMix();
+  }
   // A recorded part is not transposed per lane, so the key stepper goes, and
   // so does the dB readout: the row's width goes to the fader and the picker.
   row.querySelector(".lane-key")?.remove();
@@ -281,8 +299,31 @@ function buildRow(track) {
   const picker = document.createElement("span");
   picker.className = "track-input-wrap";
   picker.append(input);
-  row.querySelector(".mx-actions")?.append(arm, picker);
+  row.querySelector(".mx-actions")?.append(...(video ? [arm] : [arm, picker]));
   row.querySelector(".mx-head")?.append(menuBtn);
+  // The key column, empty on a track (no transpose): its tools instead.
+  // Preview for a video track, and Delete for any track.
+  const tools = document.createElement("div");
+  tools.className = "mx-keyrail-tools";
+  if (track.kind === "video") {
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.className = "track-tool track-preview";
+    preview.title = t("video.previewOpen");
+    preview.setAttribute("aria-label", t("video.previewOpenAria", { name: track.name }));
+    preview.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor"/></svg>';
+    preview.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        (await import("../video/videoPreview.js")).openPreview(track.id);
+      } catch (err) {
+        console.warn("[tracks] opening the preview failed:", err);
+      }
+    });
+    tools.append(preview);
+  }
+  tools.append(deleteToolFor(track));
+  row.querySelector(".mx-keyrail")?.append(tools);
   // A video track: a camera beside the name, so it reads as one at a glance.
   if (track.kind === "video") {
     const cam = document.createElement("span");
@@ -666,11 +707,37 @@ function fillTrackSelect(select, track) {
     : (inp.missing ? select.selectedOptions[0]?.textContent || "" : t("rec.track.noInput"));
 }
 
+/**
+ * Move an armed track to the input of its device that has signal, when its
+ * own input is silent (recordUi.js decides). Not for a track whose input the
+ * user picked in this session. Says so in the track note. Resolves whether
+ * it moved.
+ */
+export async function autoPickChannel(trackId, channel) {
+  const track = _tracks.find((tr) => tr.id === trackId);
+  if (!track || track.kind === "video" || _userPicked.has(trackId) || !track.input) return false;
+  const input = { ...track.input, channels: [channel] };
+  track.input = input;
+  // Once: a later silence on the new input does not move it again.
+  _userPicked.add(trackId);
+  showTrackNote(t("rec.track.autoInput", { name: track.name, input: channelText([channel]) }));
+  refreshTrackInputs();
+  document.dispatchEvent(new CustomEvent("stemdeck:tracks-armed"));
+  try {
+    await patchTrack(_jobId, track.id, { input });
+  } catch (e) {
+    console.warn("[tracks] saving the input failed:", e);
+    showError(t("rec.track.failed"));
+  }
+  return true;
+}
+
 async function onInputChange(track, select) {
   const picked = _choiceByValue.get(select.value);
   if (!picked) return;
   const input = { device_id: picked.device.deviceId, device_label: picked.device.name || null, channels: picked.channels };
   track.input = input;
+  _userPicked.add(track.id);
   // Tracks armed together share one device; a move to another device
   // disarms the rest.
   if (_armed.has(track.id)) setArmed(track.id, true);
@@ -693,7 +760,7 @@ export async function addTrack(kind = "audio") {
   if (!jobId) return null;
   setAddEnabled(false);
   try {
-    const input = await defaultTrackInput();
+    const input = await defaultTrackInput(kind);
     const fields = input ? { input } : {};
     if (kind === "video") fields.kind = "video";
     const track = await createTrack(jobId, fields);
@@ -763,6 +830,53 @@ function el(tag, cls, text) {
 }
 
 /** Delete on the second press: a take is a performance, and there is no undo. */
+// How long a pressed Delete waits for the second press.
+const DELETE_ARM_MS = 3000;
+
+/**
+ * The track's Delete tool in its key column: one press arms it (it turns red
+ * and says to press again), a second press within DELETE_ARM_MS deletes the
+ * track and its takes, as Delete track in the track menu does.
+ */
+function deleteToolFor(track) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "track-tool track-delete";
+  const idle = () => {
+    btn.classList.remove("armed");
+    btn.title = t("rec.track.deleteTool");
+    btn.setAttribute("aria-label", t("rec.track.deleteToolAria", { name: track.name }));
+  };
+  idle();
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>';
+  let timer = 0;
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!btn.classList.contains("armed")) {
+      btn.classList.add("armed");
+      btn.title = t("rec.track.deleteAgain", { name: track.name });
+      btn.setAttribute("aria-label", t("rec.track.deleteAgain", { name: track.name }));
+      timer = setTimeout(idle, DELETE_ARM_MS);
+      return;
+    }
+    clearTimeout(timer);
+    btn.disabled = true;
+    const jobId = _jobId;
+    try {
+      _armed.delete(track.id);
+      await deleteTrack(jobId, track.id);
+      unmountLive(track.id);
+      requestTakesReload(jobId);
+    } catch (err) {
+      console.warn("[tracks] deleting the track failed:", err);
+      showError(t("rec.track.failed"));
+      btn.disabled = false;
+      idle();
+    }
+  });
+  return btn;
+}
+
 function twoPress(btn, confirmText, action) {
   let armed = false;
   btn.addEventListener("click", async () => {

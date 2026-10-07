@@ -49,6 +49,12 @@ export async function seedCatalogState(page, { folders, tracks }) {
     ([key, value]) => window.localStorage.setItem(key, JSON.stringify(value)),
     [STORAGE_KEY, { v: STORAGE_VERSION, folders, tracks }],
   );
+  // The suite tests the full studio: DAW mode (static/js/mode.js), where
+  // Record, the EQ and the master are. Practice is the app's default; a test
+  // of it sets the mode before this runs, and a mode already set is kept.
+  await page.addInitScript(() => {
+    if (!window.localStorage.getItem("stemdeck.mode")) window.localStorage.setItem("stemdeck.mode", "daw");
+  });
 }
 
 /** Read the library store back, to assert on what was persisted. */

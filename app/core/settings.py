@@ -300,6 +300,30 @@ def _default_auto_sections() -> bool:
     return os.environ.get("STEMDECK_AUTO_SECTIONS", "").strip() == "1"
 
 
+def _default_auto_lyrics() -> bool:
+    """Lyrics found while a song is imported (LRCLIB, then a Whisper
+    transcript of the vocals), off until the user turns Detect lyrics on.
+
+    Unlike Detect structure this is a standing choice, kept until changed.
+    STEMDECK_AUTO_LYRICS=1 turns it on for a deployment that wants it from
+    first boot.
+    """
+    return os.environ.get("STEMDECK_AUTO_LYRICS", "").strip() == "1"
+
+
+def get_auto_lyrics() -> bool:
+    with _LOCK:
+        v = _ensure().get("auto_lyrics")
+        return v if isinstance(v, bool) else _default_auto_lyrics()
+
+
+def set_auto_lyrics(value: bool) -> bool:
+    with _LOCK:
+        _ensure()["auto_lyrics"] = bool(value)
+        _save()
+        return bool(value)
+
+
 def get_auto_sections() -> bool:
     with _LOCK:
         v = _ensure().get("auto_sections")

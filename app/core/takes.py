@@ -68,6 +68,17 @@ def take_entry(job_id: str, sidecar: dict[str, Any], has_camera: bool) -> dict[s
     take_id = str(sidecar["id"])
     latency = sidecar.get("latency") or {}
     video = sidecar.get("video") or {}
+    timeline = sidecar.get("timeline") or {}
+    camera_offset_ms = float(video.get("cameraOffsetMs") or 0.0) if has_camera else 0.0
+    # Where the camera's first frame falls in the song, as the video render
+    # places it (app/api/takes.py): the take's placement, the first frame's
+    # time in the take, less the sync nudge.
+    camera_start_sec = (
+        float(timeline.get("first_sample_song_sec") or 0.0)
+        - float(latency.get("user_nudge_ms") or 0.0) / 1000.0
+        + float(video.get("firstFrameAtMs") or 0.0) / 1000.0
+        - camera_offset_ms / 1000.0
+    )
     base = f"/api/jobs/{job_id}/takes/{take_id}"
     track_id = str(sidecar.get("track_id") or "")
     return {
@@ -78,8 +89,9 @@ def take_entry(job_id: str, sidecar: dict[str, Any], has_camera: bool) -> dict[s
         "url": f"{base}/audio.wav",
         "user_nudge_ms": float(latency.get("user_nudge_ms") or 0.0),
         "has_camera": has_camera,
-        "camera_offset_ms": float(video.get("cameraOffsetMs") or 0.0) if has_camera else 0.0,
+        "camera_offset_ms": camera_offset_ms,
         "camera_url": f"{base}/camera" if has_camera else None,
+        "camera_start_sec": round(camera_start_sec, 4) if has_camera else None,
     }
 
 

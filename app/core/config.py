@@ -364,6 +364,11 @@ TAKE_MAX_PER_JOB = 50
 TRACK_ID_RE = re.compile(r"^k[0-9a-f]{8}$")
 TRACKS_FILE = "tracks.json"
 TRACK_MAX_PER_JOB = 32
+# A video take's filmstrip (GET .../takes/{id}/filmstrip): one sprite of
+# frames, this tall, at most this many, from ffmpeg within this long.
+FILMSTRIP_FRAME_HEIGHT = 72
+FILMSTRIP_MAX_FRAMES = 240
+TIMEOUT_FILMSTRIP = _env_int("STEMDECK_TIMEOUT_FILMSTRIP", 120)
 # A part body is capped by the 4 MB JSON body middleware in app/main.py; the
 # route checks the same number while it streams the body, because the header
 # can be absent or wrong.

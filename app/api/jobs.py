@@ -58,6 +58,7 @@ from app.core.registry import set_favorite as registry_set_favorite
 from app.core.registry import set_trashed as registry_set_trashed
 from app.core.settings import (
     get_acoustid_api_key,
+    get_auto_lyrics,
     get_auto_sections,
     get_discogs_token,
     get_max_duration_sec,
@@ -272,6 +273,7 @@ async def _create_youtube_job(request: Request) -> dict[str, str]:
         # last thing the pipeline does, and the toggle clears itself as soon
         # as the user opens another song.
         auto_sections=get_auto_sections(),
+        auto_lyrics=get_auto_lyrics(),
     )
     if not registry_register_if_capacity(job, MAX_PENDING_URL_JOBS):
         raise HTTPException(status_code=503, detail=_URL_QUEUE_FULL_DETAIL)
@@ -371,6 +373,7 @@ async def _create_local_job(request: Request) -> dict[str, str]:
         source_format=ext.removeprefix("."),
         audio_tags=audio_tags,
         auto_sections=get_auto_sections(),
+        auto_lyrics=get_auto_lyrics(),
     )
     if not registry_register_if_capacity(job, MAX_PENDING_UPLOAD_JOBS):
         shutil.rmtree(job_dir, ignore_errors=True)
@@ -738,6 +741,9 @@ async def resplit_job(job_id: str, body: ResplitBody) -> dict:
         work=job.work,
         has_lyrics=has_lyrics,
         auto_sections=get_auto_sections(),
+        # The song's lyrics came along with it: keep looking for them only if
+        # Detect lyrics is on.
+        auto_lyrics=get_auto_lyrics(),
     )
     if not registry_register_if_capacity(new_job, MAX_PENDING_UPLOAD_JOBS):
         shutil.rmtree(new_dir, ignore_errors=True)
@@ -997,7 +1003,7 @@ async def refresh_audio_tags(job_id: str) -> dict:
     if (
         job.audio_tags
         and (job.artist or not tagged_artist_name(job.audio_tags.get("artist")))
-        and lyrics_settled(job_dir)
+        and (lyrics_settled(job_dir) or job.auto_lyrics is False)
         and not _wants_identity(job, job.audio_tags)
         and not _wants_work(job, job.identity, job.audio_tags)
     ):
@@ -1078,8 +1084,11 @@ async def refresh_audio_tags(job_id: str) -> dict:
                 logger.info("[%s] work lookup timed out", job_id)
         lyrics = None
         query = build_query(job, audio_tags=tags, band=artist, identity=identity)
-        # Not asked again while LRCLIB's last "nothing" is recent.
-        if query is not None and not lyrics_settled(job_dir):
+        # Not asked again while LRCLIB's last "nothing" is recent, and never
+        # for a track imported with Detect lyrics off: its Lyrics tab offers
+        # the lookup instead (POST .../lyrics/lookup), so opening the track
+        # does not fetch what the user turned off.
+        if job.auto_lyrics is not False and query is not None and not lyrics_settled(job_dir):
             # find_lyrics never raises, and starts no request past its budget.
             try:
                 lyrics = await asyncio.wait_for(

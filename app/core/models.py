@@ -257,6 +257,10 @@ class Job:
     # submit, and the toggle is a per-import choice that clears itself: reading
     # it late let a job lose a pass the user had asked and waited for.
     auto_sections: bool = False
+    # Whether this job looks for lyrics (LRCLIB, the transcript, the retime),
+    # captured from the Detect lyrics setting when the job is created. None
+    # for a job made before the setting existed, which looks as it always did.
+    auto_lyrics: bool | None = None
     sections_source: Literal["automatic", "manual"] | None = None
     tags: list[str] | None = None  # YouTube tags + categories, lowercased, max 8
     stems: list[dict[str, str]] = field(default_factory=list)
@@ -406,6 +410,7 @@ class Job:
             "stem_presence": self.stem_presence,
             "sections": self.sections,
             "sections_source": self.sections_source,
+            "auto_lyrics": self.auto_lyrics,
             "tags": self.tags,
             "stems": self.stems,
             "takes": self.takes,

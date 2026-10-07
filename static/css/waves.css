@@ -706,7 +706,28 @@
   pointer-events: none;
   display: flex;
   flex-direction: column;
+  --lane-playhead: 0%;
 }
+/* The playhead over the lanes. The ruler's line runs under this layer (z 3),
+   so a solid lane (a video track's frames) hid it; this one is drawn in the
+   layer, above the lanes' waveforms and frames, and below an open EQ panel
+   (.eq-panel-body, z 2), which it must not cross. Placed by
+   updatePlayheadMarker (transport.js). */
+.stem-waveform-layer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  /* Down to the last lane's bottom, not into the + track row under it. */
+  height: var(--lane-playhead-h, 100%);
+  left: var(--lane-playhead);
+  width: 1.5px;
+  transform: translateX(-50%);
+  background: #e54e4e;
+  box-shadow: 0 0 7px rgba(229, 78, 78, 0.34);
+  pointer-events: none;
+  z-index: 1;
+}
+.app.is-import .stem-waveform-layer::before { display: none; }
 
 .stem-waveform-row {
   /* Fixed 48px height matches the multitrack lane height

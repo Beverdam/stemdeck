@@ -937,3 +937,129 @@ def test_command_puts_the_eq_in_the_lanes_take_and_master(tmp_path):
     assert "[0:a]biquad=" in graph
     assert "[1:a]volume=0.5,volume=1.000000[a1]" in graph
     assert "normalize=0,volume=0.25,aresample" in graph
+
+
+# ─── Filmstrip (the frames a video track draws along its lane) ──────────────
+
+
+def _test_camera(path, seconds, container):
+    """A moving test pattern; WebM through a pipe as MediaRecorder writes it,
+    so it has no duration in its header."""
+    src = ["-f", "lavfi", "-i", f"testsrc=size=320x240:rate=15:duration={seconds}"]
+    if container == "webm":
+        out = subprocess.run(
+            [
+                ffmpeg_executable(),
+                "-nostdin",
+                "-loglevel",
+                "error",
+                *src,
+                "-c:v",
+                "libvpx",
+                "-b:v",
+                "300k",
+                "-f",
+                "webm",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=True,
+        ).stdout
+        path.write_bytes(out)
+    else:
+        subprocess.run(
+            [ffmpeg_executable(), "-nostdin", "-loglevel", "error", "-y", *src, str(path)],
+            check=True,
+        )
+
+
+@pytest.mark.parametrize("container", ["mp4", "webm"])
+def test_filmstrip_has_one_frame_a_second_at_the_cameras_aspect(tmp_path, container):
+    skip_without_ffmpeg()
+    camera = tmp_path / f"camera.{container}"
+    try:
+        _test_camera(camera, 5, container)
+    except subprocess.CalledProcessError:
+        pytest.skip(f"this ffmpeg cannot write {container}")
+    meta = takes_mod.build_filmstrip(camera, tmp_path)
+    assert meta["interval"] == 1.0
+    assert meta["count"] == 5
+    assert meta["frame_height"] == 72 and meta["frame_width"] == 96  # 4:3
+    assert abs(meta["duration"] - 5.0) < 0.2
+    probe = json.loads(
+        subprocess.run(
+            [
+                ffprobe_executable(),
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "json",
+                str(tmp_path / "filmstrip.jpg"),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )["streams"][0]
+    assert (probe["width"], probe["height"]) == (5 * 96, 72)
+    # Built once: asked again, it is read back, not rebuilt.
+    before = (tmp_path / "filmstrip.jpg").stat().st_mtime_ns
+    assert takes_mod.build_filmstrip(camera, tmp_path) == meta
+    assert (tmp_path / "filmstrip.jpg").stat().st_mtime_ns == before
+
+
+def test_filmstrip_of_a_long_take_stays_within_the_frame_cap(tmp_path, monkeypatch):
+    skip_without_ffmpeg()
+    monkeypatch.setattr(takes_mod, "FILMSTRIP_MAX_FRAMES", 4)
+    camera = tmp_path / "camera.mp4"
+    _test_camera(camera, 10, "mp4")
+    meta = takes_mod.build_filmstrip(camera, tmp_path)
+    assert meta["count"] == 4 and meta["interval"] == 2.5
+
+
+def test_take_entry_says_where_the_camera_starts_in_the_song():
+    from app.core.takes import take_entry
+
+    sidecar = {
+        "id": "t00000001",
+        "timeline": {"first_sample_song_sec": 10.0},
+        "latency": {"user_nudge_ms": 100.0},
+        "video": {"firstFrameAtMs": 50.0, "cameraOffsetMs": -20.0},
+    }
+    entry = take_entry(JOB, sidecar, True)
+    # 10.0 - 0.1 (nudge) + 0.05 (first frame) + 0.02 (offset -20 ms)
+    assert entry["camera_start_sec"] == pytest.approx(9.97)
+    assert take_entry(JOB, sidecar, False)["camera_start_sec"] is None
+
+
+def test_filmstrip_of_a_take_ending_between_seconds_has_no_black_frame(tmp_path):
+    """6.5 s of camera: six whole seconds, six frames. A seventh, for the last
+    half second, came out black (ffmpeg gives no frame for it and the tile
+    filter pads the gap), and a zoomed-out lane showed only that one."""
+    skip_without_ffmpeg()
+    camera = tmp_path / "camera.mp4"
+    _test_camera(camera, 6.5, "mp4")
+    meta = takes_mod.build_filmstrip(camera, tmp_path)
+    assert meta["count"] == 6
+    w, h = meta["frame_width"], meta["frame_height"]
+    raw = subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-v",
+            "error",
+            "-i",
+            str(tmp_path / "filmstrip.jpg"),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ],
+        capture_output=True,
+        check=True,
+    ).stdout
+    img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w * meta["count"])
+    for i in range(meta["count"]):
+        assert img[:, i * w : (i + 1) * w].mean() > 20, f"frame {i} is black"
