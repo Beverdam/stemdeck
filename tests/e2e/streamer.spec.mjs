@@ -467,3 +467,70 @@ test.describe("Streamer Mode: camera refused", () => {
     await expect(sm(page, ".sm-dev-state").first()).toContainText("blocked");
   });
 });
+
+// Phase 4: recording the scene and exporting it through the server.
+test.describe("Streamer Mode: recording and export", () => {
+  test.use({ launchOptions: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio", "--autoplay-policy=no-user-gesture-required"] } });
+  const recording = (page) => ev(page, () => document.querySelector("#streamer .sm-rec")?.classList.contains("recording"));
+
+  async function setUp(page, trim = { in: 1, out: 4 }) {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+    await openStudio(page);
+    await ev(page, async ([id, tr]) => {
+      const m = await import("/js/streamer/streamerModel.js");
+      const { storeSet } = await import("/js/utils.js");
+      await storeSet(`stemdeck:streamer:scene:${id}`, m.serializeScene({ ...m.defaultScene("16:9"), trim: tr }));
+    }, [JOB_ID, trim]);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
+    await page.waitForFunction(() => !/\/\s*00:00\s*$/.test(document.querySelector("#t-time")?.textContent || "00:00 / 00:00"));
+    await openStreamer(page);
+    const allow = sm(page, ".sm-cam-act");
+    if (await allow.isVisible()) await allow.click();
+  }
+
+  test("R records from the trim's start, auto-stops at its end, and the take is kept", async ({ page }) => {
+    await setUp(page);
+    await sm(page, ".sm-preview").focus();
+    await page.keyboard.press("r");
+    await expect.poll(() => recording(page)).toBe(true);
+    expect(Math.abs((await now(page)) - 1)).toBeLessThan(1);
+    await expect(sm(page, ".sm-add")).toBeDisabled();
+    await expect.poll(() => recording(page), { timeout: 20000 }).toBe(false);
+    await expect(sm(page, ".sm-export-go")).toBeVisible({ timeout: 30000 });
+    await expect(sm(page, ".sm-add")).toBeEnabled();
+  });
+
+  test("speed not 100% refuses recording with the reason", async ({ page }) => {
+    await setUp(page);
+    await ev(page, async () => (await import("/js/transport.js")).setSpeed(0.75));
+    await sm(page, ".sm-rec").click();
+    await expect(page.locator("#streamerNote")).toContainText("100%");
+    expect(await recording(page)).toBe(false);
+  });
+
+  test("export makes an MP4 named after the song", async ({ page }) => {
+    await setUp(page);
+    await sm(page, ".sm-rec").click();
+    await expect.poll(() => recording(page), { timeout: 20000 }).toBe(false);
+    await expect(sm(page, ".sm-export-go")).toBeEnabled({ timeout: 30000 });
+    const download = page.waitForEvent("download", { timeout: 120000 });
+    await sm(page, ".sm-export-go").click();
+    const file = await download;
+    expect(file.suggestedFilename()).toMatch(/\(Streamer\)\.mp4$/);
+    await expect(sm(page, ".sm-export-text")).toContainText("Saved");
+    // No desktop app here: Show in folder is not offered.
+    await expect(sm(page, ".sm-export-reveal")).toBeHidden();
+  });
+
+  test("Delete during a take does not trash the song", async ({ page }) => {
+    await setUp(page, { in: 0, out: 5 });
+    await sm(page, ".sm-rec").click();
+    await expect.poll(() => recording(page)).toBe(true);
+    await sm(page, ".sm-preview").focus();
+    await page.keyboard.press("Delete");
+    await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
+    await page.keyboard.press("r");
+    await expect.poll(() => recording(page)).toBe(false);
+  });
+});

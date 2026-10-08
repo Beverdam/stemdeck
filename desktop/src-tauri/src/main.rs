@@ -168,6 +168,10 @@ struct BackendStateInner {
     /// secret. Every live token maps to a path the user chose in a native
     /// dialog, so guessing one only ever yields another approved destination.
     next_save_token: u64,
+    /// The file the last completed export was written to, for Streamer Mode's
+    /// "Show in folder". Set only by download_to_path after the whole file is
+    /// on disk; JS never hands Rust a path to reveal.
+    last_saved: Option<PathBuf>,
 }
 
 /// Cap on unconsumed destinations. A pick whose download never runs (the user
@@ -545,6 +549,7 @@ fn main() {
             save_audio_file,
             pick_export_destination,
             download_to_path,
+            reveal_last_export,
             pick_stems_folder,
             pick_exports_folder,
             current_exports_dir,
@@ -3575,7 +3580,73 @@ async fn download_to_path(
 ) -> Result<(), String> {
     validate_download_url(&url)?;
     let dest = take_pending_save(&state, &token)?;
-    stream_url_to_file(&url, &dest).await
+    stream_url_to_file(&url, &dest).await?;
+    record_last_saved(&state, dest)
+}
+
+/// Remembers the file an export just wrote, for reveal_last_export.
+fn record_last_saved(state: &BackendState, dest: PathBuf) -> Result<(), String> {
+    let mut guard = state
+        .inner
+        .lock()
+        .map_err(|_| "state poisoned".to_string())?;
+    guard.last_saved = Some(dest);
+    Ok(())
+}
+
+/// The last exported file, if it is still there.
+fn last_saved_file(state: &BackendState) -> Result<PathBuf, String> {
+    let path = state
+        .inner
+        .lock()
+        .map_err(|_| "state poisoned".to_string())?
+        .last_saved
+        .clone()
+        .ok_or_else(|| "nothing has been saved yet".to_string())?;
+    if !path.is_file() {
+        return Err("the saved file is no longer there".to_string());
+    }
+    Ok(path)
+}
+
+/// The program and arguments that show `path` in the system's file manager:
+/// selected in Explorer and Finder, its folder opened on Linux (xdg-open has
+/// no "select"). Arguments, never a shell string, so no part of the path is
+/// ever interpreted.
+fn reveal_command(path: &Path) -> (&'static str, Vec<std::ffi::OsString>) {
+    #[cfg(target_os = "windows")]
+    {
+        // Explorer takes "/select," and the path as the next argument.
+        let args = vec![
+            std::ffi::OsString::from("/select,"),
+            path.as_os_str().to_owned(),
+        ];
+        ("explorer", args)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let args = vec![std::ffi::OsString::from("-R"), path.as_os_str().to_owned()];
+        ("open", args)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let dir = path.parent().unwrap_or(path);
+        ("xdg-open", vec![dir.as_os_str().to_owned()])
+    }
+}
+
+/// Shows the last exported file in the system's file manager (Streamer Mode's
+/// "Show in folder"). Takes no path: only a file this app has just written,
+/// recorded by download_to_path, can be revealed.
+#[tauri::command]
+fn reveal_last_export(state: tauri::State<'_, BackendState>) -> Result<(), String> {
+    let path = last_saved_file(&state)?;
+    let (program, args) = reveal_command(&path);
+    Command::new(program)
+        .args(&args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not open the file manager: {e}"))
 }
 
 /// Streams a URL to `dest`, via a temp file so a failure never leaves a
@@ -7712,6 +7783,42 @@ b6052160df96b31c9b1e33854a4dcda3d4b57641b880270f31736fb9f445d384  ffmpeg-n7.1-la
         assert!(held <= super::MAX_PENDING_SAVES, "held {held}");
         // The stalest pick is the one dropped.
         assert!(super::take_pending_save(&state, &first).is_err());
+    }
+
+    #[test]
+    fn reveal_needs_a_file_this_app_saved() {
+        let state = super::BackendState::default();
+        assert!(super::last_saved_file(&state).is_err(), "nothing saved yet");
+        let dir = std::env::temp_dir().join(format!("stemdeck-reveal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Song - Artist (Streamer).mp4");
+        std::fs::write(&file, b"x").unwrap();
+        super::record_last_saved(&state, file.clone()).unwrap();
+        assert_eq!(super::last_saved_file(&state).unwrap(), file);
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            super::last_saved_file(&state).is_err(),
+            "a file that has gone is not revealed"
+        );
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn reveal_passes_the_path_as_one_argument() {
+        let path = PathBuf::from("/tmp/a b; echo pwned & \"quoted\".mp4");
+        let (program, args) = super::reveal_command(&path);
+        assert!(!program.is_empty());
+        // The path is never split or interpreted: it is one argument, or its
+        // folder is (Linux).
+        let joined: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            joined.iter().any(|a| a == path.to_string_lossy().as_ref())
+                || joined.iter().any(|a| a == "/tmp"),
+            "{joined:?}"
+        );
     }
 
     #[test]

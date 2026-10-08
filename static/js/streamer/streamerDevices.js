@@ -331,6 +331,9 @@ export function reconcile({ camera, audio, settings }) {
   } else {
     if (mic.reason === "recording") mic.reason = null;
     const key = `input:${audio}`; // never empty: an empty key means nothing is opening
+    // The song reloaded (a new engine, a new AudioContext): the input opens
+    // again on the new one, or the meter and a take would hear nothing.
+    if (mic.capture && (mic.capture.closed || mic.capture.ctx !== audioEngine?.audioContext)) releaseMic();
     if ((mic.capture && mic.deviceId !== audio) || (!mic.capture && mic.key && mic.key !== key)) releaseMic();
     if (!mic.capture && !mic.key && !mic.reason && mayAsk.audio && checkCaptureSupport().ok) openMic(audio, key);
     else if (!checkCaptureSupport().ok && !mic.reason) mic.reason = checkCaptureSupport().reason;

@@ -992,3 +992,22 @@ html.streamer-open .daw-footer { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .sm-switch, .sm-knob { transition: none; }
 }
+
+/* ── Recording and export ── */
+.sm-rec.recording .sm-rec-pill { border-color: rgba(229, 72, 77, .55); background: rgba(229, 72, 77, .16); color: #fff; }
+.sm-rec.recording .sm-rec-ring { border-color: #ff6b70; }
+.sm-rec.recording .sm-rec-dot { background: #ff4d55; animation: sm-rec-blink 1s steps(2, start) infinite; }
+@keyframes sm-rec-blink { to { visibility: hidden; } }
+.sm-export { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--sm-line); }
+.sm-export[hidden] { display: none; }
+.sm-export-text { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--sm-text-2); overflow-wrap: break-word; }
+.sm-export-bar { width: 100%; height: 6px; accent-color: var(--sm-yellow); }
+.sm-export-bar[hidden] { display: none; }
+.sm-export-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.sm-export-row .sm-ib { width: auto; height: 32px; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
+.sm-export-row [hidden] { display: none; }
+.sm-export-go { height: 32px; }
+.sm-yt-export:disabled { opacity: .45; cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+  .sm-rec.recording .sm-rec-dot { animation: none; }
+}

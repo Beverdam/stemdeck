@@ -1,0 +1,312 @@
+// Streamer Mode's recorder: one take of the scene.
+//
+// Reuse, not a second recording path. A Streamer take is a studio take
+// (capture/takeRecorder.js) on a track of its own ("Streamer", a video
+// track): the microphone through the same capture graph and recorder
+// worklet, the take clock, the upload in parts and /finish. The picture is
+// that take's camera part, recorded by the studio's camera recorder
+// (video/cameraRecorder.js) from the composed scene: an offscreen canvas at
+// the output size, drawn each frame by the one scene renderer without the
+// editor's overlays, and captured with canvas.captureStream(fps). So the
+// scene and the sound share the sync block the studio's camera takes use,
+// and the server renders the MP4 exactly as it renders a camera take
+// (app/api/takes.py, fit "fill").
+//
+// The take is announced as not primary, so the studio's own camera
+// (video/videoTake.js) never films it.
+//
+// The view (streamer.js) asks: start(), stop(), state, and calls draw()
+// every frame while a take is open.
+
+import { startTake, onTakeEvent, registerTakeParticipant } from "../capture/takeRecorder.js";
+import { createTrack, uploadPart } from "../capture/takeUpload.js";
+import { openSilentCapture } from "../capture/captureGraph.js";
+import { recordBlockReason } from "../capture/takeMath.js";
+import { requestTakesReload } from "../capture/takeLanes.js";
+import { startCameraRecording, recorderSupported } from "../video/cameraRecorder.js";
+import { audioEngine, playbackSpeed } from "../state.js";
+import { transport, togglePlayPause, setPlayheadTime } from "../transport.js";
+import { nextRecordState, isTakeOpen, startPoint, outputPixels, videoBitrate } from "./recordModel.js";
+
+const TRACK_KEY = (jobId) => `stemdeck:streamer:track:${jobId}`;
+const LAST_TAKE_KEY = (jobId) => `stemdeck:streamer:take:${jobId}`;
+
+const rec = {
+  state: "idle",
+  reason: null, // why the last start or take failed
+  jobId: null,
+  trackId: null,
+  takeId: null,
+  session: null,
+  camera: null, // the camera recorder on the canvas stream
+  canvas: null,
+  ctx: null,
+  stream: null,
+  size: null,
+  fps: 30,
+  silent: null, // a capture with no input, when there is no microphone
+  recorder: null, // the take's recorder on the capture
+  startedAtMs: 0,
+  hiddenWhileRecording: false,
+};
+const listeners = new Set();
+
+function set(event, extra = {}) {
+  rec.state = nextRecordState(rec.state, event);
+  Object.assign(rec, extra);
+  for (const cb of listeners) {
+    try { cb(rec.state); } catch (err) { console.warn("[streamer] recorder listener failed:", err); }
+  }
+}
+
+export function onRecordChange(cb) {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
+export function recordState() {
+  return {
+    state: rec.state,
+    reason: rec.reason,
+    jobId: rec.jobId,
+    takeId: rec.takeId,
+    elapsedSec: rec.state === "recording" ? (performance.now() - rec.startedAtMs) / 1000 : 0,
+    hidden: rec.hiddenWhileRecording,
+    stopReason: rec.stopReason,
+  };
+}
+
+export function takeOpen() {
+  return isTakeOpen(rec.state);
+}
+
+/** The canvas the take films, at the output size, while a take is open. */
+export function outputCanvas() {
+  return isTakeOpen(rec.state) ? rec.canvas : null;
+}
+
+/** The last take recorded for `jobId` (a reload keeps it), or null. */
+export function lastTake(jobId) {
+  if (rec.jobId === jobId && rec.takeId && (rec.state === "saved" || rec.state.startsWith("export"))) return rec.takeId;
+  try { return localStorage.getItem(LAST_TAKE_KEY(jobId)) || null; } catch { return null; }
+}
+
+export function streamerTrackId(jobId) {
+  try { return localStorage.getItem(TRACK_KEY(jobId)) || null; } catch { return null; }
+}
+
+/** Why recording cannot start now, or null: the studio's own rules
+ * (takeMath.recordBlockReason: an engine, tempo 1) and the browser's. */
+export function recordBlock() {
+  const block = recordBlockReason({ hasEngine: Boolean(audioEngine), rate: playbackSpeed });
+  if (block) return block;
+  if (!recorderSupported() || typeof HTMLCanvasElement.prototype.captureStream !== "function") return "unsupported";
+  return null;
+}
+
+/** The Streamer track of this song: the one this browser kept, else a
+ * video track of that name (another browser's), else a new one. */
+async function ensureTrack(jobId, name) {
+  const kept = streamerTrackId(jobId);
+  let tracks = [];
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    tracks = (res.ok ? (await res.json())?.tracks : null) || [];
+  } catch (err) {
+    console.warn("[streamer] reading the song's tracks failed:", err);
+  }
+  const found = (kept && tracks.find((tr) => tr.id === kept))
+    || tracks.filter((tr) => tr.kind === "video" && tr.name === name).pop();
+  if (found) {
+    try { localStorage.setItem(TRACK_KEY(jobId), found.id); } catch { /* found again next time */ }
+    return found.id;
+  }
+  const track = await createTrack(jobId, { name, kind: "video" });
+  try { localStorage.setItem(TRACK_KEY(jobId), track.id); } catch { /* the next take makes another */ }
+  return track.id;
+}
+
+/**
+ * Start a take. `capture` is Streamer's open input (streamerDevices), or
+ * null for a take without a microphone (the scene and the backing only).
+ * `draw(ctx, width, height)` paints one output frame. Resolves
+ * { ok: true } or { ok: false, reason }.
+ */
+export async function startRecording({ jobId, capture, settings, aspect, range, trackName, draw }) {
+  if (isTakeOpen(rec.state) || rec.state === "exporting") return { ok: false, reason: "busy" };
+  const block = recordBlock();
+  if (block) return { ok: false, reason: block };
+  const engine = audioEngine;
+  set("start", { reason: null, jobId, takeId: null, session: null, hiddenWhileRecording: false });
+  try {
+    const trackId = await ensureTrack(jobId, trackName);
+    if (audioEngine !== engine) throw Object.assign(new Error("the song changed"), { code: "engine" });
+    let cap = capture && capture.ctx === engine.audioContext && !capture.closed ? capture : null;
+    if (!cap) {
+      const res = await openSilentCapture(engine);
+      if (!res.capture) throw Object.assign(new Error("no capture"), { code: res.reason || "unknown" });
+      rec.silent = res.capture;
+      cap = res.capture;
+    }
+    rec.recorder = cap.createRecorder(cap.channels >= 2 ? [0, 1] : [0]);
+
+    // The picture: the scene at the output size, drawn before the first frame
+    // is captured.
+    const size = outputPixels(aspect, settings.resolution);
+    const canvas = document.createElement("canvas");
+    canvas.width = size.width;
+    canvas.height = size.height;
+    rec.canvas = canvas;
+    rec.ctx = canvas.getContext("2d");
+    rec.size = size;
+    rec.fps = Number(settings.fps) || 30;
+    draw(rec.ctx, size.width, size.height);
+    rec.stream = canvas.captureStream(rec.fps);
+
+    // From the start of the range, or where the playhead stands inside it.
+    if (engine.isPlaying()) togglePlayPause();
+    const from = startPoint(transport()?.getCurrentTime?.() ?? 0, range);
+    setPlayheadTime(from);
+    rec.trackId = trackId;
+    rec.session = startTake({
+      engine,
+      capture: cap,
+      jobId,
+      label: trackName,
+      trackId,
+      recorder: rec.recorder,
+      // Not primary: the studio's camera (videoTake.js) does not film it.
+      primary: false,
+      startSongSec: from,
+      startPlayback: () => { if (!engine.isPlaying()) togglePlayPause(); },
+      stopPlayback: () => { if (audioEngine === engine && engine.isPlaying()) togglePlayPause(); },
+      onAutoStop: (why) => {
+        // The transport ended the take: a seek, a speed change, a pause, or
+        // the song's end (which is expected, not worth a word).
+        const at = transport()?.getCurrentTime?.() ?? 0;
+        const dur = transport()?.getDuration?.() ?? 0;
+        rec.stopReason = why === "transport" && dur && at >= dur - 1 ? "end" : why;
+      },
+    });
+    rec.startedAtMs = performance.now();
+    rec.stopReason = null;
+    watch(rec.session);
+    return { ok: true };
+  } catch (err) {
+    console.warn("[streamer] recording did not start:", err);
+    cleanup();
+    set("fail", { reason: err?.code || "failed" });
+    return { ok: false, reason: rec.reason };
+  }
+}
+
+/** Stop the take (it is kept: a Streamer take is exported, not reviewed). */
+export async function stopRecording() {
+  if (!rec.session || !isTakeOpen(rec.state)) return;
+  rec.stopReason = rec.stopReason || "user";
+  set("stop");
+  await rec.session.stop();
+}
+
+/** Draw one output frame (the view calls this every frame while recording). */
+export function drawOutput(draw) {
+  if (!rec.ctx || !isTakeOpen(rec.state)) return;
+  draw(rec.ctx, rec.size.width, rec.size.height);
+}
+
+// A hidden window draws no frames (requestAnimationFrame stops), so the
+// picture freezes there while the sound goes on: the view warns.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && isTakeOpen(rec.state)) rec.hiddenWhileRecording = true;
+});
+
+/** The take ended (kept, failed or discarded): the recorder lets go of the
+ * canvas, the capture it opened and the recorder worklet. */
+function cleanup() {
+  try { rec.camera?.abort(); } catch (err) { console.warn(err); }
+  rec.camera = null;
+  for (const tr of rec.stream?.getTracks() || []) tr.stop();
+  rec.stream = null;
+  rec.canvas = null;
+  rec.ctx = null;
+  try { rec.recorder?.dispose(); } catch (err) { console.warn(err); }
+  rec.recorder = null;
+  try { rec.silent?.close(); } catch (err) { console.warn(err); }
+  rec.silent = null;
+}
+
+async function watch(session) {
+  try {
+    await session.ready;
+  } catch { /* fail() below reports it */ }
+  if (rec.session === session && session.state === "recording") set("started");
+  while (rec.session === session && ["starting", "recording", "stopping"].includes(session.state)) {
+    await new Promise((r) => setTimeout(r, 120));
+    if (session.state === "stopping" && rec.state === "recording") set("stop");
+  }
+  if (rec.session !== session) return;
+  if (session.state === "review") {
+    await session.keep();
+    const takeId = session.takeId;
+    try { localStorage.setItem(LAST_TAKE_KEY(rec.jobId), takeId); } catch { /* kept for this visit */ }
+    cleanup();
+    set("saved", { takeId });
+    // The studio shows the new take on its track (as after Record).
+    requestTakesReload(rec.jobId);
+  } else {
+    const reason = session.error?.status === 409 ? "too-many" : "failed";
+    cleanup();
+    set("fail", { reason });
+  }
+}
+
+/** Export started, finished or failed (streamerExport.js drives the render). */
+export function markExport(event, extra = {}) {
+  if (event === "export" && rec.state === "idle" && extra.takeId) {
+    // A take recorded on an earlier visit: export it from "saved".
+    rec.state = "saved";
+  }
+  set(event, extra);
+}
+
+// The camera part: started when the take's frame 0 is stamped ("armed"),
+// stopped before /finish (the participant), as videoTake.js does.
+onTakeEvent((ev) => {
+  if (!rec.session || ev.takeId == null) return;
+  if (ev.type === "armed" && ev.jobId === rec.jobId && ev.trackId === rec.trackId && !rec.camera && rec.stream) {
+    rec.takeId = ev.takeId;
+    const jobId = ev.jobId;
+    const takeId = ev.takeId;
+    try {
+      rec.camera = startCameraRecording({
+        stream: rec.stream,
+        jobId,
+        takeId,
+        perfMsAtFrame0: ev.perfMsAtFrame0,
+        ctxTimeAtFrame0: ev.ctxTimeAtFrame0,
+        bitsPerSecond: videoBitrate(rec.size, rec.fps),
+        deviceLabel: "Streamer scene",
+        mirrorPreview: false,
+        previewVideo: null,
+        upload: (seq, blob) => uploadPart(jobId, takeId, "camera", seq, blob),
+      });
+    } catch (err) {
+      console.warn("[streamer] the scene recorder did not start:", err);
+    }
+  } else if ((ev.type === "failed" || ev.type === "discarded") && ev.takeId === rec.takeId) {
+    try { rec.camera?.abort(); } catch (err) { console.warn(err); }
+    rec.camera = null;
+  }
+});
+
+registerTakeParticipant(async (takeId) => {
+  if (!rec.camera || rec.camera.takeId !== takeId) return null;
+  const camera = rec.camera;
+  rec.camera = null;
+  try {
+    return await camera.stop();
+  } catch (err) {
+    console.warn("[streamer] the scene upload failed:", err);
+    return null;
+  }
+});

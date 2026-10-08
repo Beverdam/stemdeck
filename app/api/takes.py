@@ -27,8 +27,15 @@ layer.
 
 Render length (RenderBody.span): "take" (the default) covers the take's own
 span, from its count-in to where it stopped, clamped to the song; "song"
-covers the whole song. The backing plays across the whole render either way;
-the camera shows where it filmed and the canvas is black elsewhere.
+covers the whole song; "range" (Streamer Mode's trim) covers range_in to
+range_out, inside the take's own span. The backing plays across the whole
+render either way; the camera shows where it filmed and the canvas is black
+elsewhere.
+
+Streamer Mode records its composed scene as the take's camera part and asks
+for canvas 16:9, 9:16 or 1:1 at size 720, 1080 or 2160 (the short side) and
+fps 24, 30 or 60, fit "fill" (the picture is already the canvas's shape),
+and optionally the click as one more lane.
 """
 
 from __future__ import annotations
@@ -44,6 +51,7 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,6 +107,7 @@ from app.pipeline.take_render import (
     aac_available,
     assemble_raw_wav,
     build_video_render_cmd,
+    canvas_size,
     libx264_available,
     render_take_audio,
     run_video_render,
@@ -120,6 +129,8 @@ _SESSION_MAX_BYTES = 8 * 1024
 _NUDGE_MAX_MS = 2000.0
 _CAMERA_OFFSET_MAX_MS = 5000.0
 _RENDER_MAX_LANES = 32
+# The click's level in a take render: the export's default (stems.py).
+_RENDER_CLICK_GAIN = 0.6
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 # One lock per take: parts, finish, edit and delete of the same take never
@@ -1221,11 +1232,21 @@ class RenderBody(BaseModel):
     pitches: list[int] | None = Field(default=None, max_length=_RENDER_MAX_LANES)
     take_gain: float = Field(default=1.0, ge=0, le=4, allow_inf_nan=False)
     camera_offset_ms: float | None = _finite(-_CAMERA_OFFSET_MAX_MS, _CAMERA_OFFSET_MAX_MS)
-    canvas: Literal["16:9", "9:16"] = "16:9"
-    fit: Literal["cover", "contain"] = "cover"
+    canvas: Literal["16:9", "9:16", "1:1"] = "16:9"
+    # "fill": the picture is already the canvas's shape (Streamer's scene).
+    fit: Literal["cover", "contain", "fill"] = "cover"
     mirror: StrictBool = False
-    # "take": from the take's count-in to where it stopped; "song": all of it.
-    span: Literal["take", "song"] = "take"
+    # "take": from the take's count-in to where it stopped; "song": all of it;
+    # "range": range_in to range_out (Streamer's trim), inside the take's span.
+    span: Literal["take", "song", "range"] = "take"
+    range_in: float | None = _finite(0, stems_api.MAX_TRIM_SECONDS)
+    range_out: float | None = _finite(0, stems_api.MAX_TRIM_SECONDS)
+    # The output: the canvas's short side and the frame rate.
+    size: Literal["720", "1080", "2160"] = "1080"
+    fps: Literal[24, 30, 60] = 30
+    # The click as one more lane (the export's default click: the song's grid,
+    # every beat, accents by the detected bars).
+    click: StrictBool = False
     # The studio EQ, the export's fx= value (app/pipeline/fx_filters.py). The
     # take gets its track's EQ; "" means no EQ.
     fx: str = Field(default="", max_length=stems_api.FX_PARAM_MAX_CHARS)
@@ -1303,8 +1324,17 @@ def _backing_lanes(job_id: str, take_id: str, body: RenderBody) -> list[tuple[Au
 _SPAN_MIN_SEC = 1.0
 
 
-def _render_span(sidecar: dict[str, Any], song_sec: float, span: str) -> tuple[float, float]:
+def _render_span(
+    sidecar: dict[str, Any],
+    song_sec: float,
+    span: str,
+    range_in: float | None = None,
+    range_out: float | None = None,
+) -> tuple[float, float]:
     """(start, duration) of the video in song time.
+
+    "range" is range_in to range_out cut to the take's own span (a trim wider
+    than what was recorded would only add black), at least a second long.
 
     The take's span starts where its count-in started (start_song_sec minus
     count_in_sec; the take's first sample when an older sidecar has neither)
@@ -1312,6 +1342,16 @@ def _render_span(sidecar: dict[str, Any], song_sec: float, span: str) -> tuple[f
     before song 0 there is no backing and audio.wav starts at 0."""
     if span == "song" or song_sec <= 0:
         return 0.0, song_sec
+    if span == "range":
+        t_start, t_len = _render_span(sidecar, song_sec, "take")
+        t_end = t_start + t_len
+        lo = max(t_start, float(range_in or 0.0))
+        hi = min(t_end, float(range_out if range_out is not None else song_sec))
+        # A range past the take's end keeps its last second rather than black.
+        lo = min(lo, max(t_start, t_end - _SPAN_MIN_SEC))
+        hi = min(song_sec, max(hi, lo + _SPAN_MIN_SEC))
+        lo = max(0.0, min(lo, hi - _SPAN_MIN_SEC))
+        return lo, hi - lo
     timeline = sidecar.get("timeline") or {}
     placement = _placement_sec(sidecar)
     first = float(timeline.get("first_sample_song_sec") or 0.0)
@@ -1420,29 +1460,16 @@ async def _render_task(
         run.error = "video render failed"
 
 
-@router.post("/{job_id}/takes/{take_id}/render", status_code=202)
-async def start_render(job_id: str, take_id: str, request: Request) -> JSONResponse:
-    """Render the take's camera over the backing mix plus the take to MP4,
-    in the background: 202, then GET .../render follows it."""
-    job, folder, entry = _finished_or_404(job_id, take_id)
-    body: RenderBody = await _parse_body(request, RenderBody, empty_ok=True)
-    camera = await asyncio.to_thread(camera_file, folder)
-    if camera is None:
-        raise HTTPException(status_code=404, detail="take has no camera")
-    if not await asyncio.to_thread(libx264_available):
-        raise HTTPException(
-            status_code=422, detail="this ffmpeg build cannot encode H.264 video (no libx264)"
-        )
-    if not await asyncio.to_thread(aac_available):
-        raise HTTPException(
-            status_code=422, detail="this ffmpeg build cannot encode H.264 video (no AAC encoder)"
-        )
-    audio = await asyncio.to_thread(
-        _render_lanes, job_id, take_id, body, folder / "audio.wav", entry.get("track_id") or None
-    )
-    if _render_busy(job_id, take_id):
-        raise HTTPException(status_code=409, detail="video render already running")
-
+async def _prepare_render(
+    job_id: str,
+    take_id: str,
+    folder: Path,
+    body: RenderBody,
+    camera: Path,
+    audio: _RenderAudio,
+) -> tuple[list[str], float, _MasterRetry | None, list[AudioLane], float]:
+    """The render's command, length, master retry, lanes and start, from the
+    take's sidecar and the request (the slow part of start_render)."""
     sidecar = await asyncio.to_thread(_read_json, folder / _SIDECAR_FILE)
     video = sidecar.get("video") or {}
     offset_ms = (
@@ -1454,8 +1481,19 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
         _placement_sec(sidecar) + float(video.get("firstFrameAtMs") or 0.0) / 1000.0
     ) - offset_ms / 1000.0
     frames = await asyncio.to_thread(_song_frames, job_id)
-    start, duration = _render_span(sidecar, frames / TAKE_RATE, body.span)
+    start, duration = _render_span(
+        sidecar, frames / TAKE_RATE, body.span, body.range_in, body.range_out
+    )
     lanes = audio.lanes
+    if body.click:
+        click = await asyncio.to_thread(
+            stems_api._click_lane, job_id, True, 1.0, -1, _RENDER_CLICK_GAIN
+        )
+        if click is None:
+            # No beat grid: the render goes ahead without it, as the export does.
+            logger.info("[%s] take %s render: no click (no beat grid)", job_id, take_id)
+        else:
+            lanes = [*lanes, AudioLane(click.path, click.gain, "")]
     # The master, measured on the whole song with the take as one more lane
     # (audio.wav is aligned to song 0), replaces the lossy export limiter.
     master_settings = stems_api.parse_master_query(body.master)
@@ -1497,24 +1535,73 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
             master_chain=master_chain,
             trim_db=trim_db,
             alt_aac=alt_aac,
+            size=body.size,
+            fps=body.fps,
         )
 
     cmd = make_cmd()
     if master_settings is not None:
         retry = _MasterRetry(make_cmd, master_settings.ceiling)
+    return cmd, duration, retry, lanes, start
+
+
+@router.post("/{job_id}/takes/{take_id}/render", status_code=202)
+async def start_render(job_id: str, take_id: str, request: Request) -> JSONResponse:
+    """Render the take's camera over the backing mix plus the take to MP4,
+    in the background: 202, then GET .../render follows it."""
+    job, folder, entry = _finished_or_404(job_id, take_id)
+    body: RenderBody = await _parse_body(request, RenderBody, empty_ok=True)
+    camera = await asyncio.to_thread(camera_file, folder)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="take has no camera")
+    if not await asyncio.to_thread(libx264_available):
+        raise HTTPException(
+            status_code=422, detail="this ffmpeg build cannot encode H.264 video (no libx264)"
+        )
+    if not await asyncio.to_thread(aac_available):
+        raise HTTPException(
+            status_code=422, detail="this ffmpeg build cannot encode H.264 video (no AAC encoder)"
+        )
+    if body.span == "range" and (
+        body.range_in is None or body.range_out is None or body.range_out <= body.range_in
+    ):
+        raise HTTPException(status_code=422, detail="range needs range_in before range_out")
+    audio = await asyncio.to_thread(
+        _render_lanes, job_id, take_id, body, folder / "audio.wav", entry.get("track_id") or None
+    )
+    if _render_busy(job_id, take_id):
+        raise HTTPException(status_code=409, detail="video render already running")
+    # Registered (queued) before the next await, so a second POST arriving
+    # while this one prepares gets the same 409, and Cancel can reach it.
+    key = (job_id, take_id)
     run = _RenderRun()
-    _renders[(job_id, take_id)] = run
+    _renders[key] = run
+    try:
+        cmd, duration, retry, lanes, start = await _prepare_render(
+            job_id, take_id, folder, body, camera, audio
+        )
+    except BaseException:
+        if _renders.get(key) is run:
+            _renders.pop(key, None)
+        raise
+    if run.cancel.is_set():
+        # Cancelled while it was being prepared.
+        return JSONResponse(_render_view(job_id, take_id, folder), status_code=202)
     task = asyncio.create_task(_render_task(run, job, cmd, folder / _RENDER_FILE, duration, retry))
     _render_tasks.add(task)
     task.add_done_callback(_render_tasks.discard)
+    width, height = canvas_size(body.canvas, body.size)
     logger.info(
-        "[%s] take %s video render queued (%d lanes, %s span %.3f s + %.3f s)",
+        "[%s] take %s video render queued (%d lanes, %s span %.3f s + %.3f s, %dx%d at %d fps)",
         job_id,
         take_id,
         len(lanes),
         body.span,
         start,
         duration,
+        width,
+        height,
+        body.fps,
     )
     return JSONResponse(_render_view(job_id, take_id, folder), status_code=202)
 
@@ -1534,12 +1621,34 @@ async def cancel_render(job_id: str, take_id: str) -> dict[str, Any]:
     return _render_view(job_id, take_id, folder)
 
 
+# What a download name may not contain on any file system.
+_UNSAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
+
+
+def _requested_name(name: str | None) -> str | None:
+    """A download name the page asked for (Streamer's "<Title> - <Artist>
+    (Streamer).mp4"), made safe, or None to use the default. Only ever a
+    Content-Disposition value: it names nothing on the server.
+
+    Control characters and Unicode format characters (category Cf: the bidi
+    overrides that can make "gpj.exe" read as "exe.jpg", zero-width marks)
+    go, then the file-system characters, then spaces and dots at the ends."""
+    if not name:
+        return None
+    visible = "".join(c for c in name if unicodedata.category(c) not in ("Cc", "Cf"))
+    clean = re.sub(r"\s+", " ", _UNSAFE_NAME.sub(" ", visible)).strip().strip(".").strip()
+    if not clean.lower().endswith(".mp4") or len(clean) <= 4 or len(clean) > 160:
+        return None
+    return clean
+
+
 @router.get("/{job_id}/takes/{take_id}/render.mp4", response_model=None)
-async def get_render_file(job_id: str, take_id: str) -> FileResponse:
+async def get_render_file(
+    job_id: str, take_id: str, name: str | None = Query(default=None, max_length=200)
+) -> FileResponse:
     job, folder, entry = _finished_or_404(job_id, take_id)
     path = (folder / _RENDER_FILE).resolve()
     if not path.is_file() or not path.is_relative_to(JOBS_DIR.resolve()):
         raise HTTPException(status_code=404, detail="no video render")
-    return FileResponse(
-        path, media_type="video/mp4", filename=_download_name(job, entry["label"], "mp4")
-    )
+    filename = _requested_name(name) or _download_name(job, entry["label"], "mp4")
+    return FileResponse(path, media_type="video/mp4", filename=filename)

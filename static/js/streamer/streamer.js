@@ -16,10 +16,9 @@
 // drag is one step), and drawn by one renderer (sceneRenderer.js) that will
 // also draw the recorded frames.
 //
-// Phases 1 and 2 of docs/plans/0.21.0/streamer-mode.md: the shell, the
-// preview, the layers (select, move, resize, reorder, add, duplicate,
-// rename, properties, delete, undo) and the take timeline (zoom, seek, trim).
-// The devices, recording and export come in phases 3 and 4.
+// Phases 1 to 4 of docs/plans/0.21.0/streamer-mode.md: the shell, the
+// preview, the layers, the take timeline, the camera and input, and
+// recording (streamerRecord.js) and export (streamerExport.js).
 
 import { t, onLanguageChange } from "../i18n.js";
 import { currentJobId, mixerState, trackIndex, totalDuration } from "../state.js";
@@ -55,6 +54,13 @@ import { reasonMessage } from "../capture/capturePermission.js";
 import { friendlyName } from "../capture/trackInputs.js";
 import { openRecordingSettings } from "../capture/recordingSettings.js";
 import { storeGet, storeSet } from "../utils.js";
+import { toggleStemMute } from "../mixer.js";
+import {
+  startRecording, stopRecording, drawOutput, recordState, takeOpen, onRecordChange, recordBlock,
+  lastTake, streamerTrackId, markExport,
+} from "./streamerRecord.js";
+import { renderRequest, exportTake, cancelExport, saveRawRecording, canRevealSaved, revealSaved } from "./streamerExport.js";
+import { shouldAutoStop, exportFileName } from "./recordModel.js";
 import { renderScene } from "./sceneRenderer.js";
 
 const SAFE_KEY = "stemdeck.streamer.safeZones";
@@ -392,8 +398,11 @@ function buildBuilder() {
   rec.append(pill, recTime);
   rec.setAttribute("aria-pressed", "false");
   tx(rec, "streamer.recStart", "aria-label");
-  // TODO(phase 4): Record starts a take of the scene.
-  soon(rec, "streamer.recSoon");
+  // Record and Stop (also the R key).
+  rec.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleRecording();
+  });
   // The selected layer's box: drag it to move, drag a corner to resize.
   const selbox = el("div", "sm-selbox");
   selbox.hidden = true;
@@ -441,7 +450,7 @@ function buildBuilder() {
 
   const timeline = buildTimeline();
   panel.append(row, timeline.card);
-  return { panel, preview, canvas, rec, selbox, camState, camText, camAct, clockNow, clockDur, undo, redo, layers, timeline };
+  return { panel, preview, canvas, rec, recLabel: pill.querySelector(".sm-rec-label"), recTime, selbox, camState, camText, camAct, clockNow, clockDur, undo, redo, layers, timeline };
 }
 
 function buildLayersPanel() {
@@ -651,10 +660,36 @@ function buildSide() {
     sw[key].b.dataset.setting = key;
     switches.append(sw[key].b);
   }
+  // The last take: Export MP4, its progress and Cancel, Show in folder, and
+  // the raw recording when no MP4 can be made.
+  const exp = el("div", "sm-export");
+  exp.hidden = true;
+  const expText = el("p", "sm-export-text");
+  expText.setAttribute("role", "status");
+  const expBar = el("progress", "sm-export-bar");
+  expBar.max = 1;
+  expBar.value = 0;
+  expBar.hidden = true;
+  const expRow = el("div", "sm-export-row");
+  const expGo = button("sm-primary sm-export-go");
+  expGo.addEventListener("click", () => runExport());
+  const expCancel = tx(button("sm-ib sm-export-cancel"), "streamer.export.cancel");
+  expCancel.addEventListener("click", () => cancelRunningExport());
+  const expReveal = tx(button("sm-ib sm-export-reveal"), "streamer.export.reveal");
+  expReveal.addEventListener("click", () => {
+    revealSaved().catch((err) => {
+      console.warn("[streamer] showing the file failed:", err);
+      flashNote(t("streamer.export.revealFailed"), expReveal);
+    });
+  });
+  const expRaw = tx(button("sm-ib sm-export-raw"), "streamer.export.saveRaw");
+  expRaw.addEventListener("click", () => saveRaw());
+  expRow.append(expGo, expCancel, expReveal, expRaw);
+  exp.append(expText, expBar, expRow);
   body.append(
     field("streamer.videoSource", "streamerVideoSrc", vsrc.sel), vsrc.wrap, vstate.line,
     field("streamer.audioSource", "streamerAudioSrc", asrc.sel), asrc.wrap, astate.line,
-    meterRow, grid, heavy, switches,
+    meterRow, grid, heavy, switches, exp,
   );
   rec.append(recHead, body);
 
@@ -695,9 +730,10 @@ function buildSide() {
   const ytSwitches = [makeSwitch("", "streamer.ytUploadAfter", false).b, makeSwitch("", "streamer.ytPlaylist", false).b];
   const exportBtn = button("sm-primary sm-yt-export");
   exportBtn.append(icon(ICONS.upload, { size: 15, width: 2.2 }), tx(el("span"), "streamer.ytExport"));
-  // TODO(phase 4): export through the server. Does nothing yet.
-  exportBtn.setAttribute("aria-disabled", "true");
-  tx(exportBtn, "streamer.ytSoon", "title");
+  // YouTube is not there yet: the button makes the same local export, then
+  // says upload is coming. "Upload after export" and "Add to playlist" do
+  // nothing yet.
+  exportBtn.addEventListener("click", () => runExport({ youtube: true }));
   yt.append(
     ytHead, status,
     field("streamer.ytTitle", "streamerYtTitle", titleIn), titleIn,
@@ -710,6 +746,7 @@ function buildSide() {
   return {
     aside, fps: fps.sel, titleIn, vsrc: vsrc.sel, asrc: asrc.sel, vstate, astate,
     meter, meterRows, level, res: res.sel, heavy, sw,
+    exp, expText, expBar, expGo, expCancel, expReveal, expRaw, ytExport: exportBtn,
   };
 }
 
@@ -778,8 +815,11 @@ function trackMeta() {
   const artistEl = document.getElementById("np-artist");
   const artist = artistEl && !artistEl.hidden ? artistEl.textContent.trim() : "";
   const img = document.getElementById("np-thumb");
-  const art = img && img.getAttribute("src") && !img.hidden && img.naturalWidth > 0 ? img : null;
-  return { title: title === NO_TITLE ? "" : title, artist, art };
+  // The panel's thumbnails show the remote picture; the canvas draws the
+  // same picture from this origin (/api/jobs/{id}/cover), so it never taints
+  // the canvas the recorder captures.
+  const thumb = img && img.getAttribute("src") && !img.hidden && img.naturalWidth > 0 ? img : null;
+  return { title: title === NO_TITLE ? "" : title, artist, art: thumb ? coverFor(currentJobId) : null, thumb };
 }
 
 /** The stems heard now: not muted, and soloed when any lane is. */
@@ -936,6 +976,9 @@ export function openStreamer() {
 
 export function closeStreamer() {
   if (!open) return;
+  // A take in progress stops first and is kept (on the Streamer track): it
+  // can still be exported when Streamer opens again.
+  if (takeOpen()) stopRecording();
   open = false;
   toggleDrawer(false);
   closeMenu();
@@ -1072,10 +1115,21 @@ function frame() {
   paintTransport(hasTrack);
   paintDevices();
   paintMeter();
-  if (tab !== "builder") return;
+  muteStreamerTrack(job);
   const lyrics = lyricWindow(lyr.lines, tNow, 7);
+  const data = frameData(tNow, meta, lyrics);
+  if (takeOpen()) {
+    // The take films the scene without the editor's overlays, on every tab.
+    drawOutput((ctx, w, h) => renderScene(ctx, scene, data, sceneOptions(w, h, null)));
+    const st = recordState();
+    if (st.state === "recording" && shouldAutoStop({ t: tNow, range: trimRange(scene, totalDuration), duration: totalDuration, autoStop: settings.autoStopAtEnd })) {
+      stopRecording();
+    }
+  }
+  paintRecord();
+  if (tab !== "builder") return;
   paintLayers(meta, lyrics);
-  paintPreview(tNow, meta, lyrics);
+  paintPreview(tNow, meta, lyrics, data);
   paintClock(tNow);
   paintTimeline(tNow);
 }
@@ -1123,7 +1177,43 @@ function sceneRect() {
   return fitAspect(p.clientWidth, p.clientHeight, scene.aspect);
 }
 
-function paintPreview(tNow, meta, lyrics) {
+/** One frame of the song for the renderer: the same for the preview and the take. */
+function frameData(tNow, meta, lyrics) {
+  return {
+    t: tNow,
+    duration: totalDuration || 0,
+    title: meta.title,
+    artist: meta.artist,
+    art: meta.art,
+    camera: cameraSource(),
+    lyrics,
+    bars: waveBars(),
+  };
+}
+
+/** The renderer's options at `w` x `h`; `editor` null for the take. */
+function sceneOptions(w, h, editor) {
+  return {
+    width: w,
+    height: h,
+    font: ui.font,
+    accent: ui.accent,
+    accentDim: "rgba(244,183,64,.55)",
+    labels: {
+      handle: t("streamer.lowerHandle"),
+      subtitle: t("streamer.lowerSub"),
+      noLyrics: t("streamer.sub.noLyrics"),
+      camera: t("streamer.cameraPlaceholder"),
+      actionSafe: t("streamer.actionSafe"),
+      titleSafe: t("streamer.titleSafe"),
+      text: t("streamer.textPlaceholder"),
+      image: t("streamer.imagePlaceholder"),
+    },
+    editor,
+  };
+}
+
+function paintPreview(tNow, meta, lyrics, data) {
   const { preview, canvas, rec } = ui.builder;
   const cw = preview.clientWidth;
   const ch = preview.clientHeight;
@@ -1135,7 +1225,7 @@ function paintPreview(tNow, meta, lyrics) {
   const played = Math.floor((totalDuration ? tNow / totalDuration : 0) * (bars?.length || 34));
   // A live camera is a new picture every frame.
   const cam = cameraSource();
-  const sig = [cw, ch, dpr, safeZones, selected, meta.title, meta.artist, meta.art?.currentSrc || "", lyricSig, played, painted.barsSig, totalDuration, t("streamer.textPlaceholder"), cam ? cam.currentTime : -1].join("§");
+  const sig = [cw, ch, dpr, safeZones, selected, meta.title, meta.artist, meta.art ? meta.art.src : "", lyricSig, played, painted.barsSig, totalDuration, t("streamer.textPlaceholder"), cam ? cam.currentTime : -1].join("§");
   if (painted.scene === sig && painted.sceneObj === scene) return;
   painted.scene = sig;
   painted.sceneObj = scene;
@@ -1153,33 +1243,7 @@ function paintPreview(tNow, meta, lyrics) {
   ctx.beginPath();
   ctx.rect(0, 0, f.w, f.h);
   ctx.clip();
-  renderScene(ctx, scene, {
-    t: tNow,
-    duration: totalDuration || 0,
-    title: meta.title,
-    artist: meta.artist,
-    art: meta.art,
-    camera: cameraSource(),
-    lyrics,
-    bars,
-  }, {
-    width: f.w,
-    height: f.h,
-    font: ui.font,
-    accent: ui.accent,
-    accentDim: "rgba(244,183,64,.55)",
-    labels: {
-      handle: t("streamer.lowerHandle"),
-      subtitle: t("streamer.lowerSub"),
-      noLyrics: t("streamer.sub.noLyrics"),
-      camera: t("streamer.cameraPlaceholder"),
-      actionSafe: t("streamer.actionSafe"),
-      titleSafe: t("streamer.titleSafe"),
-      text: t("streamer.textPlaceholder"),
-      image: t("streamer.imagePlaceholder"),
-    },
-    editor: { selection: selected, safeZones },
-  });
+  renderScene(ctx, scene, data, sceneOptions(f.w, f.h, { selection: selected, safeZones }));
   ctx.restore();
   // The REC badge sits on the scene's own top left corner.
   rec.style.left = `${Math.round(f.x + 10)}px`;
@@ -1310,7 +1374,7 @@ function dropRows() {
 function paintLayers(meta, lyrics) {
   const L = ui.builder.layers;
   const order = [...scene.layers].reverse();
-  const sig = order.map((l) => `${l.id}:${l.visible ? 1 : 0}:${l.name || ""}:${layerSub(l, meta, lyrics)}`).join("|") + `|${selected}|${locked}|${meta.art?.currentSrc || ""}`;
+  const sig = order.map((l) => `${l.id}:${l.visible ? 1 : 0}:${l.name || ""}:${layerSub(l, meta, lyrics)}`).join("|") + `|${selected}|${locked}|${meta.thumb?.currentSrc || ""}`;
   if (painted.layers === sig) return;
   painted.layers = sig;
   const ids = order.map((l) => l.id).join("|");
@@ -1339,7 +1403,7 @@ function paintLayers(meta, lyrics) {
     row.grip.setAttribute("aria-label", t("streamer.reorderFor", { name }));
     row.grip.classList.toggle("disabled", !layerRules(layer, { locked }).canReorder);
     if (row.art) {
-      const src = meta.art?.currentSrc || meta.art?.src || "";
+      const src = meta.thumb?.currentSrc || meta.thumb?.src || "";
       if (src) {
         if (row.art.getAttribute("src") !== src) row.art.src = src;
         row.art.hidden = false;
@@ -1849,6 +1913,221 @@ export function streamerMedia() {
   return getStreamerMedia();
 }
 
+// ── Recording and export ──
+
+// The song's cover from this origin, one per song (null until it loads, or
+// when the song has none).
+const covers = new Map();
+function coverFor(jobId) {
+  if (!jobId) return null;
+  let c = covers.get(jobId);
+  if (!c) {
+    const img = new Image();
+    c = { img, ok: false };
+    img.onload = () => { c.ok = true; painted.scene = null; };
+    img.onerror = () => { c.ok = false; };
+    img.src = `/api/jobs/${encodeURIComponent(jobId)}/cover`;
+    covers.set(jobId, c);
+  }
+  return c.ok ? c.img : null;
+}
+
+/** The Streamer track's own take plays in Streamer's mix muted: a new take
+ * must not hear the last one. (Practice and Advanced keep their own mix.) */
+function muteStreamerTrack(job) {
+  const id = job && streamerTrackId(job);
+  if (!id || takeOpen()) return;
+  const m = mixerState[id];
+  if (m && !m.muted) toggleStemMute(id);
+}
+
+const BLOCK_KEY = {
+  "tempo": "streamer.rec.tempo",
+  "no-engine": "streamer.rec.noSong",
+  "unsupported": "streamer.rec.unsupported",
+  "busy": "streamer.rec.busy",
+};
+
+async function toggleRecording() {
+  if (takeOpen()) {
+    stopRecording();
+    return;
+  }
+  const badge = ui.builder.rec;
+  const job = currentJobId;
+  if (!job || !totalDuration) {
+    flashNote(t("streamer.rec.noSong"), badge);
+    return;
+  }
+  const block = recordBlock();
+  if (block) {
+    flashNote(t(BLOCK_KEY[block] || "streamer.rec.failed"), badge);
+    return;
+  }
+  const media = streamerMedia();
+  const res = await startRecording({
+    jobId: job,
+    capture: inputState().live ? media.capture : null,
+    settings,
+    aspect: scene.aspect,
+    range: trimRange(scene, totalDuration),
+    trackName: t("streamer.trackName"),
+    draw: (ctx, w, h) => renderScene(ctx, scene, frameData(now(), trackMeta(), lyricWindow(lyr.lines, now(), 7)), sceneOptions(w, h, null)),
+  });
+  if (!res.ok) flashNote(t(BLOCK_KEY[res.reason] || "streamer.rec.failed"), badge);
+  else if (!inputState().live) flashNote(t("streamer.rec.noMic"), badge);
+}
+
+let wasOpen = false;
+/** The REC badge, the lock while a take is open, and the export block. */
+function paintRecord() {
+  const st = recordState();
+  const open2 = takeOpen();
+  if (open2 !== wasOpen) {
+    wasOpen = open2;
+    // While recording: no reorder, add or delete; no new canvas size.
+    setStreamerLocked(open2);
+    ui.head.aspect.disabled = open2;
+    ui.side.res.disabled = open2;
+    ui.side.fps.disabled = open2;
+    if (!open2 && st.hidden) flashNote(t("streamer.rec.hidden"), ui.builder.rec);
+    else if (!open2 && st.stopReason === "transport") flashNote(t("streamer.rec.stopped"), ui.builder.rec);
+  }
+  // Back from a hidden window during a take: say the picture froze there.
+  if (open2 && st.hidden && !document.hidden && !painted.hiddenWarned) {
+    painted.hiddenWarned = true;
+    flashNote(t("streamer.rec.hidden"), ui.builder.rec);
+  }
+  if (!open2) painted.hiddenWarned = false;
+  const b = ui.builder;
+  const recording = st.state === "recording" || st.state === "starting" || st.state === "stopping";
+  const time = clockHours(st.elapsedSec);
+  const sig = `${st.state}|${time}|${t("streamer.recReady")}`;
+  if (painted.rec !== sig) {
+    painted.rec = sig;
+    b.rec.classList.toggle("recording", recording);
+    b.rec.setAttribute("aria-pressed", String(recording));
+    b.recLabel.textContent = t(recording ? "streamer.recOn" : "streamer.recReady");
+    b.rec.setAttribute("aria-label", t(recording ? "streamer.recStop" : "streamer.recStart"));
+    b.rec.title = b.rec.getAttribute("aria-label");
+    b.recTime.textContent = time;
+  }
+  paintExport(st);
+}
+
+// The export in progress: { jobId, takeId, abort, raw }.
+let exporting = null;
+let exportNote = "";
+let exportError = null; // { code, raw }
+
+function paintExport(st) {
+  const s = ui.side;
+  const job = currentJobId;
+  const take = job ? lastTake(job) : null;
+  const busy = Boolean(exporting);
+  const sig = `${st.state}|${take}|${busy}|${exportNote}|${exportError?.code || ""}|${t("streamer.export.go")}`;
+  if (painted.exp === sig) return;
+  painted.exp = sig;
+  const show = Boolean(take) && !takeOpen();
+  s.exp.hidden = !show && !takeOpen();
+  if (takeOpen()) {
+    s.expText.textContent = t(st.state === "stopping" ? "streamer.rec.saving" : "streamer.rec.recording");
+    s.expBar.hidden = true;
+    for (const btn of [s.expGo, s.expCancel, s.expReveal, s.expRaw]) btn.hidden = true;
+    s.ytExport.disabled = true;
+    return;
+  }
+  s.ytExport.disabled = !take || busy;
+  s.expGo.hidden = busy;
+  s.expGo.disabled = !take;
+  s.expGo.textContent = t(exportError && exportError.code !== "no-encoder" ? "streamer.export.retry" : "streamer.export.go");
+  s.expCancel.hidden = !busy;
+  s.expBar.hidden = !busy;
+  s.expReveal.hidden = !(st.state === "exported" && canRevealSaved());
+  s.expRaw.hidden = exportError?.code !== "no-encoder";
+  s.expText.textContent = exportNote || (take ? t("streamer.export.ready") : "");
+}
+
+async function runExport({ youtube = false } = {}) {
+  const job = currentJobId;
+  const takeId = job ? lastTake(job) : null;
+  if (!takeId || exporting || takeOpen()) return;
+  const meta = trackMeta();
+  const abort = new AbortController();
+  exporting = { jobId: job, takeId, abort };
+  exportError = null;
+  exportNote = t("streamer.export.rendering", { pct: 0 });
+  markExport("export", { takeId });
+  painted.exp = null;
+  const bar = ui.side.expBar;
+  bar.value = 0;
+  try {
+    const body = renderRequest({
+      trackId: streamerTrackId(job),
+      settings,
+      aspect: scene.aspect,
+      range: trimRange(scene, totalDuration),
+    });
+    const res = await exportTake({
+      jobId: job,
+      takeId,
+      body,
+      filename: exportFileName(meta.title, meta.artist),
+      signal: abort.signal,
+      onProgress: (f) => {
+        bar.value = f;
+        exportNote = t("streamer.export.rendering", { pct: Math.round(f * 100) });
+        painted.exp = null;
+      },
+      onTransferStart: () => {
+        exportNote = t("streamer.export.saving");
+        painted.exp = null;
+      },
+    });
+    markExport("done");
+    exportNote = res.saved
+      ? t(youtube ? "streamer.export.savedYoutube" : "streamer.export.saved")
+      : t("streamer.export.notSaved");
+  } catch (err) {
+    console.warn("[streamer] export failed:", err);
+    if (err?.code === "cancelled") {
+      markExport("cancel");
+      exportNote = t("streamer.export.cancelled");
+    } else {
+      markExport("fail");
+      exportError = { code: err?.code || "failed" };
+      exportNote = t(err?.code === "no-encoder" ? "streamer.export.noEncoder" : "streamer.export.failed");
+    }
+  } finally {
+    exporting = null;
+    painted.exp = null;
+  }
+}
+
+function cancelRunningExport() {
+  if (!exporting) return;
+  const { jobId, takeId, abort } = exporting;
+  abort.abort();
+  cancelExport(jobId, takeId);
+}
+
+function saveRaw() {
+  const job = currentJobId;
+  const takeId = job ? lastTake(job) : null;
+  if (!takeId) return;
+  const meta = trackMeta();
+  saveRawRecording(job, takeId, exportFileName(meta.title, meta.artist, "webm"))
+    .then((saved) => {
+      exportNote = saved === false ? t("streamer.export.notSaved") : t("streamer.export.rawSaved");
+      painted.exp = null;
+    })
+    .catch((err) => {
+      console.warn("[streamer] saving the raw recording failed:", err);
+      exportNote = t("streamer.export.failed");
+      painted.exp = null;
+    });
+}
+
 // ── Take timeline ──
 
 /** The two lanes: the voice, then the best instrument heard against it
@@ -2199,6 +2478,13 @@ function onKey(e) {
     return;
   }
   if (mod || e.altKey || typing) return;
+  // R records or stops (Streamer's own key; nothing in the studio uses R).
+  if (e.code === "KeyR" && ours && !e.repeat) {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleRecording();
+    return;
+  }
   // Arrows nudge the selected layer 1% (Shift: 5%), one undo step each.
   if (ours && tab === "builder" && selected && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)
       && !(e.target instanceof Element && e.target.closest("[role=slider], [role=tablist], .sm-layer-grip"))) {
@@ -2238,6 +2524,11 @@ export function initStreamer() {
   });
   window.addEventListener("pagehide", () => { flushScene(sceneJob); });
   loadSettings();
+  onRecordChange((state) => {
+    painted.rec = null;
+    painted.exp = null;
+    if (state === "failed") flashNote(t("streamer.rec.failed"), ui?.builder.rec);
+  });
   onDevicesChange(() => {
     painted.devices = null;
     painted.layers = null;
