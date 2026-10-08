@@ -162,7 +162,8 @@
 .rec-status:empty { display: none; }
 
 /* ── Take lanes in the mixer ── */
-.lane-header.take-lane .mx-name { font-style: italic; }
+/* Italic leans past its box: 2px so the last letter is not cut. */
+.lane-header.take-lane .mx-name { font-style: italic; padding-right: 2px; }
 .take-menu-btn {
   border: 0;
   background: transparent;

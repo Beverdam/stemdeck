@@ -303,14 +303,22 @@ export function updateLaneKnobVisual(knobEl, v) {
   }
   const val = knobEl.closest(".lane-header")?.querySelector(".mx-val");
   if (val) {
-    const db = v <= 0 ? "-∞" : (20 * Math.log10(v)).toFixed(1);
-    const text = db === "-∞" ? "-∞" : `${parseFloat(db) > 0 ? "+" : ""}${db}`;
+    const text = levelText(v);
     // The side-rail header keeps the unit in its own span; other rows (the
     // recording tracks) still carry the bare number.
     const num = val.querySelector(".mx-val-num");
     if (num) num.textContent = text;
     else val.textContent = text;
   }
+}
+
+/** A lane's level as the readout shows it: "0.0", "+3.5", "-6.0" or "-∞" (dB). */
+export function levelText(v) {
+  if (!(v > 0)) return "-∞";
+  const db = (20 * Math.log10(v)).toFixed(1);
+  // "-0.0" from a level a hair under unity reads as a different number.
+  if (db === "-0.0") return "0.0";
+  return `${parseFloat(db) > 0 ? "+" : ""}${db}`;
 }
 
 export function setLaneVolume(name, v) {
@@ -678,8 +686,7 @@ export function renderMixerRow(stem) {
   const val = document.createElement("span");
   val.className = "mx-val";
   val.innerHTML = '<span class="mx-val-num"></span><span class="mx-val-unit">dB</span>';
-  const initFrac = Math.max(0, Math.min(1, (state?.volume ?? 1) / LANE_VOLUME_MAX));
-  val.querySelector(".mx-val-num").textContent = String(Math.round(initFrac * 100));
+  val.querySelector(".mx-val-num").textContent = levelText(state?.volume ?? 1);
 
   // Col 6: this lane's key, just left of the mute button: minus, the
   // reading, plus, along the line like M and S beside it.
