@@ -1,9 +1,9 @@
 // Karaoke Mode: a workspace view over the studio, entered from the rail's
 // Karaoke button (or the Mode menu), that shows the open song's lyrics big,
-// a queue panel, and Key, Speed and Stems controls, plus a fullscreen stage.
+// a queue panel, and Key and Stems controls, plus a fullscreen stage.
 //
 // It is a view, not a second player. Every control reads and writes the
-// studio's own state: the speed through transport.setSpeed, the key through
+// studio's own state: the key through
 // transport.setGlobalPitch / resetAllKeys, each stem through the mixer's mute
 // (mixer.toggleStemMute, so the lane's M follows), the position through
 // setPlayheadTime. Nothing is copied: one animation loop, running only while
@@ -17,18 +17,17 @@
 // everything that measures them see a zero size.
 
 import { t, onLanguageChange } from "../i18n.js";
-import { audioEngine, currentJobId, mixerState, trackIndex, totalDuration, playbackSpeed, keyChip } from "../state.js";
+import { audioEngine, currentJobId, mixerState, trackIndex, totalDuration, keyChip } from "../state.js";
 import {
-  transport, setPlayheadTime, togglePlayPause, setSpeed, setGlobalPitch, getGlobalPitch, resetAllKeys,
+  transport, setPlayheadTime, togglePlayPause, stopTransport, setGlobalPitch, getGlobalPitch, resetAllKeys,
 } from "../transport.js";
 import { toggleStemMute, refreshMixerVisuals, applyMix, persistMix } from "../mixer.js";
 import { laneLabel, STEM_COLORS } from "../constants.js";
 import { karaokeLyrics, vocalEnvelopeFor } from "../lyrics.js";
 import { getCurrentTrackInfo, openTrackInStudio } from "../catalog.js";
-import { loadQueue, shiftQueue, removeFromQueue, onQueueChange, mountQueue } from "./karaokeQueue.js";
+import { loadQueue, getQueue, shiftQueue, removeFromQueue, onQueueChange, mountQueue } from "./karaokeQueue.js";
 import { isRecording } from "../capture/recordUi.js";
 import {
-  SPEED_PRESETS, clampSpeed, stepSpeed, activePreset, speedPercent,
   transposedKey, semitoneLabel, clockShort, clockLong,
   sungLines, lyricFrame, timedWords, sungCount, karaokeStems, karaokeMutedByDefault, karaokeAlwaysOn,
 } from "./karaokeModel.js";
@@ -101,6 +100,8 @@ const ICONS = {
   minus: ["M5 12h14"],
   plus: ["M5 12h14M12 5v14"],
   play: [["path", { d: "M7 4.5v15l12-7.5z", fill: "currentColor", stroke: "none" }]],
+  stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 1.5, fill: "currentColor", stroke: "none" }]],
+  next: [["path", { d: "M5 5v14l10-7z", fill: "currentColor", stroke: "none" }], "M18 5v14"],
   pause: [["rect", { x: 6, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }], ["rect", { x: 14, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }]],
   wave: ["M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4"],
   kebab: [["circle", { cx: 12, cy: 5, r: 1.7, fill: "currentColor", stroke: "none" }], ["circle", { cx: 12, cy: 12, r: 1.7, fill: "currentColor", stroke: "none" }], ["circle", { cx: 12, cy: 19, r: 1.7, fill: "currentColor", stroke: "none" }]],
@@ -243,15 +244,15 @@ function buildWindowed() {
 
   top.append(stage, side, strip);
 
-  // Controls: Key, Speed, Stems
+  // Controls: Transport, Key, Stems (the app's footer is hidden while open)
   const controls = el("div", "kk-controls");
+  const play = buildTransportPanel();
   const key = buildKeyPanel();
-  const speed = buildSpeedPanel();
   const stems = el("div", "kk-panel kk-stems");
   const stemsLabel = el("span", "kk-label");
   const stemRow = el("div", "kk-stem-row");
   stems.append(stemsLabel, stemRow);
-  controls.append(key.panel, speed.panel, stems);
+  controls.append(play.panel, key.panel, stems);
 
   // No song open: a quiet note over the whole view.
   const noTrack = el("div", "kk-no-track");
@@ -262,7 +263,7 @@ function buildWindowed() {
   ui = {
     stage, bgArt, art, title, artist, fsBtn, lyrics, progress,
     side, sideTitle, queueList, queue, strip, stripQueue,
-    key, speed, stemsLabel, stemRow, noTrack, stemCards: new Map(),
+    play, key, stemsLabel, stemRow, noTrack, stemCards: new Map(),
   };
   relabel();
   return true;
@@ -318,6 +319,41 @@ function wireSeekBar(bar) {
   });
 }
 
+/** Stop, Play / Pause and Next song: the footer's transport, which is hidden
+ * while Karaoke is open. Next plays the first song in the queue. */
+function buildTransportPanel() {
+  const panel = el("div", "kk-panel kk-transport");
+  const label = el("span", "kk-label");
+  const row = el("div", "kk-transport-row");
+  const stop = button("kk-btn kk-sq", null);
+  stop.append(icon(ICONS.stop, { size: 16 }));
+  const play = button("kk-btn kk-play", null);
+  const next = button("kk-btn kk-sq", null);
+  next.append(icon(ICONS.next, { size: 16, width: 2.2 }));
+  stop.addEventListener("click", () => stopTransport());
+  play.addEventListener("click", () => togglePlayPause());
+  next.addEventListener("click", () => playQueued());
+  row.append(stop, play, next);
+  panel.append(label, row);
+  return { panel, label, stop, play, next };
+}
+
+function paintTransport() {
+  const playing = isPlaying();
+  const hasNext = getQueue().length > 0;
+  const hasTrack = Boolean(painted.hasTrack);
+  const sig = `${playing}|${hasNext}|${hasTrack}|${t("karaoke.transport")}`;
+  if (painted.transport === sig) return;
+  painted.transport = sig;
+  const p = ui.play;
+  p.play.replaceChildren(icon(playing ? ICONS.pause : ICONS.play, { size: 20 }));
+  p.play.setAttribute("aria-label", t(playing ? "karaoke.pause" : "karaoke.play"));
+  p.play.title = t(playing ? "karaoke.pause" : "karaoke.play");
+  p.play.disabled = !hasTrack;
+  p.stop.disabled = !hasTrack;
+  p.next.disabled = !hasNext;
+}
+
 function buildKeyPanel() {
   const panel = el("div", "kk-panel kk-key");
   const label = el("span", "kk-label");
@@ -337,33 +373,6 @@ function buildKeyPanel() {
   btns.append(down, up, reset);
   panel.append(label, row, btns);
   return { panel, label, name, badge, down, up, reset };
-}
-
-function buildSpeedPanel() {
-  const panel = el("div", "kk-panel kk-speed");
-  const label = el("span", "kk-label");
-  const row = el("div", "kk-speed-row");
-  const value = el("span", "kk-speed-value");
-  const steps = el("div", "kk-joined");
-  const slower = button("kk-btn kk-sq", null);
-  slower.append(icon(ICONS.minus, { size: 16, width: 2.2 }));
-  const faster = button("kk-btn kk-sq", null);
-  faster.append(icon(ICONS.plus, { size: 16, width: 2.2 }));
-  slower.addEventListener("click", () => setSpeed(stepSpeed(playbackSpeed, -1)));
-  faster.addEventListener("click", () => setSpeed(stepSpeed(playbackSpeed, 1)));
-  steps.append(slower, faster);
-  row.append(value, steps);
-  const presets = el("div", "kk-presets");
-  presets.setAttribute("role", "group");
-  const presetBtns = SPEED_PRESETS.map((p) => {
-    const b = button("kk-preset", null, `${p}x`);
-    b.dataset.rate = String(p);
-    b.addEventListener("click", () => setSpeed(p));
-    presets.append(b);
-    return b;
-  });
-  panel.append(label, row, presets);
-  return { panel, label, value, slower, faster, presets, presetBtns };
 }
 
 function buildFullscreen() {
@@ -427,15 +436,16 @@ function relabel() {
   ui.sideTitle.textContent = t("karaoke.tabQueue");
   ui.stripQueue.setAttribute("aria-label", t("karaoke.tabQueue"));
   ui.stripQueue.title = t("karaoke.tabQueue");
+  ui.play.label.textContent = t("karaoke.transport");
+  ui.play.stop.setAttribute("aria-label", t("karaoke.stop"));
+  ui.play.stop.title = t("karaoke.stop");
+  ui.play.next.setAttribute("aria-label", t("karaoke.next"));
+  ui.play.next.title = t("karaoke.next");
   ui.key.label.textContent = t("karaoke.key");
   ui.key.badge.title = t("karaoke.transposeBadge");
   ui.key.down.setAttribute("aria-label", t("karaoke.keyDown"));
   ui.key.up.setAttribute("aria-label", t("karaoke.keyUp"));
   ui.key.reset.textContent = t("karaoke.keyReset");
-  ui.speed.label.textContent = t("karaoke.speed");
-  ui.speed.slower.setAttribute("aria-label", t("karaoke.slower"));
-  ui.speed.faster.setAttribute("aria-label", t("karaoke.faster"));
-  ui.speed.presets.setAttribute("aria-label", t("karaoke.presetsAria"));
   ui.stemsLabel.textContent = t("karaoke.stems");
   ui.noTrack.textContent = t("karaoke.noTrack");
   for (const L of [ui.lyrics, ui.fs?.lyrics].filter(Boolean)) {
@@ -478,7 +488,8 @@ export function openKaraoke() {
   placeLayer();
   window.addEventListener("resize", placeLayer);
   layerObserver?.observe(document.getElementById("lanes"));
-  layerObserver?.observe(document.querySelector(".daw-footer"));
+  const col = document.getElementById("lanes")?.closest(".daw-main-col");
+  if (col) layerObserver?.observe(col);
   window.addEventListener("keydown", onKey, true);
   for (const k of Object.keys(painted)) delete painted[k];
   shownJob = null;
@@ -554,17 +565,16 @@ function flashNote(text) {
   noteTimer = setTimeout(() => { note.hidden = true; }, 3500);
 }
 
-// The layer covers the lanes and the master drawer: from the top of #lanes to
-// the top of the footer, as wide as #lanes.
+// The layer covers the lanes, the master drawer and the footer (hidden while
+// open): from the top of #lanes to the bottom of their column, as wide as #lanes.
 const layerObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => placeLayer()) : null;
 
 function placeLayer() {
   if (!open || !root) return;
   const lanes = document.getElementById("lanes");
-  const footer = document.querySelector(".daw-footer");
   if (!lanes) return;
   const a = lanes.getBoundingClientRect();
-  const bottom = footer ? footer.getBoundingClientRect().top : a.bottom;
+  const bottom = (lanes.closest(".daw-main-col") || lanes).getBoundingClientRect().bottom;
   root.style.left = `${Math.round(a.left)}px`;
   root.style.top = `${Math.round(a.top)}px`;
   root.style.width = `${Math.round(a.width)}px`;
@@ -658,8 +668,8 @@ function frame() {
   paintProgress(tNow);
   paintLyrics(ui.lyrics, tNow);
   paintSide();
+  paintTransport();
   paintKey();
-  paintSpeed();
   paintStems();
   if (fsActive()) paintFullscreen(tNow);
 }
@@ -870,23 +880,6 @@ function paintKey() {
   k.reset.disabled = !g.available;
 }
 
-function paintSpeed() {
-  const rate = clampSpeed(playbackSpeed);
-  const sig = `${rate}|${Boolean(transport())}`;
-  if (painted.speed === sig) return;
-  painted.speed = sig;
-  const s = ui.speed;
-  s.value.textContent = speedPercent(rate);
-  const preset = activePreset(rate);
-  for (const b of s.presetBtns) {
-    const on = Number(b.dataset.rate) === preset;
-    b.classList.toggle("active", on);
-    b.setAttribute("aria-pressed", String(on));
-  }
-  s.slower.disabled = rate <= 0.5;
-  s.faster.disabled = rate >= 1.5;
-}
-
 function paintStems() {
   const names = karaokeStems(presentLanes());
   const sig = names.map((n) => `${n}:${mixerState[n]?.muted ? 0 : 1}`).join("|") + `|${t("karaoke.stems")}`;
@@ -1015,7 +1008,7 @@ function paintFullscreen(tNow) {
   if (f.sub.textContent !== sub) f.sub.textContent = sub;
   if (f.title.textContent !== meta.title) f.title.textContent = meta.title;
   const lead = karaokeStems(presentLanes()).find((n) => n === "lead_vocals" || n === "vocals");
-  const parts = [keyName(), speedPercent(playbackSpeed)];
+  const parts = [keyName()];
   if (lead) parts.push(t(mixerState[lead]?.muted ? "karaoke.stemOff" : "karaoke.stemOn", { name: laneLabel(lead) }));
   const pill = parts.join("  ·  ");
   if (f.pill.textContent !== pill) f.pill.textContent = pill;

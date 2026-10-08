@@ -115,7 +115,7 @@ test.describe("Karaoke Mode", () => {
     await expect.poll(async () => (await mixOf(page)).vocals[0]).toBe("M");
     expect((await mixOf(page)).bass[0]).toBe("-");
     expect(await speedOf(page)).toBe(1);
-    await kk(page, '.kk-preset[data-rate="1.25"]').click();
+    await ev(page, async () => (await import("/js/transport.js")).setSpeed(1.25));
     await expect.poll(async () => (await savedMix(page, "karaoke"))?.__global?.speed).toBe(1.25);
 
     // Back out: Advanced is untouched by what was done in Karaoke.
@@ -243,12 +243,11 @@ test.describe("Karaoke Mode", () => {
     await ev(page, async () => (await import("/js/mixer.js")).toggleStemMute("vocals"));
     await expect(kk(page, '.kk-stem[data-stem="vocals"] .kk-switch')).toHaveAttribute("aria-checked", "false");
 
-    await kk(page, '.kk-preset[data-rate="1.25"]').click();
+    await ev(page, async () => (await import("/js/transport.js")).setSpeed(1.25));
     expect(await ev(page, async () => (await import("/js/state.js")).playbackSpeed)).toBe(1.25);
     for (const id of ["#t-speed-05", "#t-speed-075", "#t-speed-1"]) await expect(page.locator(id)).not.toHaveClass(/active/);
     await page.locator("#t-speed-1").click();
-    await expect(kk(page, ".kk-speed-value")).toHaveText("100%");
-    await expect(kk(page, '.kk-preset[data-rate="1"]')).toHaveAttribute("aria-pressed", "true");
+    await expect(kk(page, ".kk-speed")).toHaveCount(0);
 
     const pitch = await ev(page, async () => (await import("/js/transport.js")).getGlobalPitch());
     test.skip(!pitch.available, "no pitch stage in this browser");

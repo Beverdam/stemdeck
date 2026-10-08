@@ -118,7 +118,7 @@
   padding: 0;
 }
 .kk-icon-btn:hover { border-color: #3a4552; color: #fff; }
-.kk-icon-btn:focus-visible, .kk-btn:focus-visible, .kk-preset:focus-visible,
+.kk-icon-btn:focus-visible, .kk-btn:focus-visible,
 .kk-switch:focus-visible, .kk-bar:focus-visible, .kk-fs-play:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
@@ -298,10 +298,17 @@
 }
 .kk-label { font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--kk-muted); }
 .kk-key { width: 240px; flex: none; }
-.kk-speed { width: 380px; flex: none; }
+.kk-transport { width: 200px; flex: none; }
+.kk-transport-row { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+.kk-btn.kk-play { width: 64px; height: 44px; padding: 0; border-color: var(--kk-yellow); background: var(--kk-yellow); color: var(--bg); }
+.kk-btn.kk-play:hover:not(:disabled) { filter: brightness(1.08); }
+.kk-transport .kk-btn:disabled { opacity: .4; cursor: default; }
+/* The footer's transport, speed and click track are not Karaoke's: the
+   Transport panel above stands in for the part it needs. !important because
+   daw.css forces the footer to display: flex !important. */
+html.karaoke-open .daw-footer { display: none !important; }
 .kk-stems { flex: 1; padding: 14px 16px; }
-.kk-key-row, .kk-speed-row { display: flex; align-items: center; gap: 10px; }
-.kk-speed-row { gap: 14px; }
+.kk-key-row { display: flex; align-items: center; gap: 10px; }
 .kk-key-name { font-size: 24px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kk-badge {
   min-width: 28px;
@@ -334,27 +341,10 @@
 .kk-btn:disabled { opacity: .4; cursor: default; }
 .kk-sq { width: 44px; height: 36px; padding: 0; }
 .kk-reset { flex: 1; height: 36px; }
-.kk-speed-value { font-size: 24px; font-weight: 600; width: 84px; font-variant-numeric: tabular-nums; }
 .kk-joined { display: flex; }
 .kk-joined .kk-sq { height: 32px; }
 .kk-joined .kk-sq:first-child { border-radius: 8px 0 0 8px; }
 .kk-joined .kk-sq:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
-.kk-presets { display: flex; }
-.kk-preset {
-  flex: 1;
-  height: 34px;
-  font: 13px var(--font-sans);
-  border: 1px solid #27303b;
-  background: #121820;
-  color: #c9cfd7;
-  cursor: pointer;
-  border-radius: 0;
-  padding: 0;
-}
-.kk-preset + .kk-preset { margin-left: -1px; }
-.kk-preset:first-child { border-radius: 8px 0 0 8px; }
-.kk-preset:last-child { border-radius: 0 8px 8px 0; }
-.kk-preset.active { position: relative; border-color: #6b5317; background: rgba(245, 183, 42, .18); color: var(--kk-yellow); font-weight: 700; }
 
 .kk-stem-row { display: flex; gap: 8px; height: 64px; }
 .kk-stem {
@@ -468,7 +458,6 @@
   .kk-current { --kk-current: clamp(40px, 5.6cqw, 64px); }
   .kk-side { width: 280px; }
   .kk-key { width: 220px; }
-  .kk-speed { width: 340px; }
 }
 @container karaoke (max-width: 1099px) {
   .kk-side { display: none; }
@@ -502,7 +491,7 @@
 }
 @container karaoke (max-width: 899px) {
   .kk-controls { height: auto; flex-wrap: wrap; }
-  .kk-key, .kk-speed { flex: 1 1 calc(50% - 6px); width: auto; min-height: 120px; }
+  .kk-key, .kk-transport { flex: 1 1 calc(50% - 6px); width: auto; min-height: 120px; }
   .kk-stems { flex: 1 1 100%; }
   .kk-stem-row { overflow-x: auto; }
   .kk-stem { min-width: 120px; }
