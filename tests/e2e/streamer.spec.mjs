@@ -383,3 +383,87 @@ test.describe("Streamer Mode: layers and timeline", () => {
     await expect.poll(async () => (await savedScene(page))?.trim).toEqual(saved);
   });
 });
+
+// Phase 3: the camera, the input and the output settings, on Chromium's fake
+// camera and microphone.
+test.describe("Streamer Mode: devices and meter", () => {
+  test.use({ launchOptions: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio"] } });
+  const media = (page) => ev(page, async () => {
+    const m = (await import("/js/streamer/streamerDevices.js")).getStreamerMedia();
+    return { camera: Boolean(m.camera?.active), audio: Boolean(m.audio) };
+  });
+  const savedSettings = (page) => ev(page, async () => (await import("/js/utils.js")).storeGet("stemdeck:streamer:recording", null));
+
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+    await openStudio(page);
+    await openStreamer(page);
+    const allow = sm(page, ".sm-cam-act");
+    if (await allow.isVisible()) await allow.click();
+  });
+
+  test("the device lists fill and the live camera and the meter run", async ({ page }) => {
+    await expect.poll(() => page.locator("#streamerVideoSrc option").count()).toBeGreaterThan(2);
+    await expect.poll(() => page.locator("#streamerAudioSrc option").count()).toBeGreaterThan(2);
+    await expect.poll(async () => (await media(page)).camera).toBe(true);
+    await expect(sm(page, '.sm-layer[data-layer="camera"] .sm-layer-sub')).toContainText("×");
+    const meter = sm(page, ".sm-meter");
+    await expect(meter).toHaveAttribute("role", "meter");
+    await expect(meter).toHaveAttribute("aria-valuemin", "-60");
+    await expect.poll(async () => Number(await meter.getAttribute("aria-valuenow"))).toBeGreaterThan(-60);
+  });
+
+  test("closing Streamer stops the camera and the input", async ({ page }) => {
+    await expect.poll(async () => (await media(page)).camera).toBe(true);
+    await ev(page, async () => {
+      const m = (await import("/js/streamer/streamerDevices.js")).getStreamerMedia();
+      window.__tracks = [...m.camera.getTracks(), ...(m.audio?.getTracks() || [])];
+    });
+    await closeStreamer(page);
+    await expect.poll(() => ev(page, () => window.__tracks.every((tr) => tr.readyState === "ended"))).toBe(true);
+  });
+
+  test("hiding the Camera layer or choosing No camera releases it", async ({ page }) => {
+    await expect.poll(async () => (await media(page)).camera).toBe(true);
+    await sm(page, '.sm-layer[data-layer="camera"] [role=switch]').click();
+    await expect.poll(async () => (await media(page)).camera).toBe(false);
+    await sm(page, '.sm-layer[data-layer="camera"] [role=switch]').click();
+    await expect.poll(async () => (await media(page)).camera).toBe(true);
+    await page.locator("#streamerVideoSrc").selectOption("none");
+    await expect.poll(async () => (await media(page)).camera).toBe(false);
+  });
+
+  test("output settings are kept per user, 4K and 60 fps warn", async ({ page }) => {
+    await expect(sm(page, ".sm-heavy")).toBeHidden();
+    await page.locator("#streamerRes").selectOption("2160");
+    await expect(sm(page, ".sm-heavy")).toBeVisible();
+    await page.locator("#streamerFps").selectOption("24");
+    await sm(page, '[data-setting="autoStopAtEnd"]').click();
+    await expect.poll(async () => (await savedSettings(page))?.resolution).toBe("2160");
+    expect((await savedSettings(page)).fps).toBe(24);
+    expect((await savedSettings(page)).autoStopAtEnd).toBe(false);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
+    await openStreamer(page);
+    await expect(page.locator("#streamerRes")).toHaveValue("2160");
+    await expect(page.locator("#streamerFps")).toHaveValue("24");
+    await expect(sm(page, '[data-setting="autoStopAtEnd"]')).toHaveAttribute("aria-checked", "false");
+  });
+});
+
+test.describe("Streamer Mode: camera refused", () => {
+  test("a refusal shows the reason with Retry, in the preview and the panel", async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+    await page.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = () => Promise.reject(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
+    });
+    await openStudio(page);
+    await openStreamer(page);
+    const act = sm(page, ".sm-cam-act");
+    await expect(act).toBeVisible();
+    await act.click();
+    await expect(sm(page, ".sm-cam-text")).toContainText("blocked");
+    await expect(act).toHaveText("Retry");
+    await expect(sm(page, ".sm-dev-state").first()).toContainText("blocked");
+  });
+});

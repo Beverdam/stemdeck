@@ -42,6 +42,19 @@ import {
   trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery,
 } from "./streamerModel.js";
 import { loadScene, saveScene, flushScene } from "./sceneStore.js";
+import {
+  SETTINGS_KEY, NONE, defaultRecordingSettings, parseRecordingSettings, serializeRecordingSettings,
+  resolveDeviceId, isHeavy, METER_SEGMENTS, METER_FLOOR_DB, meterFraction, levelDb, segmentZone,
+  litSegments, holdPeak, newPeakState,
+} from "./outputSettings.js";
+import {
+  startDevices, stopDevices, allowDevices, retryDevice, reconcile, cameraSource, cameraState,
+  inputState, inputLevel, deviceLists, onDevicesChange, getStreamerMedia,
+} from "./streamerDevices.js";
+import { reasonMessage } from "../capture/capturePermission.js";
+import { friendlyName } from "../capture/trackInputs.js";
+import { openRecordingSettings } from "../capture/recordingSettings.js";
+import { storeGet, storeSet } from "../utils.js";
 import { renderScene } from "./sceneRenderer.js";
 
 const SAFE_KEY = "stemdeck.streamer.safeZones";
@@ -83,6 +96,8 @@ let tab = "builder";
 let safeZones = readSafeZones();
 // The recording lock (phase 4 sets it): no adding, deleting or reordering.
 let locked = false;
+// The recording and output settings, per user (outputSettings.js).
+let settings = defaultRecordingSettings();
 // The take timeline's zoom (0 = the whole song), and a time to centre on
 // once the new zoom is laid out.
 let zoom = 0;
@@ -387,7 +402,18 @@ function buildBuilder() {
     h.dataset.corner = c;
     selbox.append(h);
   }
-  preview.append(canvas, selbox, rec);
+  // Why the camera is not showing, over the preview, with Allow or Retry.
+  const camState = el("div", "sm-cam-state");
+  camState.hidden = true;
+  camState.setAttribute("role", "status");
+  const camText = el("p", "sm-cam-text");
+  const camAct = button("sm-primary sm-cam-act");
+  camAct.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deviceAction("video");
+  });
+  camState.append(camText, camAct);
+  preview.append(canvas, selbox, camState, rec);
   wirePreview(preview, rec);
 
   const strip = el("div", "sm-strip");
@@ -415,7 +441,7 @@ function buildBuilder() {
 
   const timeline = buildTimeline();
   panel.append(row, timeline.card);
-  return { panel, preview, canvas, rec, selbox, clockNow, clockDur, undo, redo, layers, timeline };
+  return { panel, preview, canvas, rec, selbox, camState, camText, camAct, clockNow, clockDur, undo, redo, layers, timeline };
 }
 
 function buildLayersPanel() {
@@ -540,8 +566,10 @@ function buildSide() {
   const aside = el("aside", "sm-side");
   aside.id = "streamerSide";
 
-  // Recording & Output. TODO(phase 3): devices, meter; TODO(phase 4): the
-  // resolution, frame rate and switches go into the recording.
+  // Recording & Output: the camera and the input (streamerDevices.js), the
+  // input meter, and the output settings (outputSettings.js, stored per
+  // user). TODO(phase 4): the resolution, frame rate and switches go into
+  // the recording.
   const rec = el("section", "sm-card sm-out");
   const recHead = tx(el("h3", "sm-out-head"), "streamer.output");
   const body = el("div", "sm-out-body");
@@ -551,31 +579,54 @@ function buildSide() {
     sel.id = id;
     return label;
   };
+  // Under each device select: why it is not working, and Retry or Allow.
+  const stateLine = (kind) => {
+    const line = el("div", "sm-dev-state");
+    line.hidden = true;
+    line.setAttribute("role", "status");
+    const text = el("span", "sm-dev-text");
+    const act = button("sm-ib sm-dev-act");
+    act.addEventListener("click", () => deviceAction(kind));
+    line.append(text, act);
+    return { line, text, act };
+  };
   const vsrc = selectBox("", "webcam");
-  option(vsrc.sel, "", "streamer.noCamera");
+  vsrc.sel.addEventListener("change", () => setSetting({ videoDeviceId: vsrc.sel.value }));
+  const vstate = stateLine("video");
   const asrc = selectBox("", "mic");
-  option(asrc.sel, "", "streamer.defaultInput");
+  asrc.sel.addEventListener("change", () => setSetting({ audioDeviceId: asrc.sel.value }));
+  const astate = stateLine("audio");
   const meterRow = el("div", "sm-meter-row");
   const meter = el("div", "sm-meter");
   meter.setAttribute("role", "meter");
-  meter.setAttribute("aria-valuemin", "-60");
+  meter.setAttribute("aria-valuemin", String(METER_FLOOR_DB));
   meter.setAttribute("aria-valuemax", "0");
-  meter.setAttribute("aria-valuenow", "-60");
+  meter.setAttribute("aria-valuenow", String(METER_FLOOR_DB));
   tx(meter, "streamer.inputLevel", "aria-label");
+  // Two rows (the first two channels), each segment coloured by its zone.
+  const meterRows = [];
   for (let r = 0; r < 2; r++) {
     const bar = el("div", "sm-meter-bar");
-    for (let i = 0; i < 48; i++) bar.append(el("span", "sm-meter-seg"));
+    const segs = [];
+    for (let k = 0; k < METER_SEGMENTS; k++) {
+      const seg = el("span", `sm-meter-seg sm-seg-${segmentZone(k)}`);
+      segs.push(seg);
+      bar.append(seg);
+    }
     meter.append(bar);
+    meterRows.push({ segs, lit: 0, peak: newPeakState() });
   }
-  const level = el("span", "sm-meter-db", "-60 dB");
+  const level = el("span", "sm-meter-db", `${METER_FLOOR_DB} dB`);
   const inSet = button("sm-ib sm-in-settings");
   inSet.append(icon(ICONS.gear, { size: 16 }));
-  tx(inSet, "streamer.inputSettings", "aria-label");
-  soon(inSet);
+  tx(inSet, "streamer.inputSettings", "label");
+  // The studio's own input settings (Settings, Recording tab).
+  inSet.addEventListener("click", () => openRecordingSettings());
   meterRow.append(meter, level, inSet);
   const grid = el("div", "sm-out-grid");
   const res = selectBox();
   for (const [v, k] of [["1080", "streamer.res1080"], ["720", "streamer.res720"], ["2160", "streamer.res2160"]]) option(res.sel, v, k);
+  res.sel.addEventListener("change", () => setSetting({ resolution: res.sel.value }));
   const fps = selectBox();
   for (const n of [30, 60, 24]) {
     const o = el("option");
@@ -584,19 +635,26 @@ function buildSide() {
     o.textContent = t("streamer.fpsValue", { n });
     fps.sel.append(o);
   }
+  fps.sel.addEventListener("change", () => setSetting({ fps: Number(fps.sel.value) }));
   const resCol = el("div", "sm-out-col");
   resCol.append(field("streamer.resolution", "streamerRes", res.sel), res.wrap);
   const fpsCol = el("div", "sm-out-col");
   fpsCol.append(field("streamer.fps", "streamerFps", fps.sel), fps.wrap);
   grid.append(resCol, fpsCol);
+  // 4K or 60 fps is allowed, with a warning (the 4K policy is not decided).
+  const heavy = tx(el("p", "sm-heavy"), "streamer.heavy");
+  heavy.hidden = true;
   const switches = el("div", "sm-out-switches");
-  for (const [k, on] of [["streamer.recMixed", true], ["streamer.recClick", false], ["streamer.recAutostop", true]]) {
-    switches.append(makeSwitch("", k, on).b);
+  const sw = {};
+  for (const [key, k] of [["recordMixedAudio", "streamer.recMixed"], ["includeClick", "streamer.recClick"], ["autoStopAtEnd", "streamer.recAutostop"]]) {
+    sw[key] = makeSwitch("", k, settings[key], (on) => setSetting({ [key]: on }));
+    sw[key].b.dataset.setting = key;
+    switches.append(sw[key].b);
   }
   body.append(
-    field("streamer.videoSource", "streamerVideoSrc", vsrc.sel), vsrc.wrap,
-    field("streamer.audioSource", "streamerAudioSrc", asrc.sel), asrc.wrap,
-    meterRow, grid, switches,
+    field("streamer.videoSource", "streamerVideoSrc", vsrc.sel), vsrc.wrap, vstate.line,
+    field("streamer.audioSource", "streamerAudioSrc", asrc.sel), asrc.wrap, astate.line,
+    meterRow, grid, heavy, switches,
   );
   rec.append(recHead, body);
 
@@ -649,7 +707,10 @@ function buildSide() {
   );
 
   aside.append(rec, yt);
-  return { aside, fps: fps.sel, titleIn };
+  return {
+    aside, fps: fps.sel, titleIn, vsrc: vsrc.sel, asrc: asrc.sel, vstate, astate,
+    meter, meterRows, level, res: res.sel, heavy, sw,
+  };
 }
 
 function relabel() {
@@ -866,6 +927,7 @@ export function openStreamer() {
   document.addEventListener("pointerdown", onOutsidePointer, true);
   for (const k of Object.keys(painted)) delete painted[k];
   shownJob = undefined;
+  startDevices().catch((err) => console.warn("[streamer] reading the devices failed:", err));
   paintRail();
   loop();
   notify();
@@ -890,6 +952,8 @@ export function closeStreamer() {
   document.removeEventListener("pointerdown", onOutsidePointer, true);
   cancelAnimationFrame(raf);
   raf = 0;
+  // The camera light goes off, the input closes.
+  stopDevices();
   flushScene(sceneJob);
   paintRail();
   notify();
@@ -1006,6 +1070,8 @@ function frame() {
   const meta = trackMeta();
   paintYoutubeTitle(meta);
   paintTransport(hasTrack);
+  paintDevices();
+  paintMeter();
   if (tab !== "builder") return;
   const lyrics = lyricWindow(lyr.lines, tNow, 7);
   paintLayers(meta, lyrics);
@@ -1067,7 +1133,9 @@ function paintPreview(tNow, meta, lyrics) {
   const lyricSig = lyrics.map((l) => `${l.role}:${l.text}`).join("|");
   // Played bars move with time; a still frame redraws only on a change.
   const played = Math.floor((totalDuration ? tNow / totalDuration : 0) * (bars?.length || 34));
-  const sig = [cw, ch, dpr, safeZones, selected, meta.title, meta.artist, meta.art?.currentSrc || "", lyricSig, played, painted.barsSig, totalDuration, t("streamer.textPlaceholder")].join("§");
+  // A live camera is a new picture every frame.
+  const cam = cameraSource();
+  const sig = [cw, ch, dpr, safeZones, selected, meta.title, meta.artist, meta.art?.currentSrc || "", lyricSig, played, painted.barsSig, totalDuration, t("streamer.textPlaceholder"), cam ? cam.currentTime : -1].join("§");
   if (painted.scene === sig && painted.sceneObj === scene) return;
   painted.scene = sig;
   painted.sceneObj = scene;
@@ -1091,7 +1159,7 @@ function paintPreview(tNow, meta, lyrics) {
     title: meta.title,
     artist: meta.artist,
     art: meta.art,
-    camera: null, // TODO(phase 3): the camera's <video>.
+    camera: cameraSource(),
     lyrics,
     bars,
   }, {
@@ -1147,7 +1215,7 @@ function paintSelBox(f) {
 function wirePreview(preview, rec) {
   let drag = null;
   preview.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || rec.contains(e.target)) return;
+    if (e.button !== 0 || rec.contains(e.target) || e.target.closest?.(".sm-cam-state")) return;
     preview.focus({ preventScroll: true });
     const f = sceneRect();
     const r = preview.getBoundingClientRect();
@@ -1209,7 +1277,12 @@ function paintClock(tNow) {
 
 function layerSub(layer, meta, lyrics) {
   switch (layer.type) {
-    case "camera": return t("streamer.sub.cameraNone");
+    case "camera": {
+      if (settings.videoDeviceId === NONE) return t("streamer.sub.cameraOff");
+      const c = cameraState();
+      if (c.live) return t("streamer.sub.cameraLive", { name: cameraName(c.label), width: c.width || "?", height: c.height || "?" });
+      return t("streamer.sub.cameraNone");
+    }
     case "title": return [meta.title, layer.props?.showArtist === false ? "" : meta.artist].filter(Boolean).join("\n") || t("streamer.sub.noSong");
     case "lyrics": {
       if (!lyrics.length) return t("streamer.sub.noLyrics");
@@ -1620,6 +1693,162 @@ function closeProps({ focus = true } = {}) {
   if (focus && anchor?.isConnected) anchor.focus({ preventScroll: true });
 }
 
+// ── Recording and output settings, devices, the meter ──
+
+async function loadSettings() {
+  try {
+    settings = parseRecordingSettings(await storeGet(SETTINGS_KEY, null));
+  } catch (err) {
+    console.warn("[streamer] reading the recording settings failed:", err);
+    settings = defaultRecordingSettings();
+  }
+  painted.devices = null;
+  painted.layers = null;
+}
+
+function setSetting(patch) {
+  settings = parseRecordingSettings({ ...settings, ...patch });
+  storeSet(SETTINGS_KEY, serializeRecordingSettings(settings));
+  painted.devices = null;
+  painted.layers = null;
+}
+
+/** Allow (no permission yet) or Retry (it failed) for one kind. */
+function deviceAction(kind) {
+  const st = kind === "video" ? cameraState() : inputState();
+  if (!st.mayAsk && !st.reason) allowDevices();
+  else retryDevice(kind);
+  painted.devices = null;
+}
+
+/** The camera's name without the USB id Chromium adds on Windows. */
+function cameraName(label) {
+  return String(label || "").replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "") || t("streamer.cameraPlaceholder");
+}
+
+/** What the view wants open now: the camera for a visible Camera layer in
+ * the Scene Builder, the input while Streamer is open. */
+function wantedDevices() {
+  const lists = deviceLists();
+  const camLayer = scene.layers.some((l) => l.type === "camera" && l.visible);
+  const camera = tab === "builder" && camLayer && settings.videoDeviceId !== NONE
+    ? resolveDeviceId(settings.videoDeviceId, lists.video) : null;
+  const audio = settings.audioDeviceId !== NONE ? resolveDeviceId(settings.audioDeviceId, lists.audio) : null;
+  return { camera, audio, settings };
+}
+
+function fillDeviceSelect(sel, kind, devices, saved) {
+  const video = kind === "video";
+  const sig = `${devices.map((d) => `${d.deviceId}:${d.label}`).join("|")}|${t("capture.defaultDevice")}`;
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.replaceChildren();
+    const add = (value, text) => {
+      const o = el("option", null, text);
+      o.value = value;
+      sel.append(o);
+    };
+    add(NONE, t(video ? "streamer.noCamera" : "streamer.noAudioInput"));
+    add("", t("capture.defaultDevice"));
+    devices.forEach((d, i) => add(d.deviceId, video
+      ? (d.label ? cameraName(d.label) : t("capture.cameraN", { n: i + 1 }))
+      : (d.label ? friendlyName(d.label) : t("capture.inputN", { n: i + 1 }))));
+  }
+  const want = resolveDeviceId(saved, devices);
+  const has = [...sel.options].some((o) => o.value === want);
+  sel.value = has ? want : "";
+}
+
+/** The sentence for a device's state, or "" when it is fine. */
+function deviceMessage(kind, st, selectedNone) {
+  if (selectedNone) return "";
+  if (st.reason === "recording") return t("streamer.inUse");
+  if (st.reason === "unplugged") return t(kind === "video" ? "streamer.cam.unplugged" : "streamer.mic.unplugged");
+  if (st.reason) return reasonMessage(st.reason, kind);
+  if (!st.mayAsk) return t("streamer.allowHint");
+  if (st.pending) return t(kind === "video" ? "streamer.cam.starting" : "streamer.mic.starting");
+  return "";
+}
+
+function actionKey(st) {
+  if (st.reason === "recording") return null;
+  if (st.reason) return "streamer.retry";
+  if (!st.mayAsk) return "streamer.allowDevices";
+  return null;
+}
+
+function paintDeviceLine(line, kind, st, selectedNone) {
+  const msg = deviceMessage(kind, st, selectedNone || (kind === "audio" && st.noEngine));
+  line.line.hidden = !msg;
+  line.line.classList.toggle("sm-dev-bad", Boolean(st.reason));
+  if (line.text.textContent !== msg) line.text.textContent = msg;
+  const key = actionKey(st);
+  line.act.hidden = !key || !msg;
+  if (key) line.act.textContent = t(key);
+}
+
+function paintDevices() {
+  reconcile(wantedDevices());
+  const c = cameraState();
+  const a = inputState();
+  const lists = deviceLists();
+  const sig = JSON.stringify([c, a, settings, lists.video.length, lists.audio.length, lists.video.map((d) => d.label), lists.audio.map((d) => d.label), tab, scene.layers.some((l) => l.type === "camera" && l.visible), t("streamer.retry")]);
+  if (painted.devices === sig) return;
+  painted.devices = sig;
+  const side = ui.side;
+  fillDeviceSelect(side.vsrc, "video", lists.video, settings.videoDeviceId);
+  fillDeviceSelect(side.asrc, "audio", lists.audio, settings.audioDeviceId);
+  side.res.value = settings.resolution;
+  side.fps.value = String(settings.fps);
+  for (const [key, s2] of Object.entries(side.sw)) s2.set(settings[key]);
+  side.heavy.hidden = !isHeavy(settings);
+  paintDeviceLine(side.vstate, "video", c, settings.videoDeviceId === NONE);
+  // One Allow is enough: it opens both. The input's line says it only when
+  // the camera's does not.
+  const askBoth = !c.mayAsk && !c.reason && !a.mayAsk && !a.reason && settings.videoDeviceId !== NONE;
+  paintDeviceLine(side.astate, "audio", a, settings.audioDeviceId === NONE || askBoth);
+  // Over the preview, while the Camera layer is shown and the camera is not.
+  const b = ui.builder;
+  const camLayer = scene.layers.some((l) => l.type === "camera" && l.visible);
+  const msg = camLayer && settings.videoDeviceId !== NONE && !c.live ? deviceMessage("video", c, false) : "";
+  b.camState.hidden = !msg;
+  b.camText.textContent = msg;
+  const key = actionKey(c);
+  b.camAct.hidden = !key;
+  if (key) b.camAct.textContent = t(key);
+  painted.scene = null;
+}
+
+/** The meter: the input's first two channels, each held and falling back,
+ * segments lit by the dB scale; only changed segments are touched. */
+function paintMeter() {
+  const side = ui.side;
+  const live = inputState().live;
+  const nowMs = performance.now();
+  let top = 0;
+  side.meterRows.forEach((row, c) => {
+    holdPeak(row.peak, live ? inputLevel(c) : 0, nowMs);
+    top = Math.max(top, row.peak.value);
+    const lit = litSegments(meterFraction(row.peak.value));
+    if (lit === row.lit) return;
+    const from = Math.min(lit, row.lit);
+    const to = Math.max(lit, row.lit);
+    for (let k = from; k < to; k++) row.segs[k].classList.toggle("on", k < lit);
+    row.lit = lit;
+  });
+  const db = levelDb(top);
+  if (painted.meterDb !== db) {
+    painted.meterDb = db;
+    side.level.textContent = `${db} dB`;
+    side.meter.setAttribute("aria-valuenow", String(db));
+  }
+}
+
+/** Phase 4's seam: the camera and input streams Streamer has open (or null). */
+export function streamerMedia() {
+  return getStreamerMedia();
+}
+
 // ── Take timeline ──
 
 /** The two lanes: the voice, then the best instrument heard against it
@@ -2008,6 +2237,11 @@ export function initStreamer() {
     if (open && e.detail?.id && e.detail.id === lyr.trackId) loadLyrics();
   });
   window.addEventListener("pagehide", () => { flushScene(sceneJob); });
+  loadSettings();
+  onDevicesChange(() => {
+    painted.devices = null;
+    painted.layers = null;
+  });
   onLanguageChange(() => relabel());
   if (railBtn) {
     railBtn.title = t("streamer.rail");
