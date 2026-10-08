@@ -51,16 +51,16 @@ export function ensureMixerStateDefaults() {
 
 // ── One saved mix per song and per mode ──
 //
-// Practice, Advanced and Karaoke (and Streaming, when it exists) each keep
-// their own record of a song: what is muted, soloed and how loud, each lane's
-// key, the EQ and the master, and the speed and global key the song was left
-// at. A change in one mode is never seen in another. The record of a mode is
+// Practice, Advanced, Karaoke and Streamer (and Streaming, when it exists)
+// each keep their own record of a song: what is muted, soloed and how loud,
+// each lane's key, the EQ and the master, and the speed and global key the
+// song was left at. A change in one mode is never seen in another. The record of a mode is
 // `stemdeck:mix:<jobId>:<mode>`.
 //
 // The one record every song had before there were modes (`stemdeck:mix:<jobId>`)
 // is never rewritten or deleted: Practice and Advanced start from it until
-// they have saved a record of their own, so nobody loses a mix. Karaoke
-// starts from its defaults.
+// they have saved a record of their own, so nobody loses a mix. Karaoke and
+// Streamer start from their defaults.
 const LEGACY_MODES = new Set(["practice", "daw"]);
 export const mixKey = (jobId, mode) => `stemdeck:mix:${jobId}:${mode}`;
 const legacyMixKey = (jobId) => `stemdeck:mix:${jobId}`;

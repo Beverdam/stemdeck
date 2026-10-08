@@ -1,6 +1,8 @@
 // The studio's mode: Practice (the default) or Advanced, whose id is "daw"
-// (in storage, the <html> class and code). Streaming and Karaoke are listed in
-// the Mode menu as coming, and cannot be chosen yet.
+// (in storage, the <html> class and code). The Mode menu also lists Karaoke
+// and Streamer, which are views over either of the two (karaoke/karaoke.js,
+// streamer/streamer.js) with a saved mix of their own (mixMode.js), and
+// Streaming, kept for a later native go-live and not chosen yet.
 //
 // - Practice is the simple practice studio: stems, the mixer's M, S and key,
 //   transport, speed, key, click and loop. No Record, no adding tracks, no EQ
@@ -18,7 +20,7 @@
 // mode-daw is set, so a page in Practice never flashes them while loading.
 
 const KEY = "stemdeck.mode";
-export const MODES = Object.freeze(["practice", "daw", "streaming", "karaoke"]);
+export const MODES = Object.freeze(["practice", "daw", "streaming", "karaoke", "streamer"]);
 // The modes that can be chosen now; the others are placeholders.
 export const AVAILABLE = Object.freeze(["practice", "daw"]);
 const DEFAULT = "practice";

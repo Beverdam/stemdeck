@@ -643,6 +643,16 @@ export function overviewPeakMax(exclude) {
   return max;
 }
 
+/**
+ * The overview peaks the lanes were last drawn from, read only:
+ * { stems, data: { stem: [[min, max], ...] } }, or null before a song's peaks
+ * arrived (or when its lanes were drawn from decoded audio instead). Streamer
+ * Mode draws its waveform bars from these (streamer/streamer.js).
+ */
+export function overviewPeaks() {
+  return _overviewSource;
+}
+
 // Normalize all stems to a single shared max so the overview waveforms
 // preserve real amplitude relationships (drums tall, piano short),
 // matching what a DAW shows. Per-stem normalization made every lane
