@@ -11,9 +11,9 @@
 // picture.
 //
 // `editor` draws what only the editor shows: the selection outline, the safe
-// zones and the camera placeholder. Called without it (the output), none of
-// them is drawn. The REC badge is a button over the preview, not part of the
-// picture at all.
+// zones, the camera and image placeholders and the camera's preview mirror.
+// Called without it (the output), none of them is drawn. The REC badge is a
+// button over the preview, not part of the picture at all.
 
 const DESIGN_SHORT = 403;
 
@@ -98,7 +98,8 @@ function drawBackground(ctx, b) {
 function drawCamera(ctx, b, env, layer) {
   const cam = env.frame.camera;
   if (isDrawable(cam)) {
-    cover(ctx, cam, b.x, b.y, b.w, b.h, Boolean(layer.props?.mirror));
+    // The mirror is the preview's only: the video is never mirrored.
+    cover(ctx, cam, b.x, b.y, b.w, b.h, Boolean(env.editor && layer.props?.mirror));
     return;
   }
   // No camera yet: the editor shows where it goes; the output stays clear.
@@ -132,7 +133,7 @@ function drawCamera(ctx, b, env, layer) {
 
 /** The title card: its backdrop over the whole frame, the song's title and
  * artist to the right of the album art when that layer is shown inside it. */
-function drawTitle(ctx, b, env) {
+function drawTitle(ctx, b, env, layer) {
   const { u, frame } = env;
   ctx.fillStyle = "rgba(16,13,11,.58)";
   rr(ctx, b.x, b.y, b.w, b.h, 6 * u);
@@ -151,9 +152,114 @@ function drawTitle(ctx, b, env) {
   ctx.font = `700 ${16 * u}px ${env.font}`;
   const top = b.y + 16 * u;
   ctx.fillText(fit(ctx, frame.title, maxW), left, top);
+  if (layer?.props?.showArtist === false) return;
   ctx.fillStyle = "rgba(232,235,239,.72)";
   ctx.font = `400 ${12.5 * u}px ${env.font}`;
   ctx.fillText(fit(ctx, frame.artist, maxW), left, top + 23 * u);
+}
+
+// A text layer's colours, by the names the model allows.
+const TEXT_COLOR = { white: "#ffffff", yellow: null, red: "#ef4444", blue: "#6ea8ff", green: "#22c55e" };
+
+const TEXT_LINE = 1.2;
+
+/**
+ * `text` broken into lines no wider than `maxW` in the current font, at word
+ * boundaries (a word wider than a line is cut with an ellipsis). Text with
+ * no spaces (Chinese, Japanese) breaks between characters.
+ */
+export function wrapText(ctx, text, maxW) {
+  const s = String(text || "").trim();
+  if (!s) return [];
+  const spaced = /\s/.test(s);
+  // No spaces and East Asian script: a line may break between any characters.
+  const cjk = !spaced && [...s].some((c) => c.codePointAt(0) >= 0x2e80);
+  const parts = spaced ? s.split(/\s+/) : cjk ? [...s] : [s];
+  const join = spaced ? " " : "";
+  const lines = [];
+  let line = "";
+  for (const part of parts) {
+    const next = line ? line + join + part : part;
+    if (ctx.measureText(next).width <= maxW) {
+      line = next;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = ctx.measureText(part).width <= maxW ? part : fit(ctx, part, maxW);
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/**
+ * The size and lines of `text` in a w x h box: the asked size when it fits,
+ * else smaller (down to `min`); at the smallest size, the lines that fit, the
+ * last one ending in an ellipsis. Nothing is ever wider or taller than the box.
+ */
+export function fitText(ctx, text, w, h, size, min, weight, font) {
+  let s = Math.max(min, size);
+  for (;;) {
+    ctx.font = `${weight} ${s}px ${font}`;
+    const lines = wrapText(ctx, text, w);
+    if (lines.length * s * TEXT_LINE <= h + 1e-6 || s <= min) {
+      const room = Math.max(1, Math.floor(h / (s * TEXT_LINE)));
+      if (lines.length <= room) return { size: s, lines };
+      const kept = lines.slice(0, room);
+      kept[room - 1] = fit(ctx, `${kept[room - 1]}…`, w);
+      return { size: s, lines: kept };
+    }
+    s = Math.max(min, s * 0.9);
+  }
+}
+
+/** Text centred in its frame, 20 design pixels at size 1, wrapped and made
+ * smaller to stay inside the frame (clipped to it as well). Empty text shows
+ * its placeholder in the editor and nothing in the video. */
+function drawText(ctx, b, env, layer) {
+  const { u } = env;
+  const text = layer.props?.text || "";
+  const shown = text || (env.editor ? env.labels.text || "" : "");
+  if (!shown) return;
+  const { size, lines } = fitText(ctx, shown, b.w, b.h, 20 * (layer.props?.size || 1) * u, 6 * u, 700, env.font);
+  if (!lines.length) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(b.x, b.y, b.w, b.h);
+  ctx.clip();
+  ctx.font = `700 ${size}px ${env.font}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const color = TEXT_COLOR[layer.props?.color] === null ? env.accent : TEXT_COLOR[layer.props?.color] || "#ffffff";
+  ctx.fillStyle = text ? color : "rgba(255,255,255,.45)";
+  ctx.shadowColor = "rgba(0,0,0,.55)";
+  ctx.shadowBlur = 6 * u;
+  const lh = size * TEXT_LINE;
+  const top = b.y + b.h / 2 - (lines.length * lh) / 2 + lh / 2;
+  lines.forEach((line, i) => ctx.fillText(line, b.x + b.w / 2, top + i * lh));
+  ctx.restore();
+}
+
+/** An image layer: no file can be picked yet (phase 5), so the editor shows
+ * where it goes and the video shows nothing. */
+function drawImage(ctx, b, env) {
+  if (!env.editor) return;
+  const { u } = env;
+  ctx.save();
+  ctx.fillStyle = "rgba(20,27,36,.55)";
+  ctx.fillRect(b.x, b.y, b.w, b.h);
+  ctx.strokeStyle = "rgba(201,207,215,.35)";
+  ctx.lineWidth = Math.max(1, u);
+  ctx.setLineDash([3 * u, 3 * u]);
+  ctx.strokeRect(b.x + u / 2, b.y + u / 2, b.w - u, b.h - u);
+  ctx.setLineDash([]);
+  if (env.labels.image) {
+    ctx.fillStyle = "rgba(201,207,215,.6)";
+    ctx.font = `500 ${11 * u}px ${env.font}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(fit(ctx, env.labels.image, b.w - 8 * u), b.x + b.w / 2, b.y + b.h / 2);
+  }
+  ctx.restore();
 }
 
 function drawAlbumArt(ctx, b, env) {
@@ -219,11 +325,13 @@ function drawLyrics(ctx, b, env, layer) {
   ctx.lineWidth = u;
   rr(ctx, b.x + u / 2, b.y + u / 2, b.w - u, b.h - u, 6 * u);
   ctx.stroke();
-  const size = 12.5 * u;
+  // The lines asked for always fit the box: the text gets smaller instead.
+  const want = Math.max(1, layer.props?.lines || 5);
+  const size = Math.max(4 * u, Math.min(12.5 * u, (b.h - 24 * u) / (want * 1.62)));
   const lh = size * 1.62;
   const left = b.x + 14 * u;
   const maxW = b.w - 28 * u;
-  const max = Math.max(1, Math.min(layer.props?.lines || 5, Math.floor((b.h - 24 * u) / lh) || 1));
+  const max = want;
   ctx.save();
   rr(ctx, b.x, b.y, b.w, b.h, 6 * u);
   ctx.clip();
@@ -284,6 +392,8 @@ const DRAW = {
   waveform: drawWaveform,
   lyrics: drawLyrics,
   lowerThird: drawLowerThird,
+  text: drawText,
+  image: drawImage,
 };
 
 // ── Editor-only overlays ──

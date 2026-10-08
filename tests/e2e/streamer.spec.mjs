@@ -220,3 +220,166 @@ test.describe("Streamer Mode", () => {
     await expect(page.locator("#streamerNote")).toHaveText("YouTube upload is coming soon.");
   });
 });
+
+// Phase 2: editing the scene and the take timeline.
+test.describe("Streamer Mode: layers and timeline", () => {
+  const layerOf = async (page, id) => (await savedScene(page))?.layers.find((l) => l.id === id);
+  const sceneBox = (page) => ev(page, () => {
+    const p = document.querySelector("#streamer .sm-preview");
+    const r = p.getBoundingClientRect();
+    return { x: r.left + p.clientLeft, y: r.top + p.clientTop, w: p.clientWidth, h: p.clientHeight };
+  });
+  const undoOn = (page) => ev(page, () => !document.querySelector("#streamer .sm-undo").disabled);
+  async function dragMouse(page, from, to, { alt = false } = {}) {
+    await page.mouse.move(...from);
+    if (alt) await page.keyboard.down("Alt");
+    await page.mouse.down();
+    await page.mouse.move(...to, { steps: 8 });
+    await page.mouse.up();
+    if (alt) await page.keyboard.up("Alt");
+  }
+  async function menu(page, id, item) {
+    await sm(page, `.sm-layer[data-layer="${id}"] .sm-layer-kebab`).click();
+    await page.locator(`.sm-menu [data-item="${item}"]`).click();
+  }
+
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+    await openStudio(page);
+    await openStreamer(page);
+  });
+
+  test("select by row and by clicking the preview", async ({ page }) => {
+    await sm(page, '.sm-layer[data-layer="lyrics"] .sm-layer-pick').click();
+    await expect(sm(page, '.sm-layer[data-layer="lyrics"]')).toHaveClass(/selected/);
+    await expect(sm(page, ".sm-selbox")).toBeVisible();
+    const f = await sceneBox(page);
+    await page.mouse.click(f.x + f.w * 0.06, f.y + f.h * 0.92);
+    await expect(sm(page, '.sm-layer[data-layer="lowerThird"]')).toHaveClass(/selected/);
+  });
+
+  test("a drag moves a layer, snaps to the safe zone, and is one undo step", async ({ page }) => {
+    const f = await sceneBox(page);
+    await page.mouse.click(f.x + f.w * 0.06, f.y + f.h * 0.92);
+    const start = [f.x + f.w * 0.06, f.y + f.h * 0.92];
+    // The lower third's left edge (12/716) moved to 3 px right of the 10% line.
+    const dx = (0.1 - 12 / 716) * f.w + 3;
+    await dragMouse(page, start, [start[0] + dx, start[1] - f.h * 0.3]);
+    await expect.poll(async () => (await layerOf(page, "lowerThird"))?.frame.x).toBeCloseTo(0.1, 9);
+    await sm(page, ".sm-undo").click();
+    await expect.poll(async () => (await layerOf(page, "lowerThird")).frame.x).toBeCloseTo(12 / 716, 6);
+    await expect.poll(() => undoOn(page)).toBe(false);
+    // Alt: no snapping.
+    await dragMouse(page, start, [start[0] + dx, start[1] - f.h * 0.3], { alt: true });
+    await expect.poll(async () => Math.abs((await layerOf(page, "lowerThird")).frame.x - 0.1) > 1e-4).toBe(true);
+  });
+
+  test("resize from a corner keeps the opposite corner", async ({ page }) => {
+    await sm(page, '.sm-layer[data-layer="lyrics"] .sm-layer-pick').click();
+    const h = await sm(page, ".sm-handle-se").boundingBox();
+    await dragMouse(page, [h.x + 4, h.y + 4], [h.x - 56, h.y - 36], { alt: true });
+    await expect.poll(async () => (await layerOf(page, "lyrics"))?.frame.w).toBeLessThan(216 / 716 - 0.05);
+    const fr = (await layerOf(page, "lyrics")).frame;
+    expect(fr.x).toBeCloseTo(494 / 716, 6);
+    expect(fr.y).toBeCloseTo(263 / 403, 6);
+  });
+
+  test("reorder by the handle: the list is the drawing order", async ({ page }) => {
+    const grip = await sm(page, '.sm-layer[data-layer="lyrics"] .sm-layer-grip').boundingBox();
+    const first = await sm(page, ".sm-layer").first().boundingBox();
+    await dragMouse(page, [grip.x + grip.width / 2, grip.y + grip.height / 2], [grip.x + grip.width / 2, first.y + 4]);
+    await expect(sm(page, ".sm-layer").first()).toHaveAttribute("data-layer", "lyrics");
+    await expect.poll(async () => (await savedScene(page))?.layers.at(-1).id).toBe("lyrics");
+  });
+
+  test("the layer menu: rename, duplicate, edit, delete; camera keeps its place", async ({ page }) => {
+    await menu(page, "lowerThird", "rename");
+    await page.keyboard.press("Control+A");
+    await page.keyboard.type("My handle");
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await layerOf(page, "lowerThird"))?.name).toBe("My handle");
+    await menu(page, "lowerThird", "duplicate");
+    await expect.poll(async () => Boolean(await layerOf(page, "lowerThird-2"))).toBe(true);
+    await menu(page, "lowerThird", "edit");
+    await page.locator(".sm-props input").first().fill("@me");
+    await page.locator(".sm-props input").first().press("Tab");
+    await expect.poll(async () => (await layerOf(page, "lowerThird")).props.handle).toBe("@me");
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sm-props")).toHaveCount(0);
+    await menu(page, "lowerThird-2", "delete");
+    await expect.poll(async () => Boolean(await layerOf(page, "lowerThird-2"))).toBe(false);
+    await sm(page, '.sm-layer[data-layer="camera"] .sm-layer-kebab').click();
+    await expect(page.locator('.sm-menu [data-item="delete"]')).toHaveAttribute("aria-disabled", "true");
+    await expect(page.locator('.sm-menu [data-item="duplicate"]')).toHaveAttribute("aria-disabled", "true");
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sm-menu")).toHaveCount(0);
+    await expect(sm(page, '.sm-layer[data-layer="camera"] .sm-layer-kebab')).toBeFocused();
+  });
+
+  test("+ Add Layer adds every type; undo takes them all back", async ({ page }) => {
+    for (const type of ["text", "image", "lowerThird", "lyrics", "waveform", "albumArt", "title"]) {
+      await sm(page, ".sm-add").click();
+      await page.locator(`.sm-menu [data-item="${type}"]`).click();
+    }
+    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(14);
+    for (let i = 0; i < 7; i++) await sm(page, ".sm-undo").click();
+    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(7);
+    await expect.poll(() => undoOn(page)).toBe(false);
+  });
+
+  test("Delete removes the selected layer, never the song", async ({ page }) => {
+    await sm(page, ".sm-add").click();
+    await page.locator('.sm-menu [data-item="text"]').click();
+    await expect.poll(async () => Boolean(await layerOf(page, "text"))).toBe(true);
+    await sm(page, ".sm-fit").focus();
+    await page.keyboard.press("Delete");
+    await expect.poll(async () => Boolean(await layerOf(page, "text"))).toBe(false);
+    await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
+    await sm(page, '.sm-layer[data-layer="camera"] .sm-layer-pick').click();
+    const before = JSON.stringify(await savedScene(page));
+    await page.keyboard.press("Delete");
+    await page.keyboard.press("Backspace");
+    await page.waitForTimeout(500);
+    expect(JSON.stringify(await savedScene(page))).toBe(before);
+    await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
+  });
+
+  test("arrows nudge 1% and 5%; Ctrl+Z undoes", async ({ page }) => {
+    await sm(page, '.sm-layer[data-layer="waveform"] .sm-layer-pick').click();
+    await sm(page, ".sm-preview").focus();
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Shift+ArrowDown");
+    await expect.poll(async () => (await layerOf(page, "waveform"))?.frame.y).toBeCloseTo(74 / 403 + 0.05, 9);
+    expect((await layerOf(page, "waveform")).frame.x).toBeCloseTo(582 / 716 + 0.01, 9);
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await layerOf(page, "waveform")).frame.y).toBeCloseTo(74 / 403, 9);
+  });
+
+  test("zoom, Fit and the ruler", async ({ page }) => {
+    const widths = () => ev(page, () => {
+      const s = document.querySelector("#streamer .sm-tl-scroll");
+      return [s.clientWidth, s.scrollWidth];
+    });
+    for (let i = 0; i < 4; i++) await sm(page, ".sm-zoom-in").click();
+    await expect.poll(async () => { const [c, s] = await widths(); return s > c * 1.2; }).toBe(true);
+    await sm(page, ".sm-fit").click();
+    await expect.poll(async () => { const [c, s] = await widths(); return s <= c + 1; }).toBe(true);
+    const rb = await sm(page, ".sm-tl-ruler").boundingBox();
+    await page.mouse.click(rb.x + rb.width / 2, rb.y + rb.height / 2);
+    const dur = await ev(page, async () => (await import("/js/state.js")).totalDuration);
+    await expect.poll(() => now(page)).toBeGreaterThan(dur * 0.45);
+    expect(await now(page)).toBeLessThan(dur * 0.55);
+  });
+
+  test("trim: the in handle sets the range, saved per song", async ({ page }) => {
+    const h = await sm(page, ".sm-tl-trim-l").boundingBox();
+    const rb = await sm(page, ".sm-tl-ruler").boundingBox();
+    await dragMouse(page, [h.x + 6, h.y + h.height / 2], [h.x + 6 + rb.width * 0.3, h.y + h.height / 2], { alt: true });
+    await expect.poll(async () => (await savedScene(page))?.trim?.in ?? 0).toBeGreaterThan(1);
+    const saved = (await savedScene(page)).trim;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
+    await openStreamer(page);
+    await expect.poll(async () => (await savedScene(page))?.trim).toEqual(saved);
+  });
+});

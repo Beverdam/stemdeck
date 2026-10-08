@@ -1,22 +1,25 @@
 // Streamer Mode: a workspace view over the studio, entered from the rail's
 // Streamer button (or the Mode menu), for building a performance video: a
 // scene of layers (camera, song title, lyrics, waveform, lower third, album
-// art, background) drawn over the song as it plays, a take timeline, and the
-// recording and output settings.
+// art, background, text, image) drawn over the song as it plays, a take
+// timeline, and the recording and output settings.
 //
 // Like Karaoke Mode (karaoke/karaoke.js), it is a view, not a second player:
 // the time, the song and the mix are the studio's own (transport(),
 // setPlayheadTime, state.js), read each frame by one animation loop that runs
 // only while the view is open. As in Karaoke, the app's footer is hidden
 // while it is open (streamer.css) and the view covers its place; Stop and
-// Play / Pause sit in the take timeline's strip, and Space still plays.
+// Play / Pause sit beside the tabs, and Space still plays.
 //
-// The scene is Streamer's own, kept per song (sceneStore.js), and drawn by
-// one renderer (sceneRenderer.js) that will also draw the recorded frames.
+// The scene is Streamer's own, kept per song (sceneStore.js), edited only
+// through the pure functions of streamerModel.js (one undo step per edit, a
+// drag is one step), and drawn by one renderer (sceneRenderer.js) that will
+// also draw the recorded frames.
 //
-// Phase 1 of docs/plans/0.21.0/streamer-mode.md: the shell and the preview.
-// The layers panel shows and hides layers; moving them, the timeline's trim
-// and zoom, the devices, recording and export come in phases 2 to 4.
+// Phases 1 and 2 of docs/plans/0.21.0/streamer-mode.md: the shell, the
+// preview, the layers (select, move, resize, reorder, add, duplicate,
+// rename, properties, delete, undo) and the take timeline (zoom, seek, trim).
+// The devices, recording and export come in phases 3 and 4.
 
 import { t, onLanguageChange } from "../i18n.js";
 import { currentJobId, mixerState, trackIndex, totalDuration } from "../state.js";
@@ -30,8 +33,13 @@ import { isRecording } from "../capture/recordUi.js";
 import { isKaraokeOpen, closeKaraoke } from "../karaoke/karaoke.js";
 import { sungLines } from "../karaoke/karaokeModel.js";
 import {
-  ASPECTS, defaultScene, withAspect, withLayerVisible, fitAspect,
-  lyricWindow, peakBars, clockTenths, clockHours, rulerTicks,
+  ASPECTS, ADDABLE_TYPES, TEXT_COLORS, TEXT_SIZE_MIN, TEXT_SIZE_MAX, LYRIC_LINES_MIN, LYRIC_LINES_MAX, NAME_MAX,
+  defaultScene, withAspect, withLayerVisible, fitAspect,
+  lyricWindow, peakBars, clockTenths, clockHours,
+  layerRules, newLayerId, addLayer, duplicateLayer, deleteLayer, reorderLayer, renameLayer, setLayerProps,
+  setLayerFrame, nudgeLayer, moveFrame, resizeFrame, layerAt,
+  emptyHistory, pushHistory, undoHistory, redoHistory,
+  trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery,
 } from "./streamerModel.js";
 import { loadScene, saveScene, flushScene } from "./sceneStore.js";
 import { renderScene } from "./sceneRenderer.js";
@@ -48,7 +56,15 @@ const LAYER_NAME = {
   lowerThird: "streamer.layer.lowerThird",
   albumArt: "streamer.layer.albumArt",
   background: "streamer.layer.background",
+  text: "streamer.layer.text",
+  image: "streamer.layer.image",
 };
+// The header's title while no song is open.
+const NO_TITLE = String.fromCharCode(0x2014);
+// Snapping reach on screen, and the timeline's zoom step.
+const SNAP_PX = 6;
+const ZOOM_STEP = 0.1;
+const LABEL_COL = 90; // the timeline's label column and its gap
 
 let root = null;
 let railBtn = null;
@@ -56,13 +72,21 @@ let open = false;
 let raf = 0;
 const listeners = new Set();
 
-// The open song's scene, and the song it belongs to (null until loaded).
+// The open song's scene, the song it belongs to (null until loaded), and its
+// undo history (per song, gone when the song changes).
 let scene = defaultScene();
 let sceneJob = null;
 let sceneToken = 0;
+let history = emptyHistory();
 let selected = "title";
 let tab = "builder";
 let safeZones = readSafeZones();
+// The recording lock (phase 4 sets it): no adding, deleting or reordering.
+let locked = false;
+// The take timeline's zoom (0 = the whole song), and a time to centre on
+// once the new zoom is laid out.
+let zoom = 0;
+let zoomAnchor = null;
 
 // Lyrics of the shown song: its sung lines (line timing only).
 let lyr = { trackId: null, lines: [] };
@@ -161,7 +185,7 @@ const ICONS = {
   pause: [["rect", { x: 6, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }], ["rect", { x: 14, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }]],
   stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 1.5, fill: "currentColor", stroke: "none" }]],
 };
-const LAYER_ICON = { camera: "camera", lyrics: "text", waveform: "wave", lowerThird: "lower", background: "image" };
+const LAYER_ICON = { camera: "camera", lyrics: "text", waveform: "wave", lowerThird: "lower", background: "image", text: "text", image: "image" };
 
 function selectBox(cls, leadIcon) {
   const wrap = el("div", `sm-select ${cls || ""}`.trim());
@@ -215,6 +239,8 @@ function soon(btn, key = "streamer.soon") {
   });
 }
 
+const layerName = (layer) => layer?.name || t(LAYER_NAME[layer?.type] || "streamer.layers");
+
 // ── Build ──
 
 function buildView() {
@@ -251,6 +277,7 @@ function buildView() {
   ui.accent = cs.getPropertyValue("--accent").trim() || "#f4b740";
   paintTabs();
   paintSafe();
+  paintHistory();
   return true;
 }
 
@@ -334,10 +361,13 @@ function buildBuilder() {
   const col = el("div", "sm-preview-col");
 
   // The preview: always 16:9 on screen, the scene inside it at its aspect.
+  // It takes focus (for the arrow keys and Delete) and is where layers are
+  // picked, moved and resized.
   const preview = el("div", "sm-preview");
+  preview.tabIndex = 0;
+  tx(preview, "streamer.previewHint", "aria-label");
   const canvas = el("canvas", "sm-canvas");
-  canvas.setAttribute("role", "img");
-  tx(canvas, "streamer.previewAria", "aria-label");
+  canvas.setAttribute("aria-hidden", "true");
   const rec = button("sm-rec");
   const pill = el("span", "sm-rec-pill");
   const ring = el("span", "sm-rec-ring");
@@ -349,27 +379,35 @@ function buildBuilder() {
   tx(rec, "streamer.recStart", "aria-label");
   // TODO(phase 4): Record starts a take of the scene.
   soon(rec, "streamer.recSoon");
-  preview.append(canvas, rec);
+  // The selected layer's box: drag it to move, drag a corner to resize.
+  const selbox = el("div", "sm-selbox");
+  selbox.hidden = true;
+  for (const c of ["nw", "ne", "sw", "se"]) {
+    const h = el("span", `sm-handle sm-handle-${c}`);
+    h.dataset.corner = c;
+    selbox.append(h);
+  }
+  preview.append(canvas, selbox, rec);
+  wirePreview(preview, rec);
 
   const strip = el("div", "sm-strip");
   const stripTitle = el("div", "sm-card sm-strip-title");
   stripTitle.append(icon(ICONS.scissors, { size: 18, width: 1.9 }), tx(el("span"), "streamer.timeline"));
-  const history = el("div", "sm-card sm-history");
-  const undo = button("sm-history-btn");
+  const hist = el("div", "sm-card sm-history");
+  const undo = button("sm-history-btn sm-undo");
   undo.append(icon(ICONS.undo, { size: 15, width: 2 }));
-  tx(undo, "streamer.undo", "aria-label");
-  const redo = button("sm-history-btn");
+  tx(undo, "streamer.undo", "label");
+  undo.addEventListener("click", () => doUndo());
+  const redo = button("sm-history-btn sm-redo");
   redo.append(icon(ICONS.redo, { size: 15, width: 2 }));
-  tx(redo, "streamer.redo", "aria-label");
-  // TODO(phase 2): the scene's undo and redo.
-  undo.disabled = true;
-  redo.disabled = true;
-  history.append(undo, redo);
+  tx(redo, "streamer.redo", "label");
+  redo.addEventListener("click", () => doRedo());
+  hist.append(undo, redo);
   const clock = el("div", "sm-card sm-clock");
   const clockNow = el("span", "sm-clock-now", clockTenths(0));
   const clockDur = el("span", "sm-clock-dur", `/ ${clockTenths(0)}`);
   clock.append(clockNow, clockDur);
-  strip.append(stripTitle, history, clock);
+  strip.append(stripTitle, hist, clock);
   col.append(preview, strip);
 
   const layers = buildLayersPanel();
@@ -377,7 +415,7 @@ function buildBuilder() {
 
   const timeline = buildTimeline();
   panel.append(row, timeline.card);
-  return { panel, preview, canvas, rec, clockNow, clockDur, layers, timeline };
+  return { panel, preview, canvas, rec, selbox, clockNow, clockDur, undo, redo, layers, timeline };
 }
 
 function buildLayersPanel() {
@@ -385,30 +423,49 @@ function buildLayersPanel() {
   const head = el("div", "sm-layers-head");
   const add = button("sm-primary sm-add");
   add.append(icon(ICONS.plus, { size: 13, width: 2.6 }), tx(el("span"), "streamer.addLayer"));
-  // TODO(phase 2): + Add Layer.
-  soon(add);
+  add.setAttribute("aria-haspopup", "menu");
+  add.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openAddMenu(add);
+  });
   head.append(tx(el("h3", "sm-layers-title"), "streamer.layers"), add);
   const list = el("ul", "sm-layer-list");
   tx(list, "streamer.layers", "aria-label");
   panel.append(head, list);
-  return { panel, list, rows: new Map() };
+  return { panel, list, add, rows: new Map() };
 }
 
 function buildTimeline() {
   const card = el("div", "sm-card sm-tl");
-  const zoom = el("div", "sm-zoom");
-  const zOut = button("sm-ib sm-zoom-btn");
+  const zoomBox = el("div", "sm-zoom");
+  const zOut = button("sm-ib sm-zoom-btn sm-zoom-out");
   zOut.append(icon(ICONS.minus, { size: 12, width: 2.6 }));
-  tx(zOut, "streamer.zoomOut", "aria-label");
+  tx(zOut, "streamer.zoomOut", "label");
+  zOut.addEventListener("click", () => setZoom(zoom - ZOOM_STEP));
   const zTrack = el("div", "sm-zoom-track");
-  zTrack.append(el("div", "sm-zoom-fill"), el("div", "sm-zoom-thumb"));
-  const zIn = button("sm-ib sm-zoom-btn");
+  zTrack.setAttribute("role", "slider");
+  zTrack.tabIndex = 0;
+  zTrack.setAttribute("aria-valuemin", "0");
+  zTrack.setAttribute("aria-valuemax", "100");
+  tx(zTrack, "streamer.zoom", "aria-label");
+  const zFill = el("div", "sm-zoom-fill");
+  const zThumb = el("div", "sm-zoom-thumb");
+  zTrack.append(zFill, zThumb);
+  wireZoomSlider(zTrack);
+  const zIn = button("sm-ib sm-zoom-btn sm-zoom-in");
   zIn.append(icon(ICONS.plus, { size: 12, width: 2.6 }));
-  tx(zIn, "streamer.zoomIn", "aria-label");
+  tx(zIn, "streamer.zoomIn", "label");
+  zIn.addEventListener("click", () => setZoom(zoom + ZOOM_STEP));
   const fit = tx(button("sm-ib sm-fit"), "streamer.fit");
-  // TODO(phase 2): zoom and Fit.
-  for (const b of [zOut, zIn, fit]) soon(b);
-  zoom.append(zOut, zTrack, zIn, fit);
+  fit.addEventListener("click", () => setZoom(0));
+  zoomBox.append(zOut, zTrack, zIn, fit);
+
+  // One scrolling grid: a label column that stays put (sticky) and the
+  // song's column, as wide as the zoom makes it. Everything in the song's
+  // column (markers, ruler, lanes, trim, playhead) is placed from one scale.
+  const scroll = el("div", "sm-tl-scroll");
+  const grid = el("div", "sm-tl-grid");
+  const mask = el("div", "sm-tl-mask");
 
   const markers = el("div", "sm-tl-markers");
   const ruler = el("div", "sm-tl-ruler");
@@ -426,18 +483,36 @@ function buildTimeline() {
 
   const audioLabels = el("div", "sm-tl-audio-labels");
   const audio = el("div", "sm-tl-audio");
-  // TODO(phase 2): trim handles.
-  audio.append(el("span", "sm-tl-trim sm-tl-trim-l", "‹"), el("span", "sm-tl-trim sm-tl-trim-r", "›"));
   const lanes = [];
   for (let i = 0; i < 2; i++) {
     const label = el("div", "sm-tl-label sm-tl-label-stem");
     const name = el("span");
     label.append(icon(ICONS.wave, { size: 14, width: 2 }), name);
     audioLabels.append(label);
-    const c = el("canvas", "sm-tl-lane");
+    const c = el("canvas", `sm-tl-lane sm-tl-lane-${i}`);
     audio.append(c);
     lanes.push({ label, name, canvas: c, stem: null });
   }
+  // The kept range: a yellow box with an in and an out handle; what is
+  // trimmed off is dimmed.
+  const range = el("div", "sm-tl-range");
+  const trimIn = el("span", "sm-tl-trim sm-tl-trim-l", "‹");
+  const trimOut = el("span", "sm-tl-trim sm-tl-trim-r", "›");
+  for (const [h, which, key] of [[trimIn, "in", "streamer.trimInAria"], [trimOut, "out", "streamer.trimOutAria"]]) {
+    h.dataset.which = which;
+    h.setAttribute("role", "slider");
+    h.tabIndex = 0;
+    tx(h, key, "aria-label");
+    wireTrimHandle(h, which);
+  }
+  range.append(trimIn, trimOut);
+  audio.append(range);
+  const dims = el("div", "sm-tl-dims");
+  const dimL = el("div", "sm-tl-dim");
+  const dimR = el("div", "sm-tl-dim");
+  dims.append(dimL, dimR);
+  const tip = el("div", "sm-tl-tip");
+  tip.hidden = true;
 
   const overlay = el("div", "sm-tl-overlay");
   const head = el("div", "sm-tl-playhead");
@@ -445,37 +520,20 @@ function buildTimeline() {
   head.append(headTime, el("span", "sm-tl-playhead-line"));
   overlay.append(head);
 
-  card.append(zoom, markers, ruler, videoLabel, video, audioLabels, audio, overlay);
-  return { card, markers, ruler, video, audio, lanes, head, headTime };
-}
-
-function wireRuler(ruler) {
-  const seekAt = (clientX) => {
-    if (!totalDuration) return;
-    const r = ruler.getBoundingClientRect();
-    setPlayheadTime(Math.max(0, Math.min(1, (clientX - r.left) / (r.width || 1))) * totalDuration);
+  grid.append(mask, markers, ruler, videoLabel, video, audioLabels, audio, dims, overlay, tip);
+  scroll.append(grid);
+  scroll.addEventListener("scroll", () => { painted.lanes = null; });
+  // A plain wheel scrolls the zoomed song sideways.
+  scroll.addEventListener("wheel", (e) => {
+    if (zoom <= 0 || e.ctrlKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    scroll.scrollLeft += e.deltaY;
+  }, { passive: false });
+  card.append(zoomBox, scroll);
+  return {
+    card, zoomBox, zTrack, zFill, zThumb, zOut, zIn, scroll, grid, markers, ruler, video, audio, lanes,
+    range, trimIn, trimOut, dimL, dimR, tip, head, headTime,
   };
-  ruler.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    ruler.setPointerCapture(e.pointerId);
-    seekAt(e.clientX);
-    const move = (ev) => seekAt(ev.clientX);
-    const up = () => {
-      ruler.removeEventListener("pointermove", move);
-      ruler.removeEventListener("pointerup", up);
-      ruler.removeEventListener("pointercancel", up);
-    };
-    ruler.addEventListener("pointermove", move);
-    ruler.addEventListener("pointerup", up);
-    ruler.addEventListener("pointercancel", up);
-  });
-  ruler.addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    e.preventDefault();
-    e.stopPropagation();
-    setPlayheadTime(now() + (e.key === "ArrowLeft" ? -5 : 5));
-  });
 }
 
 function buildSide() {
@@ -601,11 +659,11 @@ function relabel() {
     railBtn.setAttribute("aria-label", t("streamer.rail"));
   }
   if (!ui) return;
+  closeMenu();
+  closeProps();
   for (const o of ui.side.fps.options) o.textContent = t("streamer.fpsValue", { n: o.dataset.fps });
   ui.otherTitle.textContent = t(TAB_LABEL[tab]);
-  for (const row of ui.builder.layers.rows.values()) texts = texts.filter(([n]) => !row.li.contains(n));
-  ui.builder.layers.rows.clear();
-  ui.builder.layers.list.replaceChildren();
+  dropRows();
   for (const k of Object.keys(painted)) delete painted[k];
 }
 
@@ -637,9 +695,7 @@ function paintSafe() {
 
 function setAspect(aspect) {
   if (!ASPECTS.includes(aspect) || aspect === scene.aspect) return;
-  scene = withAspect(scene, aspect);
-  saveScene(sceneJob, scene);
-  painted.scene = null;
+  commit(withAspect(scene, aspect));
 }
 
 function toggleDrawer(force) {
@@ -662,8 +718,7 @@ function trackMeta() {
   const artist = artistEl && !artistEl.hidden ? artistEl.textContent.trim() : "";
   const img = document.getElementById("np-thumb");
   const art = img && img.getAttribute("src") && !img.hidden && img.naturalWidth > 0 ? img : null;
-  // An em dash is the header's title while no song is open.
-  return { title: title === "\u2014" ? "" : title, artist, art };
+  return { title: title === NO_TITLE ? "" : title, artist, art };
 }
 
 /** The stems heard now: not muted, and soloed when any lane is. */
@@ -673,7 +728,7 @@ function audibleStems() {
   return names.filter((n) => (solo ? mixerState[n].soloed : !mixerState[n].muted));
 }
 
-// ── Scene per song ──
+// ── Scene per song, edits and undo ──
 
 async function showSceneFor(job) {
   const token = ++sceneToken;
@@ -682,23 +737,91 @@ async function showSceneFor(job) {
   if (token !== sceneToken) return;
   scene = next;
   sceneJob = job;
+  history = emptyHistory();
+  closeMenu();
+  closeProps();
   if (ui) ui.head.aspect.value = scene.aspect;
-  if (!scene.layers.some((l) => l.id === selected)) selected = scene.layers[scene.layers.length - 1]?.id ?? null;
+  if (!scene.layers.some((l) => l.id === selected)) selected = null;
+  afterChange();
+}
+
+/** The scene is now `next`, made from `from` (the scene before the edit):
+ * one undo step, saved for this song. */
+function commit(next, from = scene) {
+  if (!next || next === from) return false;
+  history = pushHistory(history, from);
+  scene = next;
+  afterChange();
+  return true;
+}
+
+/** Repaint and save after the scene changed (an edit, undo or redo). */
+function afterChange() {
+  if (selected && !scene.layers.some((l) => l.id === selected)) selected = null;
+  saveScene(sceneJob, scene);
+  if (ui) ui.head.aspect.value = scene.aspect;
   painted.scene = null;
   painted.layers = null;
+  painted.tlTrim = null;
+  paintHistory();
+}
+
+function doUndo() {
+  const r = undoHistory(history, scene);
+  if (!r.scene) return;
+  history = r.history;
+  scene = r.scene;
+  afterChange();
+}
+
+function doRedo() {
+  const r = redoHistory(history, scene);
+  if (!r.scene) return;
+  history = r.history;
+  scene = r.scene;
+  afterChange();
+}
+
+function paintHistory() {
+  if (!ui) return;
+  ui.builder.undo.disabled = !history.past.length;
+  ui.builder.redo.disabled = !history.future.length;
 }
 
 function setLayerVisible(id, visible) {
-  scene = withLayerVisible(scene, id, visible);
-  saveScene(sceneJob, scene);
+  commit(withLayerVisible(scene, id, visible));
+}
+
+function selectLayer(id) {
+  if (selected === id) return;
+  selected = id;
   painted.scene = null;
   painted.layers = null;
 }
 
-function selectLayer(id) {
-  selected = id;
-  painted.scene = null;
-  painted.layers = null;
+function addOf(type) {
+  const id = newLayerId(scene, type);
+  if (commit(addLayer(scene, type, { locked, id }))) selectLayer(id);
+}
+
+function duplicateOf(id) {
+  const layer = scene.layers.find((l) => l.id === id);
+  if (!layer) return;
+  const copyId = newLayerId(scene, layer.type);
+  if (commit(duplicateLayer(scene, id, { locked }))) selectLayer(copyId);
+}
+
+function deleteOf(id) {
+  if (commit(deleteLayer(scene, id, { locked })) && selected === id) selectLayer(null);
+}
+
+/** Phase 4's recording lock: while it holds, layers are not added, deleted
+ * or reordered. */
+export function setStreamerLocked(on) {
+  locked = Boolean(on);
+  root?.classList.toggle("sm-locked", locked);
+  if (ui) ui.builder.layers.add.disabled = locked;
+  closeMenu();
 }
 
 // ── Lyrics ──
@@ -740,6 +863,7 @@ export function openStreamer() {
   window.addEventListener("resize", placeLayer);
   observeLayout();
   window.addEventListener("keydown", onKey, true);
+  document.addEventListener("pointerdown", onOutsidePointer, true);
   for (const k of Object.keys(painted)) delete painted[k];
   shownJob = undefined;
   paintRail();
@@ -752,6 +876,8 @@ export function closeStreamer() {
   if (!open) return;
   open = false;
   toggleDrawer(false);
+  closeMenu();
+  closeProps();
   root.hidden = true;
   document.documentElement.classList.remove("streamer-open");
   // Karaoke may have opened over the lanes this moment: its inert stays.
@@ -761,6 +887,7 @@ export function closeStreamer() {
   window.removeEventListener("resize", placeLayer);
   layerObserver?.disconnect();
   window.removeEventListener("keydown", onKey, true);
+  document.removeEventListener("pointerdown", onOutsidePointer, true);
   cancelAnimationFrame(raf);
   raf = 0;
   flushScene(sceneJob);
@@ -880,7 +1007,7 @@ function frame() {
   paintYoutubeTitle(meta);
   paintTransport(hasTrack);
   if (tab !== "builder") return;
-  const lyrics = lyricWindow(lyr.lines, tNow, 5);
+  const lyrics = lyricWindow(lyr.lines, tNow, 7);
   paintLayers(meta, lyrics);
   paintPreview(tNow, meta, lyrics);
   paintClock(tNow);
@@ -924,6 +1051,12 @@ function waveBars() {
   return painted.bars;
 }
 
+/** Where the scene sits in the preview box (pillarboxed), in CSS pixels. */
+function sceneRect() {
+  const p = ui.builder.preview;
+  return fitAspect(p.clientWidth, p.clientHeight, scene.aspect);
+}
+
 function paintPreview(tNow, meta, lyrics) {
   const { preview, canvas, rec } = ui.builder;
   const cw = preview.clientWidth;
@@ -934,9 +1067,10 @@ function paintPreview(tNow, meta, lyrics) {
   const lyricSig = lyrics.map((l) => `${l.role}:${l.text}`).join("|");
   // Played bars move with time; a still frame redraws only on a change.
   const played = Math.floor((totalDuration ? tNow / totalDuration : 0) * (bars?.length || 34));
-  const sig = [cw, ch, dpr, scene.aspect, safeZones, selected, meta.title, meta.artist, meta.art?.currentSrc || "", lyricSig, played, painted.barsSig, totalDuration].join("§");
-  if (painted.scene === sig) return;
+  const sig = [cw, ch, dpr, safeZones, selected, meta.title, meta.artist, meta.art?.currentSrc || "", lyricSig, played, painted.barsSig, totalDuration, t("streamer.textPlaceholder")].join("§");
+  if (painted.scene === sig && painted.sceneObj === scene) return;
   painted.scene = sig;
+  painted.sceneObj = scene;
   if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
     canvas.width = Math.round(cw * dpr);
     canvas.height = Math.round(ch * dpr);
@@ -973,6 +1107,8 @@ function paintPreview(tNow, meta, lyrics) {
       camera: t("streamer.cameraPlaceholder"),
       actionSafe: t("streamer.actionSafe"),
       titleSafe: t("streamer.titleSafe"),
+      text: t("streamer.textPlaceholder"),
+      image: t("streamer.imagePlaceholder"),
     },
     editor: { selection: selected, safeZones },
   });
@@ -980,6 +1116,79 @@ function paintPreview(tNow, meta, lyrics) {
   // The REC badge sits on the scene's own top left corner.
   rec.style.left = `${Math.round(f.x + 10)}px`;
   rec.style.top = `${Math.round(f.y + 10)}px`;
+  paintSelBox(f);
+}
+
+/** The selected layer's handles, over its frame (the album art's square). */
+function paintSelBox(f) {
+  const box = ui.builder.selbox;
+  const layer = selected && scene.layers.find((l) => l.id === selected && l.visible);
+  if (!layer) {
+    box.hidden = true;
+    return;
+  }
+  let w = layer.frame.w * f.w;
+  let h = layer.frame.h * f.h;
+  if (layer.type === "albumArt") w = h = Math.min(w, h);
+  box.hidden = false;
+  box.style.left = `${f.x + layer.frame.x * f.w}px`;
+  box.style.top = `${f.y + layer.frame.y * f.h}px`;
+  box.style.width = `${w}px`;
+  box.style.height = `${h}px`;
+}
+
+/**
+ * Picking, moving and resizing in the preview. A press picks the front-most
+ * layer under it (or keeps the selected one when pressed inside its box) and
+ * drags it; a corner handle resizes. Edges and centres snap to the safe
+ * zones and the centre lines (Alt: no snapping). The whole drag is one undo
+ * step.
+ */
+function wirePreview(preview, rec) {
+  let drag = null;
+  preview.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || rec.contains(e.target)) return;
+    preview.focus({ preventScroll: true });
+    const f = sceneRect();
+    const r = preview.getBoundingClientRect();
+    const border = preview.clientLeft;
+    const px = (e.clientX - r.left - border - f.x) / f.w;
+    const py = (e.clientY - r.top - border - f.y) / f.h;
+    const corner = e.target instanceof Element ? e.target.dataset?.corner : null;
+    const inBox = e.target instanceof Element && e.target.closest(".sm-selbox");
+    let layer = null;
+    if ((corner || inBox) && selected) layer = scene.layers.find((l) => l.id === selected) || null;
+    if (!layer) layer = layerAt(scene, px, py);
+    selectLayer(layer?.id ?? null);
+    if (!layer) return;
+    e.preventDefault();
+    preview.setPointerCapture(e.pointerId);
+    drag = { id: layer.id, corner, x0: e.clientX, y0: e.clientY, start: { ...layer.frame }, base: scene, f, moved: false };
+  });
+  preview.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = (e.clientX - drag.x0) / drag.f.w;
+    const dy = (e.clientY - drag.y0) / drag.f.h;
+    if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 2) return;
+    drag.moved = true;
+    const opts = { snap: !e.altKey, tx: SNAP_PX / drag.f.w, ty: SNAP_PX / drag.f.h };
+    const frame = drag.corner ? resizeFrame(drag.start, drag.corner, dx, dy, opts) : moveFrame(drag.start, dx, dy, opts);
+    scene = setLayerFrame(drag.base, drag.id, frame);
+    painted.scene = null;
+  });
+  const end = () => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.moved && scene !== d.base) {
+      // The live scene is the result; the step goes back to where it began.
+      const result = scene;
+      scene = d.base;
+      commit(result, d.base);
+    }
+  };
+  preview.addEventListener("pointerup", end);
+  preview.addEventListener("pointercancel", end);
 }
 
 function paintClock(tNow) {
@@ -1001,7 +1210,7 @@ function paintClock(tNow) {
 function layerSub(layer, meta, lyrics) {
   switch (layer.type) {
     case "camera": return t("streamer.sub.cameraNone");
-    case "title": return [meta.title, meta.artist].filter(Boolean).join("\n") || t("streamer.sub.noSong");
+    case "title": return [meta.title, layer.props?.showArtist === false ? "" : meta.artist].filter(Boolean).join("\n") || t("streamer.sub.noSong");
     case "lyrics": {
       if (!lyrics.length) return t("streamer.sub.noLyrics");
       return lyrics.slice(0, 2).map((l) => l.text).join("\n");
@@ -1010,37 +1219,52 @@ function layerSub(layer, meta, lyrics) {
     case "lowerThird": return `${layer.props?.handle || t("streamer.lowerHandle")}  |  ${layer.props?.subtitle || t("streamer.lowerSub")}`;
     case "albumArt": return t("streamer.sub.albumArt");
     case "background": return t("streamer.sub.background");
+    case "text": return layer.props?.text || t("streamer.sub.textEmpty");
+    case "image": return t("streamer.sub.image");
     default: return "";
   }
+}
+
+function dropRows() {
+  const L = ui.builder.layers;
+  for (const row of L.rows.values()) texts = texts.filter(([n]) => !row.li.contains(n));
+  L.rows.clear();
+  L.list.replaceChildren();
+  painted.layerIds = null;
 }
 
 /** The panel lists the front layer first (the scene's array is back to front). */
 function paintLayers(meta, lyrics) {
   const L = ui.builder.layers;
   const order = [...scene.layers].reverse();
-  const sig = order.map((l) => `${l.id}:${l.visible ? 1 : 0}:${layerSub(l, meta, lyrics)}`).join("|") + `|${selected}|${meta.art?.currentSrc || ""}`;
+  const sig = order.map((l) => `${l.id}:${l.visible ? 1 : 0}:${l.name || ""}:${layerSub(l, meta, lyrics)}`).join("|") + `|${selected}|${locked}|${meta.art?.currentSrc || ""}`;
   if (painted.layers === sig) return;
   painted.layers = sig;
   const ids = order.map((l) => l.id).join("|");
   if (painted.layerIds !== ids) {
+    // Rebuilt in the new order; a row being renamed is not kept.
+    const focusId = document.activeElement?.closest?.(".sm-layer")?.dataset.layer;
+    const focusCls = document.activeElement?.classList?.[0];
+    dropRows();
     painted.layerIds = ids;
-    // The old rows' texts go with them.
-    for (const row of L.rows.values()) texts = texts.filter(([n]) => !row.li.contains(n));
-    L.rows.clear();
     L.list.replaceChildren(...order.map((l) => layerRow(l)));
+    if (focusId && focusCls) L.rows.get(focusId)?.li.querySelector(`.${focusCls}`)?.focus({ preventScroll: true });
   }
   for (const layer of order) {
     const row = L.rows.get(layer.id);
     if (!row) continue;
-    const name = t(LAYER_NAME[layer.type] || "streamer.layers");
+    const name = layerName(layer);
     row.li.classList.toggle("selected", layer.id === selected);
     row.li.classList.toggle("off", !layer.visible);
     row.pick.setAttribute("aria-pressed", String(layer.id === selected));
-    row.name.textContent = name;
+    if (!row.renaming) row.name.textContent = name;
     const sub = layerSub(layer, meta, lyrics);
     if (row.sub.textContent !== sub) row.sub.textContent = sub;
     row.sw.set(layer.visible);
     row.sw.b.setAttribute("aria-label", t(layer.visible ? "streamer.layerShown" : "streamer.layerHidden", { name }));
+    row.kebab.setAttribute("aria-label", t("streamer.layerOptionsFor", { name }));
+    row.grip.setAttribute("aria-label", t("streamer.reorderFor", { name }));
+    row.grip.classList.toggle("disabled", !layerRules(layer, { locked }).canReorder);
     if (row.art) {
       const src = meta.art?.currentSrc || meta.art?.src || "";
       if (src) {
@@ -1057,9 +1281,13 @@ function paintLayers(meta, lyrics) {
 function layerRow(layer) {
   const li = el("li", "sm-layer");
   li.dataset.layer = layer.id;
+  // The handle drags the row up or down the list (the drawing order); with
+  // the keyboard, Alt and the up or down arrow move it one place.
   const grip = el("span", "sm-layer-grip");
-  grip.setAttribute("aria-hidden", "true");
+  grip.setAttribute("role", "button");
+  grip.tabIndex = 0;
   grip.append(icon(ICONS.grip, { size: 13 }));
+  wireReorder(grip, layer.id);
   const pick = button("sm-layer-pick");
   const thumb = el("span", `sm-layer-thumb sm-thumb-${layer.type}`);
   let art = null;
@@ -1078,37 +1306,506 @@ function layerRow(layer) {
   words.append(name, sub);
   pick.append(thumb, words);
   pick.addEventListener("click", () => selectLayer(layer.id));
+  pick.addEventListener("dblclick", () => startRename(layer.id));
   const sw = makeSwitch("sm-layer-switch", null, layer.visible, (on) => setLayerVisible(layer.id, on));
   const kebab = button("sm-layer-kebab");
   kebab.append(icon(ICONS.kebab, { size: 16 }));
-  tx(kebab, "streamer.layerOptions", "aria-label");
-  // TODO(phase 2): Rename, Duplicate, Edit, Delete.
-  soon(kebab);
+  kebab.setAttribute("aria-haspopup", "menu");
+  kebab.addEventListener("click", (e) => {
+    e.stopPropagation();
+    selectLayer(layer.id);
+    openLayerMenu(kebab, layer.id);
+  });
   li.append(grip, pick, sw.b, kebab);
-  ui.builder.layers.rows.set(layer.id, { li, pick, name, sub, sw, art });
+  ui.builder.layers.rows.set(layer.id, { li, grip, pick, name, sub, sw, kebab, art, renaming: false });
   return li;
+}
+
+/** Drag a row by its handle; the list order is the drawing order (front first). */
+function wireReorder(grip, id) {
+  grip.addEventListener("keydown", (e) => {
+    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const i = scene.layers.findIndex((l) => l.id === id);
+    // Up the list is toward the front: a higher array index.
+    if (commit(reorderLayer(scene, id, i + (e.key === "ArrowUp" ? 1 : -1), { locked }))) {
+      requestAnimationFrame(() => ui.builder.layers.rows.get(id)?.grip.focus({ preventScroll: true }));
+    }
+  });
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || locked) return;
+    e.preventDefault();
+    const list = ui.builder.layers.list;
+    const rows = [...list.children];
+    const li = grip.closest(".sm-layer");
+    const from = rows.indexOf(li);
+    if (from < 0) return;
+    grip.setPointerCapture(e.pointerId);
+    li.classList.add("dragging");
+    let to = from;
+    const mark = () => {
+      rows.forEach((r, i) => {
+        r.classList.toggle("drop-before", i === to && to < from);
+        r.classList.toggle("drop-after", i === to && to > from);
+      });
+    };
+    const move = (ev) => {
+      const y = ev.clientY;
+      to = rows.length - 1;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i].getBoundingClientRect();
+        if (y < r.top + r.height / 2) { to = i; break; }
+      }
+      if (to > from && y < rows[to].getBoundingClientRect().top + rows[to].getBoundingClientRect().height / 2) to -= 1;
+      to = Math.max(0, Math.min(rows.length - 1, to));
+      mark();
+    };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      li.classList.remove("dragging");
+      rows.forEach((r) => r.classList.remove("drop-before", "drop-after"));
+      // Panel index (front first) to array index (back first).
+      if (to !== from) commit(reorderLayer(scene, id, scene.layers.length - 1 - to, { locked }));
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  });
+}
+
+function startRename(id) {
+  const row = ui.builder.layers.rows.get(id);
+  const layer = scene.layers.find((l) => l.id === id);
+  if (!row || !layer || row.renaming) return;
+  row.renaming = true;
+  const input = el("input", "sm-rename");
+  input.type = "text";
+  input.maxLength = NAME_MAX;
+  input.value = layerName(layer);
+  input.setAttribute("aria-label", t("streamer.renameAria"));
+  row.name.replaceChildren(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (keep) => {
+    if (done) return;
+    done = true;
+    row.renaming = false;
+    const value = input.value.trim();
+    // The type's own name back is no name of its own.
+    if (keep) commit(renameLayer(scene, id, value === t(LAYER_NAME[layer.type]) ? "" : value));
+    painted.layers = null;
+    row.name.textContent = layerName(scene.layers.find((l) => l.id === id) || layer);
+    row.kebab.focus({ preventScroll: true });
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("click", (e) => e.stopPropagation());
+}
+
+// ── Menus (the kebab's and + Add Layer's) ──
+
+let menu = null;
+
+/** A small menu under `anchor`: items { key, run, disabled }. Up and Down
+ * move, Enter chooses, Escape closes and puts focus back on `anchor`. */
+function openMenu(anchor, items, labelKey) {
+  closeMenu();
+  const box = el("div", "sm-menu");
+  box.setAttribute("role", "menu");
+  box.setAttribute("aria-label", t(labelKey));
+  for (const it of items) {
+    const b = button("sm-menu-item");
+    b.setAttribute("role", "menuitem");
+    b.tabIndex = -1;
+    b.textContent = t(it.key);
+    b.dataset.item = it.id || it.key;
+    if (it.disabled) b.setAttribute("aria-disabled", "true");
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (it.disabled) return;
+      closeMenu({ focus: false });
+      it.run();
+    });
+    box.append(b);
+  }
+  box.addEventListener("keydown", (e) => {
+    const list = [...box.querySelectorAll(".sm-menu-item")];
+    const i = list.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeMenu();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      list[(i + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length]?.focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      list[e.key === "Home" ? 0 : list.length - 1]?.focus();
+    } else if (e.key === "Tab") {
+      closeMenu({ focus: false });
+    }
+    // Keys in the menu are the menu's: Space and Delete must not reach the studio.
+    e.stopPropagation();
+  });
+  document.body.append(box);
+  const r = anchor.getBoundingClientRect();
+  const w = box.offsetWidth;
+  const h = box.offsetHeight;
+  box.style.left = `${Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)))}px`;
+  box.style.top = `${Math.round(r.bottom + 4 + h > window.innerHeight ? r.top - h - 4 : r.bottom + 4)}px`;
+  anchor.setAttribute("aria-expanded", "true");
+  menu = { box, anchor };
+  box.querySelector(".sm-menu-item:not([aria-disabled=true])")?.focus();
+}
+
+function closeMenu({ focus = true } = {}) {
+  if (!menu) return;
+  const { box, anchor } = menu;
+  menu = null;
+  box.remove();
+  anchor.setAttribute("aria-expanded", "false");
+  if (focus && anchor.isConnected) anchor.focus({ preventScroll: true });
+}
+
+function openLayerMenu(anchor, id) {
+  const layer = scene.layers.find((l) => l.id === id);
+  if (!layer) return;
+  const rules = layerRules(layer, { locked });
+  openMenu(anchor, [
+    { id: "rename", key: "streamer.menu.rename", run: () => startRename(id) },
+    { id: "duplicate", key: "streamer.menu.duplicate", disabled: !rules.canDuplicate, run: () => duplicateOf(id) },
+    { id: "edit", key: "streamer.menu.edit", run: () => openProps(id, anchor) },
+    { id: "delete", key: "streamer.menu.delete", disabled: !rules.canDelete, run: () => deleteOf(id) },
+  ], "streamer.layerOptions");
+}
+
+function openAddMenu(anchor) {
+  if (locked) return;
+  openMenu(anchor, ADDABLE_TYPES.map((type) => ({ id: type, key: LAYER_NAME[type], run: () => addOf(type) })), "streamer.addLayer");
+}
+
+function onOutsidePointer(e) {
+  if (menu && !menu.box.contains(e.target) && e.target !== menu.anchor && !menu.anchor.contains(e.target)) closeMenu({ focus: false });
+  if (props && !props.box.contains(e.target) && !(props.anchor && props.anchor.contains(e.target))) closeProps({ focus: false });
+}
+
+// ── Edit properties ──
+
+let props = null;
+
+/** A small panel of the layer's own settings, beside the layers panel. Each
+ * change is one undo step. */
+function openProps(id, anchor) {
+  closeProps({ focus: false });
+  const layer = scene.layers.find((l) => l.id === id);
+  if (!layer) return;
+  const box = el("div", "sm-props");
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-label", t("streamer.props.title", { name: layerName(layer) }));
+  const head = el("div", "sm-props-head", t("streamer.props.title", { name: layerName(layer) }));
+  const body = el("div", "sm-props-body");
+  const set = (patch) => commit(setLayerProps(scene, id, patch));
+  const textField = (labelKey, value, onChange, max = 60) => {
+    const wrap = el("label", "sm-props-field");
+    const input = el("input", "sm-inp");
+    input.type = "text";
+    input.maxLength = max;
+    input.value = value || "";
+    input.addEventListener("change", () => onChange(input.value));
+    wrap.append(el("span", "sm-flabel", t(labelKey)), input);
+    return wrap;
+  };
+  const switchField = (labelKey, on, onChange) => {
+    const s = makeSwitch("sm-props-switch", labelKey, on, onChange);
+    return s.b;
+  };
+  switch (layer.type) {
+    case "lowerThird":
+      body.append(
+        textField("streamer.props.handle", layer.props.handle, (v) => set({ handle: v })),
+        textField("streamer.props.subtitle", layer.props.subtitle, (v) => set({ subtitle: v })),
+      );
+      break;
+    case "text": {
+      body.append(textField("streamer.props.text", layer.props.text, (v) => set({ text: v }), 200));
+      const sizeWrap = el("label", "sm-props-field");
+      const size = el("input", "sm-range");
+      size.type = "range";
+      size.min = String(TEXT_SIZE_MIN);
+      size.max = String(TEXT_SIZE_MAX);
+      size.step = "0.25";
+      size.value = String(layer.props.size);
+      size.addEventListener("change", () => set({ size: Number(size.value) }));
+      sizeWrap.append(el("span", "sm-flabel", t("streamer.props.size")), size);
+      const colors = el("div", "sm-props-colors");
+      colors.setAttribute("role", "radiogroup");
+      colors.setAttribute("aria-label", t("streamer.props.color"));
+      for (const c of TEXT_COLORS) {
+        const sw = button(`sm-swatch sm-swatch-${c}`);
+        sw.setAttribute("role", "radio");
+        sw.setAttribute("aria-checked", String(layer.props.color === c));
+        sw.setAttribute("aria-label", t(`streamer.color.${c}`));
+        sw.title = t(`streamer.color.${c}`);
+        sw.addEventListener("click", () => {
+          set({ color: c });
+          for (const o of colors.children) o.setAttribute("aria-checked", String(o === sw));
+        });
+        colors.append(sw);
+      }
+      body.append(sizeWrap, el("span", "sm-flabel", t("streamer.props.color")), colors);
+      break;
+    }
+    case "lyrics": {
+      const wrap = el("label", "sm-props-field");
+      const { wrap: sw, sel } = selectBox();
+      for (let n = LYRIC_LINES_MIN; n <= LYRIC_LINES_MAX; n++) {
+        const o = el("option", null, String(n));
+        o.value = String(n);
+        sel.append(o);
+      }
+      sel.value = String(layer.props.lines);
+      sel.addEventListener("change", () => set({ lines: Number(sel.value) }));
+      wrap.append(el("span", "sm-flabel", t("streamer.props.lines")), sw);
+      body.append(wrap);
+      break;
+    }
+    case "camera":
+      body.append(
+        switchField("streamer.props.mirror", layer.props.mirror, (on) => set({ mirror: on })),
+        el("p", "sm-props-hint", t("streamer.props.mirrorHint")),
+      );
+      break;
+    case "title":
+      body.append(switchField("streamer.props.showArtist", layer.props.showArtist !== false, (on) => set({ showArtist: on })));
+      break;
+    default:
+      body.append(el("p", "sm-props-hint", t("streamer.props.none")));
+  }
+  const done = tx(button("sm-primary sm-props-done"), "streamer.props.done");
+  done.addEventListener("click", () => closeProps());
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeProps();
+    }
+    // Typing here is the panel's: Delete, arrows and Space stay out of the studio.
+    e.stopPropagation();
+  });
+  box.append(head, body, done);
+  root.append(box);
+  // Beside the layers panel, at the row's height when it fits.
+  const panel = ui.builder.layers.panel.getBoundingClientRect();
+  const rr = root.getBoundingClientRect();
+  const a = anchor?.getBoundingClientRect() || panel;
+  const h = box.offsetHeight;
+  const w = box.offsetWidth;
+  box.style.left = `${Math.round(Math.max(8, panel.left - rr.left - w - 8))}px`;
+  box.style.top = `${Math.round(Math.max(8, Math.min(rr.height - h - 8, a.top - rr.top - 8)))}px`;
+  props = { box, anchor, id };
+  box.querySelector("input, select, button")?.focus();
+}
+
+function closeProps({ focus = true } = {}) {
+  if (!props) return;
+  const { box, anchor } = props;
+  props = null;
+  box.remove();
+  if (focus && anchor?.isConnected) anchor.focus({ preventScroll: true });
 }
 
 // ── Take timeline ──
 
+/** The two lanes: the voice, then the best instrument heard against it
+ * (bass, guitar, drums, piano, other), else Original. */
 function laneStems() {
   const present = Object.keys(trackIndex || {});
-  const out = [];
   const voice = ["lead_vocals", "vocals"].find((n) => present.includes(n));
-  if (voice) out.push(voice);
-  if (present.includes("bass")) out.push("bass");
-  for (const n of present) {
-    if (out.length >= 2) break;
-    if (!out.includes(n)) out.push(n);
-  }
-  return out.slice(0, 2);
+  const other = ["bass", "guitar", "drums", "piano", "other", "original"].find((n) => present.includes(n));
+  return [voice, other].filter(Boolean);
+}
+
+function timelineScale() {
+  const tl = ui.builder.timeline;
+  const view = Math.max(1, tl.scroll.clientWidth - LABEL_COL);
+  const dur = totalDuration || 0;
+  return { dur, view, pps: dur ? pixelsPerSecond(dur, view, zoom) : 0 };
+}
+
+function setZoom(z) {
+  const next = Math.round(Math.max(0, Math.min(1, z)) * 100) / 100;
+  if (next === zoom) return;
+  zoom = next;
+  zoomAnchor = now();
+  painted.tlScale = null;
+}
+
+function wireZoomSlider(track) {
+  const at = (clientX) => {
+    const r = track.getBoundingClientRect();
+    setZoom((clientX - r.left) / (r.width || 1));
+  };
+  track.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    track.setPointerCapture(e.pointerId);
+    at(e.clientX);
+    const move = (ev) => at(ev.clientX);
+    const up = () => {
+      track.removeEventListener("pointermove", move);
+      track.removeEventListener("pointerup", up);
+      track.removeEventListener("pointercancel", up);
+    };
+    track.addEventListener("pointermove", move);
+    track.addEventListener("pointerup", up);
+    track.addEventListener("pointercancel", up);
+  });
+  track.addEventListener("keydown", (e) => {
+    const step = { ArrowLeft: -ZOOM_STEP, ArrowDown: -ZOOM_STEP, ArrowRight: ZOOM_STEP, ArrowUp: ZOOM_STEP }[e.key];
+    if (step === undefined && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === "Home") setZoom(0);
+    else if (e.key === "End") setZoom(1);
+    else setZoom(zoom + step);
+  });
+}
+
+function wireRuler(ruler) {
+  const seekAt = (clientX) => {
+    const { dur, pps } = timelineScale();
+    if (!dur || !pps) return;
+    const r = ruler.getBoundingClientRect();
+    setPlayheadTime(Math.max(0, Math.min(dur, (clientX - r.left) / pps)));
+  };
+  ruler.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    ruler.setPointerCapture(e.pointerId);
+    seekAt(e.clientX);
+    const move = (ev) => seekAt(ev.clientX);
+    const up = () => {
+      ruler.removeEventListener("pointermove", move);
+      ruler.removeEventListener("pointerup", up);
+      ruler.removeEventListener("pointercancel", up);
+    };
+    ruler.addEventListener("pointermove", move);
+    ruler.addEventListener("pointerup", up);
+    ruler.addEventListener("pointercancel", up);
+  });
+  ruler.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    e.stopPropagation();
+    setPlayheadTime(now() + (e.key === "ArrowLeft" ? -5 : 5));
+  });
+}
+
+/** Where a trim point snaps: the song's ends and its sections' starts and ends. */
+function trimTargets(dur) {
+  const out = [0, dur];
+  for (const s of getSections()) out.push(s.start, s.end);
+  return out.filter((v) => Number.isFinite(v));
+}
+
+/** Drag the in or out handle; it snaps to sections (Alt: no snapping). One
+ * undo step per drag; the arrows move it a tenth (Shift: a second). */
+function wireTrimHandle(handle, which) {
+  let drag = null;
+  const showTip = (time) => {
+    const tip = ui.builder.timeline.tip;
+    tip.hidden = false;
+    tip.textContent = t(which === "in" ? "streamer.trimIn" : "streamer.trimOut", { time: clockTenths(time) });
+    const { pps } = timelineScale();
+    tip.style.left = `${LABEL_COL + time * pps}px`;
+  };
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const { dur, pps } = timelineScale();
+    if (!dur || !pps) return;
+    handle.setPointerCapture(e.pointerId);
+    // Where on the handle it was taken: the point does not jump to the pointer.
+    const audio = ui.builder.timeline.audio.getBoundingClientRect();
+    const point = trimRange(scene, dur)[which];
+    drag = { base: scene, dur, pps, offset: (e.clientX - audio.left) / pps - point };
+    showTip(point);
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const audio = ui.builder.timeline.audio.getBoundingClientRect();
+    let time = (e.clientX - audio.left) / drag.pps - drag.offset;
+    if (!e.altKey) time = snapTime(time, trimTargets(drag.dur), 8 / drag.pps);
+    scene = withTrimPoint(drag.base, which, time, drag.dur);
+    painted.tlTrim = null;
+    showTip(trimRange(scene, drag.dur)[which]);
+  });
+  const end = () => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    ui.builder.timeline.tip.hidden = true;
+    if (scene !== d.base) {
+      const result = scene;
+      scene = d.base;
+      commit(result, d.base);
+    }
+  };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+  handle.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dur = totalDuration || 0;
+    const step = (e.shiftKey ? 1 : 0.1) * (e.key === "ArrowLeft" ? -1 : 1);
+    commit(withTrimPoint(scene, which, trimRange(scene, dur)[which] + step, dur));
+  });
 }
 
 function paintTimeline(tNow) {
   const tl = ui.builder.timeline;
-  const dur = totalDuration || 0;
-  const pct = (x) => (dur ? Math.max(0, Math.min(100, (x / dur) * 100)) : 0);
-  tl.head.style.left = `${pct(tNow)}%`;
+  const { dur, view, pps } = timelineScale();
+  const x = (time) => Math.max(0, Math.min(dur, time)) * pps;
+  const contentW = Math.max(view, Math.round(dur * pps));
+
+  // The scale: the song column's width and the zoom control.
+  const scaleSig = `${dur}|${view}|${zoom}`;
+  if (painted.tlScale !== scaleSig) {
+    painted.tlScale = scaleSig;
+    tl.grid.style.setProperty("--sm-tl-w", `${contentW}px`);
+    const pct = `${Math.round(zoom * 100)}%`;
+    tl.zFill.style.width = pct;
+    tl.zThumb.style.left = pct;
+    tl.zTrack.setAttribute("aria-valuenow", String(Math.round(zoom * 100)));
+    tl.zOut.disabled = zoom <= 0;
+    tl.zIn.disabled = zoom >= 1;
+    painted.sections = null;
+    painted.lanes = null;
+    painted.tlTrim = null;
+  }
+  if (zoomAnchor !== null) {
+    tl.scroll.scrollLeft = Math.max(0, x(zoomAnchor) - view / 2);
+    zoomAnchor = null;
+  }
+  // While playing, the view follows the playhead.
+  const headX = x(tNow);
+  if (zoom > 0 && transport()?.isPlaying?.()) {
+    const left = tl.scroll.scrollLeft;
+    if (headX < left || headX > left + view - 24) tl.scroll.scrollLeft = Math.max(0, headX - 40);
+  }
+  tl.head.style.left = `${headX}px`;
+  // The time label stays whole at the song's two ends.
+  let labelLeft = Math.max(-34, -headX);
+  if (headX + labelLeft + 68 > contentW) labelLeft = contentW - headX - 68;
+  tl.headTime.style.left = `${labelLeft}px`;
   const ruler = tl.ruler;
   const tInt = String(Math.floor(tNow));
   if (painted.rulerNow !== tInt) {
@@ -1117,26 +1814,34 @@ function paintTimeline(tNow) {
     ruler.setAttribute("aria-valuetext", clockTenths(tNow));
   }
 
-  // Ruler ticks and section markers: on a new song, length or set of sections.
+  // Ruler ticks and section markers: on a new song, scale or set of sections.
   const sections = getSections();
-  const secSig = `${dur}|${sections.map((s) => `${s.id}:${s.start}:${s.color}:${s.kind || ""}:${s.name || ""}`).join(",")}|${t("streamer.jumpTo")}`;
+  const secSig = `${dur}|${pps}|${sections.map((s) => `${s.id}:${s.start}:${s.end}:${s.color}:${s.kind || ""}:${s.name || ""}`).join(",")}|${t("streamer.jumpTo")}`;
   if (painted.sections !== secSig) {
     painted.sections = secSig;
     ruler.setAttribute("aria-valuemax", String(Math.floor(dur)));
-    ruler.replaceChildren(...rulerTicks(dur, 8).flatMap((tk, i, all) => {
+    const ticks = dur ? ticksEvery(dur, tickStep(pps)) : [];
+    ruler.replaceChildren(...ticks.flatMap((tk, i, all) => {
       const label = el("span", "sm-tick-label", tk.label);
-      label.style.left = `${pct(tk.t)}%`;
+      label.style.left = `${x(tk.t)}px`;
       if (i === 0) label.classList.add("first");
-      else if (i === all.length - 1 && pct(tk.t) > 94) label.classList.add("last");
+      else if (i === all.length - 1 && contentW - x(tk.t) < 30) label.classList.add("last");
       const mark = el("span", "sm-tick");
-      mark.style.left = `${pct(tk.t)}%`;
+      mark.style.left = `${x(tk.t)}px`;
       return [label, mark];
     }));
+    // Where each label starts, for hiding the ones under the label column.
+    tl.edges = [...ruler.querySelectorAll(".sm-tick-label")].map((lab) => {
+      const w = lab.offsetWidth;
+      const at = parseFloat(lab.style.left);
+      const shift = lab.classList.contains("first") ? 0 : lab.classList.contains("last") ? 0.9 : 0.5;
+      return { el: lab, left: at - w * shift };
+    });
     tl.markers.replaceChildren(...sections.flatMap((s) => {
       const name = sectionDisplayName(s, sections);
       const at = clockTenths(s.start).slice(0, 5);
       const b = button("sm-marker");
-      b.style.left = `${pct(s.start)}%`;
+      b.style.left = `${x(s.start)}px`;
       b.style.setProperty("--sm-sec", s.color || "#4a7fff");
       b.setAttribute("aria-label", t("streamer.jumpTo", { name, time: at }));
       const label = el("span", "sm-marker-text");
@@ -1144,33 +1849,65 @@ function paintTimeline(tNow) {
       b.append(el("span", "sm-marker-pin"), label);
       b.addEventListener("click", () => setPlayheadTime(s.start));
       const stem = el("span", "sm-marker-stem");
-      stem.style.left = `${pct(s.start)}%`;
+      stem.style.left = `${x(s.start)}px`;
       stem.style.setProperty("--sm-sec", s.color || "#4a7fff");
       return [b, stem];
     }));
+    for (const b of tl.markers.querySelectorAll(".sm-marker")) tl.edges.push({ el: b, left: parseFloat(b.style.left) - 7 });
+    painted.tlEdges = null;
+  }
+  // A ruler label or section marker that would sit partly under the label
+  // column (scrolled past) is hidden whole, never shown cut in half.
+  const scrolled = tl.scroll.scrollLeft;
+  if (painted.tlEdges !== scrolled && tl.edges) {
+    painted.tlEdges = scrolled;
+    for (const e of tl.edges) e.el.style.visibility = scrolled > 0 && e.left < scrolled - 0.5 ? "hidden" : "";
   }
 
-  // Stem lanes: on a new song, peaks, or size.
+  // Trim: the kept box, its handles and the dimmed parts.
+  const range = trimRange(scene, dur);
+  const trimSig = `${range.in}|${range.out}|${pps}|${contentW}`;
+  if (painted.tlTrim !== trimSig) {
+    painted.tlTrim = trimSig;
+    const a = x(range.in);
+    const b = x(range.out);
+    tl.range.style.left = `${a}px`;
+    tl.range.style.width = `${Math.max(0, b - a)}px`;
+    tl.dimL.style.width = `${a}px`;
+    tl.dimR.style.left = `${b}px`;
+    tl.dimR.style.width = `${Math.max(0, contentW - b)}px`;
+    for (const [h, v] of [[tl.trimIn, range.in], [tl.trimOut, range.out]]) {
+      h.setAttribute("aria-valuemin", "0");
+      h.setAttribute("aria-valuemax", String(Math.floor(dur)));
+      h.setAttribute("aria-valuenow", String(Math.round(v * 10) / 10));
+      h.setAttribute("aria-valuetext", clockTenths(v));
+    }
+  }
+
+  // Stem lanes: only the part in view is drawn (a whole song at full zoom
+  // would be wider than a canvas may be).
   const src = overviewPeaks();
   const stems = laneStems();
-  const w = tl.audio.clientWidth;
+  const left = tl.scroll.scrollLeft;
   const h = tl.audio.clientHeight;
-  const laneSig = `${stems.join(",")}|${w}x${h}`;
+  const laneSig = `${stems.join(",")}|${view}x${h}|${left}|${pps}`;
   if (painted.lanes !== laneSig || painted.lanesSrc !== src) {
     painted.lanes = laneSig;
     painted.lanesSrc = src;
-    tl.lanes.forEach((lane, i) => drawLane(lane, stems[i] || null, src));
+    tl.lanes.forEach((lane, i) => drawLane(lane, stems[i] || null, src, left, view, pps, dur));
   }
 }
 
-function drawLane(lane, stem, src) {
+function drawLane(lane, stem, src, left, view, pps, dur) {
   lane.stem = stem;
   lane.label.hidden = !stem;
   lane.name.textContent = stem ? laneLabel(stem) : "";
   const color = (stem && STEM_COLORS[stem]) || "#9aa3ad";
   lane.label.style.setProperty("--sm-lane", color);
   const c = lane.canvas;
-  const w = c.clientWidth;
+  const w = Math.max(0, Math.min(view, dur * pps - left) - 32);
+  c.style.left = `${left + 16}px`;
+  c.style.width = `${w}px`;
   const h = c.clientHeight;
   if (!w || !h) return;
   const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -1179,9 +1916,11 @@ function drawLane(lane, stem, src) {
   const ctx = c.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  if (!stem || !src?.data?.[stem]) return;
+  if (!stem || !src?.data?.[stem] || !dur || !pps) return;
   const n = Math.max(1, Math.floor(w / 3));
-  const bars = peakBars(src.data, [stem], n);
+  const from = (left + 16) / pps / dur;
+  const to = (left + 16 + w) / pps / dur;
+  const bars = peakBars(src.data, [stem], n, from, to);
   const step = w / n;
   ctx.fillStyle = color;
   for (let i = 0; i < n; i++) {
@@ -1192,12 +1931,60 @@ function drawLane(lane, stem, src) {
 
 // ── Keys (only while Streamer Mode is open) ──
 
+function isTyping(target) {
+  return target instanceof HTMLElement
+    && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+}
+
+/** Streamer has the keys when focus is in it, or nowhere (after a click on
+ * the preview's empty parts). Not in the library, a dialog or another menu. */
+function streamerHasFocus(e) {
+  const a = document.activeElement;
+  if (root.contains(e.target) || root.contains(a)) return true;
+  return !a || a === document.body || a === document.documentElement;
+}
+
 function onKey(e) {
-  if (!open || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!open || e.defaultPrevented) return;
+  if (menu?.box.contains(e.target) || props?.box.contains(e.target)) return;
+  if (e.target instanceof Element && e.target.closest("[role=dialog]:not(.sm-props), .settings-overlay, .mode-menu")) return;
+  const mod = e.ctrlKey || e.metaKey;
+  const typing = isTyping(e.target);
+  const ours = streamerHasFocus(e);
+
+  // Delete and Backspace: a layer's, never the song's. The studio trashes the
+  // open song on Delete (catalog.js); while Streamer has the keys it never
+  // gets them.
+  if ((e.key === "Delete" || e.key === "Backspace") && !typing && !mod && ours) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (selected && tab === "builder") deleteOf(selected);
+    return;
+  }
+  // Undo and redo of the scene.
+  if (mod && !e.altKey && !typing && ours && (e.code === "KeyZ" || e.code === "KeyY")) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.code === "KeyY" || e.shiftKey) doRedo();
+    else doUndo();
+    return;
+  }
+  if (mod || e.altKey || typing) return;
+  // Arrows nudge the selected layer 1% (Shift: 5%), one undo step each.
+  if (ours && tab === "builder" && selected && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)
+      && !(e.target instanceof Element && e.target.closest("[role=slider], [role=tablist], .sm-layer-grip"))) {
+    e.preventDefault();
+    e.stopPropagation();
+    const s = e.shiftKey ? 0.05 : 0.01;
+    const dx = e.key === "ArrowLeft" ? -s : e.key === "ArrowRight" ? s : 0;
+    const dy = e.key === "ArrowUp" ? -s : e.key === "ArrowDown" ? s : 0;
+    commit(nudgeLayer(scene, selected, dx, dy));
+    return;
+  }
   // Space or Enter on one of this view's own controls presses that control
   // only: the studio's Space would also start or stop playback.
   if ((e.code === "Space" || e.key === "Enter") && e.target instanceof Element
-      && e.target.closest("#streamer button, #streamer select, #streamer [role=switch], #streamer [role=slider]")) {
+      && e.target.closest("#streamer button, #streamer select, #streamer [role=switch], #streamer [role=slider], #streamer [role=button]")) {
     e.stopPropagation();
   } else if (e.key === "Escape" && root.classList.contains("sm-drawer-open")) {
     e.preventDefault();
