@@ -202,7 +202,8 @@ test.describe("recording a take", () => {
     await openStudio(page);
     await addTrack(page);
     await waitForEngine(page);
-    await page.evaluate(async () => (await import("/js/state.js")).setPlaybackSpeed(0.5));
+    // Through the speed control (which saves it with the song's mix), as a user changes it.
+    await page.evaluate(async () => (await import("/js/transport.js")).setSpeed(0.5));
     await recBtn(page).click();
     await expect(page.locator("#recStatus")).toHaveText(/normal speed/);
     expect(log.created.length).toBe(0);

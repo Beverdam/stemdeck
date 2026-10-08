@@ -408,7 +408,7 @@ test("Bass EQ: a knob changes the sound; knobs, EQ and the open panel come back 
   await expect(tab(page, "bass")).toHaveClass(/active/);
 
   // Saved with the song (debounced), then a reload.
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem("stemdeck:mix:e2e0deadbeef") || "null")?.bass?.fx?.[0]?.params?.ui?.c?.mg > 5, null, { timeout: 5000 });
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("stemdeck:mix:e2e0deadbeef:daw") || "null")?.bass?.fx?.[0]?.params?.ui?.c?.mg > 5, null, { timeout: 5000 });
   await page.reload();
   await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
   await expect(waveRow(page, "bass").locator(".eq-pedal-panel")).toBeVisible({ timeout: 20000 });

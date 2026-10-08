@@ -23,10 +23,10 @@ import {
   metronomeGrouping, setMetronomeGrouping,
   setMetronomeHasBars,
   setMetronomeEnabled, setMetronomeVolume, setMetronomeBeatsPerBar,
-  setLoopEnabled, setLoopStart, setLoopEnd, setMasterVolume, setPlaybackSpeed,
+  setLoopEnabled, setLoopStart, setLoopEnd, setMasterVolume, setPlaybackSpeed, playbackSpeed,
   waveZoom, setWaveZoom, overviewRerenderFn,
 } from "./state.js";
-import { applyMix, nudgeAllLanePitches, resetAllLanePitches } from "./mixer.js";
+import { applyMix, nudgeAllLanePitches, resetAllLanePitches, mixGlobals, setMixGlobals } from "./mixer.js";
 import { isDownbeatIndex, barPositionIndex, getBeats as getGridBeats, getBars as getGridBars } from "./beatgrid.js";
 import { computeCountIn, defaultGrouping, normaliseGrouping } from "./metronome.js";
 import { t, onLanguageChange } from "./i18n.js";
@@ -1025,9 +1025,35 @@ function paintSlowButton() {
  * pressed is the one lit, so half speed and a slow speed set to 0.50x never
  * light together.
  */
-function applySpeed(rate, btn = null) {
+function applySpeed(rate, btn = null, { record = true } = {}) {
   const pressed = btn ?? (rate >= 1 ? normalBtn() : slowBtn());
   const applied = pressed === halfBtn() ? 0.5 : pressed === slowBtn() ? _slowRate : 1;
+  applyRate(applied, pressed, { record });
+}
+
+// The range any speed may take (Karaoke's presets and its 5% steps reach
+// 1.5x; the transport's three buttons stay inside it).
+export const SPEED_MIN = 0.5;
+export const SPEED_MAX = 1.5;
+
+/**
+ * Play at exactly `rate` (clamped to SPEED_MIN..SPEED_MAX, in hundredths), from
+ * anywhere other than the three buttons: Karaoke Mode's presets and steps. The
+ * button whose speed it is lights (half at 0.5, the slow button at its own
+ * speed, normal at 1); any other speed lights none, so the transport never
+ * claims a speed that is not playing.
+ */
+export function setSpeed(rate) {
+  const r = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, Number(rate) || 1)) * 100) / 100;
+  const pressed = r === 0.5 ? halfBtn() : r === 1 ? normalBtn() : Math.abs(r - _slowRate) < 1e-6 ? slowBtn() : null;
+  applyRate(r, pressed);
+  return r;
+}
+
+function applyRate(applied, pressed, { record = true } = {}) {
+  // The speed is part of the open mode's saved record of the song. Not when
+  // the speed is only being put back (a song loads, a mode is restored).
+  if (record) setMixGlobals({ speed: applied });
   setPlaybackSpeed(applied);
   for (const b of speedBtns) {
     if (!b) continue;
@@ -1113,8 +1139,22 @@ function applyPitch(semitones) {
   const clamped = Math.max(PITCH_MIN, Math.min(PITCH_MAX, Math.round(semitones)));
   const delta = clamped - _pitchSemitones;
   _pitchSemitones = clamped;
+  // Remembered with the mix; the lane writes below save it.
+  setMixGlobals({ pitch: clamped }, { save: false });
   renderPitch();
   if (delta !== 0) nudgeAllLanePitches(delta);
+}
+
+/** Move the global key to `semitones` (clamped like the buttons): Karaoke
+ * Mode's Key panel, through the same path as the transport's buttons. */
+export function setGlobalPitch(semitones) {
+  if (!_pitchAvailable) return;
+  applyPitch(semitones);
+}
+
+/** The global key as the transport shows it. */
+export function getGlobalPitch() {
+  return { semitones: _pitchSemitones, available: _pitchAvailable, min: PITCH_MIN, max: PITCH_MAX };
 }
 
 /**
@@ -1131,8 +1171,26 @@ export function resetPitch() {
 /** The user's reset: the global key and every lane, back to the original. */
 export function resetAllKeys() {
   _pitchSemitones = 0;
+  setMixGlobals({ pitch: 0 }, { save: false });
   resetAllLanePitches();
   renderPitch();
+}
+
+/**
+ * Put the speed and the global key back to what the open mode's record of the
+ * song holds: when a song's mix and engine are up, and when another mode's
+ * record replaces the open one. The lanes' own keys came with the record, so
+ * the key is only the counter here (nothing is nudged), and the speed is
+ * applied only when it differs from the one playing, so a mode switch does not
+ * restart the sources for nothing.
+ */
+export function restoreGlobals() {
+  _pitchSemitones = mixGlobals.pitch;
+  renderPitch();
+  const r = Math.round(Math.min(SPEED_MAX, Math.max(SPEED_MIN, mixGlobals.speed)) * 100) / 100;
+  if (r === playbackSpeed) return;
+  const pressed = r === 0.5 ? halfBtn() : r === 1 ? normalBtn() : Math.abs(r - _slowRate) < 1e-6 ? slowBtn() : null;
+  applyRate(r, pressed, { record: false });
 }
 
 export function updatePitchAvailability(available) {
@@ -1147,8 +1205,10 @@ function wirePitchControl() {
   pitchResetBtn?.addEventListener("click", () => resetAllKeys());
 }
 
+/** A song is being torn down or opened: back to 1x, and not remembered (the
+ * song's own saved speed comes back with its mix: restoreGlobals). */
 export function resetSpeed() {
-  applySpeed(1.0);
+  applySpeed(1.0, null, { record: false });
 }
 
 function wireSpeedControl() {

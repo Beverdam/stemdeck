@@ -256,7 +256,9 @@ const TRASH_ICON_SVG = `<svg viewBox="0 0 24 24" width="12" height="12" fill="no
       </svg>`;
 const FOLDER_COLORS = ["#d8a84a", "#e85f6f", "#64c86f", "#4f9de8", "#a985f4"];
 const DEFAULT_FOLDER_COLOR = FOLDER_COLORS[0];
-const TRACK_DRAG_TYPE = "application/x-stemdeck-track";
+// What a library row carries when dragged: the track id. Karaoke Mode's queue
+// takes it too (karaoke/karaokeQueue.js).
+export const TRACK_DRAG_TYPE = "application/x-stemdeck-track";
 const FOLDER_DRAG_TYPE = "application/x-stemdeck-folder";
 
 function getDeletedJobIds() {
@@ -568,6 +570,30 @@ export function getCurrentTrackInfo() {
     // What the track was identified as (libraryIdentity), or null.
     identity: track.identity || null,
   };
+}
+
+/**
+ * What the Karaoke queue shows of a library song: { id, title, artist,
+ * duration, thumb }, or null when the library has no such song (or it is in
+ * the Trash or not finished: nothing to play).
+ */
+export function getTrackSummary(trackId) {
+  const track = tracks[trackId];
+  if (!track || track.status !== "done") return null;
+  if (getTrashFolder()?.items.includes(trackId)) return null;
+  const band = track.artist && /^Q\d+$/.test(track.artist.id) ? track.artist : null;
+  return {
+    id: trackId,
+    title: displayTitle(track.title),
+    artist: track.audioTags?.artist || band?.englishName || band?.name || "",
+    duration: Number(track.duration) || 0,
+    thumb: track.thumb || "",
+  };
+}
+
+/** Open a library song in the studio, as a click on its row does. */
+export function openTrackInStudio(trackId) {
+  return loadTrackIntoStudio(trackId);
 }
 
 /**

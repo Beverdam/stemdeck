@@ -217,7 +217,7 @@ test("the Master drawer measures, exports with master=, and is saved with the so
 
   // Saved with the song's mix, after the master EQ slot entry.
   await page.waitForFunction(() => {
-    const m = JSON.parse(localStorage.getItem(`stemdeck:mix:${"e2e0deadbeef"}`) || "null");
+    const m = JSON.parse(localStorage.getItem(`stemdeck:mix:${"e2e0deadbeef"}:daw`) || "null");
     return m?.__master?.fx?.some((x) => x.id === "master" && x.params?.preset === "louder");
   }, null, { timeout: 5000 });
   await page.reload();

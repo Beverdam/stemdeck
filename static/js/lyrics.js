@@ -146,6 +146,12 @@ function el(tag, className, text) {
   return node;
 }
 
+/** Tell Karaoke Mode (karaoke/karaoke.js) that the lines or their timing on
+ * screen changed, so it reads them again. */
+function announceChange() {
+  document.dispatchEvent(new CustomEvent("stemdeck:lyrics-changed", { detail: { id: shownTrackId } }));
+}
+
 function setStatus(message = "", kind = "") {
   statusEl.textContent = message;
   statusEl.className = `lyrics-status${kind ? ` ${kind}` : ""}`;
@@ -303,6 +309,7 @@ function show(entry, others = [], from = "store") {
   }
   bodyEl.scrollTop = 0;
   if (syncOpen && lines.length) openSync();
+  announceChange();
 }
 
 /** The timing in effect for what is shown, into `lines`: the user's own, the
@@ -329,6 +336,7 @@ function renderLines() {
 function setDisplayLines(next) {
   const same = next.length === lines.length && next.every((line, i) => line.text === lines[i].text);
   lines = next;
+  announceChange();
   if (!same) {
     renderLines();
     if (sync) placeLineTools();
@@ -589,6 +597,7 @@ function applyOffset(seconds, { save = true } = {}) {
   showOffset();
   setAlignMessage();
   if (save) scheduleSave();
+  announceChange();
 }
 
 function scheduleSave() {
@@ -1287,6 +1296,7 @@ function showRemoved() {
   clearLyrics();
   setStatus(t("lyrics.removed"), "muted");
   versionsEl.append(lookAgainButton());
+  announceChange();
 }
 
 /** "Look up again": forget what is kept for the open track and find it anew. */
@@ -1618,6 +1628,47 @@ function setVisible(on) {
     cancelAnimationFrame(frame);
     frame = 0;
   }
+}
+
+// ── Karaoke Mode (karaoke/karaoke.js) ──
+
+/**
+ * The open track's timed lyrics for Karaoke Mode, read only: never a lookup.
+ * The same lyrics and the same timing in effect as this tab: the user's own,
+ * the server's fitted to the vocals, or the lyrics' own at the Align offset.
+ * The tab's own lines while it shows this track (an edit in progress
+ * included); otherwise what is kept for the track, what the server found, or
+ * what the file carried. Resolves { trackId, lines, plain, removed }.
+ */
+export async function karaokeLyrics(info) {
+  const none = { trackId: info?.id ?? null, lines: [], plain: false, removed: false };
+  if (!info) return none;
+  if (shownTrackId === info.id && shownEntry) {
+    return { trackId: info.id, lines: lines.slice(), plain: !lines.length && !!shownEntry.plain, removed: false };
+  }
+  let entry = null;
+  try {
+    const saved = await storeGet(storeKey(info.id), null);
+    if (saved?.dismissed) return { ...none, removed: true };
+    if (saved?.entry && !keptForAnotherSong(saved.entry, info)) entry = saved.entry;
+  } catch (err) {
+    console.warn("lyrics store read failed", err);
+  }
+  if (!entry) entry = (await serverLyrics(info.id))?.entry || null;
+  if (!entry) {
+    const embedded = info.audioTags?.lyrics || (info.audioTags?.hasLyrics ? await embeddedLyrics(info.id) : "");
+    if (embedded) entry = parseLrc(embedded).length ? { synced: embedded } : { plain: embedded };
+  }
+  if (!entry) return none;
+  const timing = timingOf({ ...entry, offsetSec: clampOffset(entry.offsetSec) });
+  return { trackId: info.id, lines: timing.lines, plain: !timing.lines.length && !!entry.plain, removed: false };
+}
+
+/** The vocals stem's level for `trackId` (fetched once, shared with this tab),
+ * which places each word inside its line; null until it arrives or without one. */
+export async function vocalEnvelopeFor(trackId) {
+  await loadEnvelope(trackId);
+  return envelopeFor === trackId ? envelope : null;
 }
 
 export function initLyrics() {

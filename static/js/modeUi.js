@@ -1,6 +1,8 @@
 // The Mode control in the sidebar rail, above Favorites: a brain and the word
 // Mode. It opens a small menu of the modes (mode.js): Practice and Advanced to
-// choose from, Streaming and Karaoke shown as coming.
+// choose from, Karaoke (karaoke/karaoke.js, the same view as the rail's
+// Karaoke button, over whichever of the two is in force), and Streaming shown
+// as coming.
 //
 // Keyboard: Enter or Space opens the menu with the current mode focused,
 // Up and Down move, Enter or Space chooses, Escape closes and returns focus.
@@ -9,6 +11,13 @@ import { t, onLanguageChange } from "./i18n.js";
 import { MODES, AVAILABLE, getMode, setMode, onModeChange } from "./mode.js";
 import { isRecording, closeRecordPanel } from "./capture/recordUi.js";
 import { armedTracks, setArmed } from "./capture/takeLanes.js";
+import { openKaraoke, closeKaraoke, isKaraokeOpen, onKaraokeChange } from "./karaoke/karaoke.js";
+
+// Karaoke is not a mode of mode.js: it is a view over Practice or Advanced,
+// opened and closed on its own. The menu offers it, and shows it as current
+// while it is open.
+const SELECTABLE = [...AVAILABLE, "karaoke"];
+const current = () => (isKaraokeOpen() ? "karaoke" : getMode());
 
 let btn = null;
 let menu = null;
@@ -27,12 +36,12 @@ function items() {
 
 function paint() {
   if (!btn) return;
-  const name = t(`mode.${getMode()}`);
+  const name = t(`mode.${current()}`);
   btn.title = t("mode.buttonTitle", { mode: name });
   btn.setAttribute("aria-label", t("mode.buttonTitle", { mode: name }));
   for (const item of items()) {
     const m = item.dataset.mode;
-    const on = m === getMode();
+    const on = m === current();
     item.setAttribute("aria-checked", String(on));
     item.querySelector(".mode-item-name").textContent = t(`mode.${m}`);
     item.querySelector(".mode-item-desc").textContent = t(`mode.${m}Desc`);
@@ -48,7 +57,7 @@ function build() {
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   for (const m of MODES) {
-    const available = AVAILABLE.includes(m);
+    const available = SELECTABLE.includes(m);
     const item = el("button", "mode-item");
     item.type = "button";
     item.dataset.mode = m;
@@ -75,7 +84,16 @@ function build() {
 }
 
 function choose(m) {
-  if (!AVAILABLE.includes(m)) return;
+  if (!SELECTABLE.includes(m)) return;
+  if (m === "karaoke") {
+    if (isKaraokeOpen() || openKaraoke()) { close(); return; }
+    // Refused: a take is recording.
+    note.textContent = t("karaoke.stopRecordingFirst");
+    note.hidden = false;
+    return;
+  }
+  // Practice or Advanced while Karaoke is open: back to the studio, in that mode.
+  if (isKaraokeOpen()) closeKaraoke();
   if (m === getMode()) { close(); return; }
   // Practice has no Record button: leaving DAW while a take records would
   // leave nothing on screen to stop it with.
@@ -98,8 +116,8 @@ function open() {
   const top = Math.min(r.top, window.innerHeight - menu.offsetHeight - 8);
   menu.style.top = `${Math.max(8, Math.round(top))}px`;
   btn.setAttribute("aria-expanded", "true");
-  const current = items().find((i) => i.dataset.mode === getMode()) || items()[0];
-  current?.focus();
+  const focused = items().find((i) => i.dataset.mode === current()) || items()[0];
+  focused?.focus();
 }
 
 function close({ focusButton = false } = {}) {
@@ -153,5 +171,6 @@ export function initModeUi() {
     paint();
   });
   onLanguageChange(paint);
+  onKaraokeChange(paint);
   paint();
 }
