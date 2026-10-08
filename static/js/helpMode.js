@@ -38,6 +38,7 @@ const HELP = [
   [".rail-favorites", "help.favorites"],
   [".rail-library", "help.library"],
   [".rail-lyrics", "help.lyrics"],
+  [".rail-karaoke", "help.karaoke"],
   [".rail-trash", "help.trash"],
   [".rail-queue", "help.queue"],
   ["#notifBtn", "help.notifications"],

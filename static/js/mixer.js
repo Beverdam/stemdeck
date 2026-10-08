@@ -17,7 +17,8 @@ import {
   mixerState, mixerEl, stemListEl, currentJobId, multitrack, trackIndex,
   masterVolume, audioEngine,
 } from "./state.js";
-import { storeGet, storeSetDebounced } from "./utils.js";
+import { storeGet, storeSetDebounced, storeFlushPending } from "./utils.js";
+import { getMode } from "./mode.js";
 import { t } from "./i18n.js";
 import { PITCH_MAX, PITCH_MIN, clampPitch, pitchBlockedKey } from "./pitchBus.js";
 
@@ -48,17 +49,67 @@ export function ensureMixerStateDefaults() {
   }
 }
 
+// ── One saved mix per song and per mode ──
+//
+// Practice, Advanced and Karaoke (and Streaming, when it exists) each keep
+// their own record of a song: what is muted, soloed and how loud, each lane's
+// key, the EQ and the master, and the speed and global key the song was left
+// at. A change in one mode is never seen in another. The record of a mode is
+// `stemdeck:mix:<jobId>:<mode>`.
+//
+// The one record every song had before there were modes (`stemdeck:mix:<jobId>`)
+// is never rewritten or deleted: Practice and Advanced start from it until
+// they have saved a record of their own, so nobody loses a mix. Karaoke
+// starts from its defaults.
+const LEGACY_MODES = new Set(["practice", "daw"]);
+export const mixKey = (jobId, mode) => `stemdeck:mix:${jobId}:${mode}`;
+const legacyMixKey = (jobId) => `stemdeck:mix:${jobId}`;
+
+// The mode whose record is the one in memory (mixerState, mixGlobals).
+let _activeMode = getMode();
+export function getMixMode() { return _activeMode; }
+
+// What is saved with the mix besides the lanes: the speed and the global key
+// the song was left at. Not in mixerState, whose keys are all lanes.
+export const mixGlobals = { pitch: 0, speed: 1 };
+const defaultGlobals = () => ({ pitch: 0, speed: 1 });
+function cleanGlobals(g) {
+  const out = defaultGlobals();
+  if (Number.isFinite(g?.pitch)) out.pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, Math.round(g.pitch)));
+  if (Number.isFinite(g?.speed)) out.speed = Math.round(Math.max(0.5, Math.min(1.5, g.speed)) * 100) / 100;
+  return out;
+}
+
+/** Remember the speed or global key of the open song, in the open mode's
+ * record. `save: false` when a lane write follows that saves anyway. */
+export function setMixGlobals(patch, { save = true } = {}) {
+  Object.assign(mixGlobals, cleanGlobals({ ...mixGlobals, ...patch }));
+  if (save) saveMix();
+}
+
+let _loadToken = 0;
+
 export async function loadMixIntoState(jobId, loadedStemNames = STEM_NAMES) {
-  let stored = {};
-  try {
-    const data = await storeGet(`stemdeck:mix:${jobId}`, {});
-    if (data && typeof data === "object") stored = data;
-  } catch (e) { console.warn("[mixer] failed to load mix state:", e); }
+  const token = ++_loadToken;
+  let stored = null;
+  // The mode can change while the record is read: read again, for the new one.
+  for (let tries = 0; tries < 3; tries++) {
+    const mode = _activeMode;
+    stored = null;
+    try {
+      stored = await storeGet(mixKey(jobId, mode), null);
+      if (!stored && LEGACY_MODES.has(mode)) stored = await storeGet(legacyMixKey(jobId), null);
+    } catch (e) { console.warn("[mixer] failed to load mix state:", e); }
+    if (mode === _activeMode) break;
+  }
+  if (token !== _loadToken) return;
+  if (!stored || typeof stored !== "object") stored = {};
   for (const name of allTrackNames()) {
     Object.assign(mixerState[name], defaultMixerEntry(), stored[name] || {});
     if (!Array.isArray(mixerState[name].fx)) mixerState[name].fx = [];
   }
   mixerState[MASTER_SLOT] = masterEntry(stored[MASTER_SLOT]);
+  Object.assign(mixGlobals, cleanGlobals(stored.__global));
   // If all loaded stems are muted the session is unplayable -- unmute as recovery.
   const loadedStems = loadedStemNames.filter((n) => mixerState[n]);
   if (loadedStems.length > 0 && loadedStems.every((n) => mixerState[n].muted)) {
@@ -71,11 +122,33 @@ export function resetMixerState() {
     Object.assign(mixerState[name], defaultMixerEntry());
   }
   mixerState[MASTER_SLOT] = masterEntry(null);
+  Object.assign(mixGlobals, defaultGlobals());
 }
 
 function saveMix() {
   if (!currentJobId) return;
-  storeSetDebounced(`stemdeck:mix:${currentJobId}`, mixerState);
+  storeSetDebounced(mixKey(currentJobId, _activeMode), { ...mixerState, __global: { ...mixGlobals } });
+}
+
+/**
+ * Make `mode` the one whose record is open: what is in memory is saved to its
+ * own mode's record first, then the open song's record for `mode` is loaded in
+ * its place. Resolves true when the song's mix was replaced (the caller then
+ * pushes it to the engine), false when no song is loaded (the next song to
+ * load reads `mode`'s record) or `mode` was already open.
+ */
+let _switchToken = 0;
+export async function switchMixMode(mode) {
+  if (mode === _activeMode) return false;
+  const jobId = currentJobId;
+  const from = _activeMode;
+  if (jobId) await storeFlushPending(mixKey(jobId, from));
+  _activeMode = mode;
+  const names = Object.keys(trackIndex || {});
+  if (!jobId || !names.length) return false;
+  const token = ++_switchToken;
+  await loadMixIntoState(jobId, names);
+  return token === _switchToken && currentJobId === jobId && _activeMode === mode;
 }
 
 /** Save the open song's mix (debounced). Used by eqEngine.js. */

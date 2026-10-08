@@ -286,7 +286,7 @@ test("in the studio: a bell boosts the lane, bypass is exact, the EQ is saved an
     await sleep(300);
     const restored = await snapshot();
     const fx = eqApi.exportFxParam(["other", "vocals"]);
-    const stored = JSON.parse(localStorage.getItem("stemdeck:mix:e2e0deadbeef") || "null");
+    const stored = JSON.parse(localStorage.getItem("stemdeck:mix:e2e0deadbeef:daw") || "null");
     const db = (s) => 20 * Math.log10(rms(s.post) / rms(s.pre));
     return {
       set,
@@ -319,7 +319,7 @@ test("in the studio: a bell boosts the lane, bypass is exact, the EQ is saved an
 
   // Saved with the song's mix (debounced), and back after a reload.
   await page.waitForFunction(() => {
-    const m = JSON.parse(localStorage.getItem("stemdeck:mix:e2e0deadbeef") || "null");
+    const m = JSON.parse(localStorage.getItem("stemdeck:mix:e2e0deadbeef:daw") || "null");
     return m?.other?.fx?.[0]?.params?.bands?.[0]?.g === 12;
   }, null, { timeout: 5000 });
   await page.reload();

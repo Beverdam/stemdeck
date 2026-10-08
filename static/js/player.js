@@ -58,7 +58,7 @@ import {
   buildRuler, updatePlayheadMarker, updateLoopRegionVisual,
   applyWaveZoom, resetWaveZoom, WAVE_ZOOM_MAX,
   buildPresenceRuler, buildFooterWaveTicks, updateFooterTimes,
-  updatePresencePlayhead, resetSpeed, resetPitch, updatePitchAvailability,
+  updatePresencePlayhead, resetSpeed, resetPitch, updatePitchAvailability, restoreGlobals,
   updateMetronomeAvailability, applyMetronomeAccent,
 } from "./transport.js";
 import { stopVuLoop } from "./audio.js";
@@ -1300,6 +1300,9 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
       // The song's saved EQs, into whichever engine is up (or none yet: the
       // engine's ready handler applies them again).
       applyAllLaneEq();
+      // Karaoke Mode applies its stem defaults after this, never before: the
+      // saved mix loading here would overwrite them.
+      document.dispatchEvent(new CustomEvent("stemdeck:mix-loaded", { detail: { id: jobId } }));
     })
     .catch((e) => { console.warn("[player] mix state load failed:", e); });
   setLaneControlsEnabled(true);
@@ -1666,7 +1669,12 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
       };
       teardownMetronome();
       if (audioEngine) { audioEngine.destroy(); setAudioEngine(null); }
-      const onEnded = () => { playBtn.classList.remove("playing"); updateStopVisual(); };
+      const onEnded = () => {
+        playBtn.classList.remove("playing");
+        updateStopVisual();
+        // Karaoke Mode plays the next song of its queue.
+        document.dispatchEvent(new CustomEvent("stemdeck:track-ended", { detail: { id: jobId } }));
+      };
       // Engine bring-up, callable twice: the chunked path falls back to
       // "fulldecode" when it cannot read the stems (below). Which engine to
       // start for a job without peaks is decided before the first one starts
@@ -1728,6 +1736,8 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
           applyAllLanePitches();
           // Saved EQs ride on the same engine and are restored with the keys.
           applyAllLaneEq();
+          // And the speed and global key the song was left at, in this mode.
+          restoreGlobals();
 
           // Click track. Bound to this engine instance, so it is rebuilt on
           // every engine bring-up (including the chunked -> fulldecode
