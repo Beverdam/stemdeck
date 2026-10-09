@@ -59,7 +59,10 @@ import {
   inputState, inputLevel, deviceLists, onDevicesChange, getStreamerMedia,
 } from "./streamerDevices.js";
 import { reasonMessage } from "../capture/capturePermission.js";
-import { friendlyName } from "../capture/trackInputs.js";
+import { friendlyName, normaliseDevices, defaultInputDevice, fillInputSelect, channelText } from "../capture/trackInputs.js";
+import {
+  resolveInput, inputValue, autoPickStep, createLivePeaks, resetLivePeaks, addLivePeak, fillLiveBars, takeLaneState,
+} from "./inputModel.js";
 import { openRecordingSettings } from "../capture/recordingSettings.js";
 import { storeGet, storeSet } from "../utils.js";
 import { toggleStemMute, getMixMode } from "../mixer.js";
@@ -212,7 +215,6 @@ const ICONS = {
   film: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], "M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"],
   mic: [["rect", { x: 9, y: 3, width: 6, height: 11, rx: 3 }], "M5 11a7 7 0 0 0 14 0M12 18v3"],
   webcam: [["rect", { x: 3, y: 6, width: 18, height: 13, rx: 2 }], ["circle", { cx: 12, cy: 12.5, r: 3 }], "M7 6l1.5-2h7L17 6"],
-  upload: ["M12 15V4M7 9l5-5 5 5M5 20h14"],
   output: [["rect", { x: 3, y: 4, width: 18, height: 16, rx: 2 }], "M15 4v16"],
   play: [["path", { d: "M7 4.5v15l12-7.5z", fill: "currentColor", stroke: "none" }]],
   pause: [["rect", { x: 6, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }], ["rect", { x: 14, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }]],
@@ -407,7 +409,10 @@ function buildBuilder() {
   const pill = el("span", "sm-rec-pill");
   const ring = el("span", "sm-rec-ring");
   ring.append(el("span", "sm-rec-dot"));
-  pill.append(ring, tx(el("span", "sm-rec-label"), "streamer.recReady"));
+  // While a take records: the input's level, so sound arriving shows at once.
+  const recLevel = el("span", "sm-rec-level");
+  recLevel.setAttribute("aria-hidden", "true");
+  pill.append(ring, tx(el("span", "sm-rec-label"), "streamer.recReady"), recLevel);
   const recTime = el("span", "sm-rec-time", clockHours(0));
   rec.append(pill, recTime);
   rec.setAttribute("aria-pressed", "false");
@@ -464,7 +469,7 @@ function buildBuilder() {
 
   const timeline = buildTimeline();
   panel.append(row, timeline.card);
-  return { panel, preview, canvas, rec, recLabel: pill.querySelector(".sm-rec-label"), recTime, selbox, camState, camText, camAct, clockNow, clockDur, undo, redo, layers, timeline };
+  return { panel, preview, canvas, rec, recLabel: pill.querySelector(".sm-rec-label"), recTime, recLevel, selbox, camState, camText, camAct, clockNow, clockDur, undo, redo, layers, timeline };
 }
 
 function buildLayersPanel() {
@@ -551,6 +556,15 @@ function buildTimeline() {
   tx(partSel.sel, "streamer.part.aria", "title");
   partSel.sel.addEventListener("change", () => choosePart(partSel.sel.value));
   partBox.append(partLabel, partSel.wrap);
+  // The take lane before a take: empty, with a hint (never the stem's own wave).
+  const takeHint = tx(el("p", "sm-tl-note sm-tl-take-hint"), "streamer.lane.emptyHint");
+  takeHint.hidden = true;
+  audio.append(takeHint);
+  // The take on the video lane: a block that grows while it records, then
+  // the take's frames (its filmstrip) where it sits in the song.
+  const takeBlock = el("div", "sm-tl-take");
+  takeBlock.hidden = true;
+  video.append(takeBlock);
   // A song without stems, and one without sections, say so in their rows.
   const noStems = tx(el("p", "sm-tl-note sm-tl-no-stems"), "streamer.noStems");
   noStems.hidden = true;
@@ -596,6 +610,7 @@ function buildTimeline() {
   card.append(partBox, zoomBox, scroll);
   return {
     partSel: partSel.sel,
+    takeHint, takeBlock,
     card, zoomBox, zTrack, zFill, zThumb, zOut, zIn, scroll, grid, mask, markers, ruler, video, audio, lanes,
     range, trimIn, trimOut, dimL, dimR, tip, head, headTime, noStems, noSections,
   };
@@ -633,7 +648,7 @@ function buildSide() {
   vsrc.sel.addEventListener("change", () => setSetting({ videoDeviceId: vsrc.sel.value }));
   const vstate = stateLine("video");
   const asrc = selectBox("", "mic");
-  asrc.sel.addEventListener("change", () => setSetting({ audioDeviceId: asrc.sel.value }));
+  asrc.sel.addEventListener("change", () => chooseInput(asrc.sel.value));
   const astate = stateLine("audio");
   const meterRow = el("div", "sm-meter-row");
   const meter = el("div", "sm-meter");
@@ -726,60 +741,13 @@ function buildSide() {
   );
   rec.append(recHead, body);
 
-  // YouTube Export & Upload: a placeholder until upload exists.
-  const yt = el("section", "sm-card sm-yt");
-  const ytHead = el("div", "sm-yt-head");
-  const ytLogo = el("span", "sm-yt-logo");
-  const play = document.createElementNS(SVG_NS, "svg");
-  play.setAttribute("width", "10");
-  play.setAttribute("height", "10");
-  play.setAttribute("viewBox", "0 0 10 10");
-  play.setAttribute("aria-hidden", "true");
-  const tri = document.createElementNS(SVG_NS, "path");
-  tri.setAttribute("d", "M2.5 1.5v7l6-3.5z");
-  tri.setAttribute("fill", "#ffffff");
-  play.append(tri);
-  ytLogo.append(play);
-  ytHead.append(ytLogo, tx(el("h3", "sm-yt-title"), "streamer.yt"));
-  const status = el("div", "sm-yt-status");
-  const connect = tx(button("sm-primary sm-yt-connect"), "streamer.ytConnect");
-  connect.addEventListener("click", (e) => {
-    e.stopPropagation();
-    flashNote(t("streamer.ytSoon"), connect);
-  });
-  status.append(el("span", "sm-yt-dot"), tx(el("span", "sm-yt-state"), "streamer.ytNotConnected"), connect);
-  const titleIn = el("input", "sm-inp");
-  titleIn.type = "text";
-  titleIn.maxLength = 100;
-  titleIn.addEventListener("input", () => { titleIn.dataset.edited = "1"; });
-  const desc = el("textarea", "sm-inp sm-yt-desc");
-  desc.rows = 3;
-  desc.maxLength = 5000;
-  tx(desc, "streamer.ytDescPlaceholder", "placeholder");
-  const count = el("span", "sm-yt-count", "0/5000");
-  desc.addEventListener("input", () => { count.textContent = `${desc.value.length}/5000`; });
-  const vis = selectBox("sm-yt-vis");
-  for (const [v, k] of [["private", "streamer.ytPrivate"], ["unlisted", "streamer.ytUnlisted"], ["public", "streamer.ytPublic"]]) option(vis.sel, v, k);
-  const ytSwitches = [makeSwitch("", "streamer.ytUploadAfter", false).b, makeSwitch("", "streamer.ytPlaylist", false).b];
-  const exportBtn = button("sm-primary sm-yt-export");
-  exportBtn.append(icon(ICONS.upload, { size: 15, width: 2.2 }), tx(el("span"), "streamer.ytExport"));
-  // YouTube is not there yet: the button makes the same local export, then
-  // says upload is coming. "Upload after export" and "Add to playlist" do
-  // nothing yet.
-  exportBtn.addEventListener("click", () => runExport({ youtube: true }));
-  yt.append(
-    ytHead, status,
-    field("streamer.ytTitle", "streamerYtTitle", titleIn), titleIn,
-    field("streamer.ytDesc", "streamerYtDesc", desc), desc, count,
-    field("streamer.ytVisibility", "streamerYtVis", vis.sel), vis.wrap,
-    ...ytSwitches, el("div", "sm-spacer"), exportBtn,
-  );
-
-  aside.append(rec, yt);
+  // Export to a file is the only way out for now (upload and streaming to
+  // platforms are postponed: docs/plans/0.21.0/integrations-*.md).
+  aside.append(rec);
   return {
-    aside, fps: fps.sel, titleIn, vsrc: vsrc.sel, asrc: asrc.sel, vstate, astate,
+    aside, fps: fps.sel, vsrc: vsrc.sel, asrc: asrc.sel, vstate, astate,
     meter, meterRows, level, res: res.sel, heavy, fpsWhy, sw,
-    exp, expText, expBar, expGo, expCancel, expReveal, expRaw, ytExport: exportBtn,
+    exp, expText, expBar, expGo, expCancel, expReveal, expRaw,
   };
 }
 
@@ -1213,8 +1181,6 @@ function frame() {
     // The last song's pictures are let go (they load again when shown).
     forgetAllPictures();
     if (job) showSceneFor(job);
-    // A title typed for the last song is not this one's.
-    delete ui.side.titleIn.dataset.edited;
     // The last song's export result is not this one's (an export still
     // running says whose take it is: paintExport).
     if (!exporting) {
@@ -1245,7 +1211,6 @@ function frame() {
   } else if (!takeOpen()) songChangeStop = false;
   const tNow = hasTrack ? now() : 0;
   const meta = trackMeta();
-  paintYoutubeTitle(meta);
   paintTransport(hasTrack);
   paintDevices();
   paintMeter();
@@ -1253,6 +1218,7 @@ function frame() {
   const lyrics = lyricWindow(lyr.lines, tNow, 7);
   const data = frameData(tNow, meta, lyrics);
   takeTick(tNow, data);
+  feedLive(tNow);
   paintRecord();
   if (tab !== "builder") return;
   paintLayers(meta, lyrics);
@@ -1316,13 +1282,6 @@ function paintTransport(hasTrack) {
   play.title = label;
   play.disabled = !hasTrack;
   stop.disabled = !hasTrack;
-}
-
-function paintYoutubeTitle(meta) {
-  const input = ui.side.titleIn;
-  if (input.dataset.edited === "1") return;
-  const v = meta.title ? (meta.artist ? t("streamer.ytDefaultTitle", { title: meta.title, artist: meta.artist }) : meta.title) : "";
-  if (input.value !== v) input.value = v;
 }
 
 // ── Preview ──
@@ -2080,8 +2039,61 @@ function wantedDevices() {
   const camLayer = scene.layers.some((l) => l.type === "camera" && l.visible);
   const camera = (tab === "builder" || takeOpen()) && camLayer && settings.videoDeviceId !== NONE
     ? resolveDeviceId(settings.videoDeviceId, lists.video) : null;
-  const audio = settings.audioDeviceId !== NONE ? resolveDeviceId(settings.audioDeviceId, lists.audio) : null;
-  return { camera, audio, settings };
+  // The input the take records (the studio's choice until one is picked here).
+  const input = recordingInput();
+  const audio = input ? input.deviceId : null;
+  const audioChannelCount = input ? Math.max(...input.channels) + 1 : 2;
+  return { camera, audio, settings, audioChannelCount };
+}
+
+// The inputs as the studio lists them (trackInputs.normaliseDevices), from
+// the browser's list, kept until that list changes.
+let inputs = { raw: null, devices: [] };
+function inputDevices() {
+  const raw = deviceLists().audio;
+  if (inputs.raw !== raw) inputs = { raw, devices: normaliseDevices(raw) };
+  return inputs.devices;
+}
+
+/** The input and channels a take records from now, or null (no input). */
+function recordingInput() {
+  const devices = inputDevices();
+  return resolveInput(settings, devices, defaultInputDevice(devices, "audio"));
+}
+
+/** The Audio Source select: no input, then the studio's list (a microphone,
+ * each channel and pair of an interface), the input in use selected. */
+let inputChoices = new Map();
+function fillInputChoice(sel) {
+  const devices = inputDevices();
+  const cur = recordingInput();
+  const sig = `${devices.map((d) => `${d.deviceId}:${d.name}:${d.channels}`).join("|")}|${t("streamer.noAudioInput")}|${t("rec.input.voiceGroup")}`;
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    inputChoices = devices.length ? fillInputSelect(sel, devices, { withChannels: true }) : new Map();
+    if (!devices.length) {
+      sel.replaceChildren();
+      // Before permission the names are hidden: the Settings input is used.
+      const o = el("option", null, t("capture.defaultDevice"));
+      o.value = "";
+      sel.append(o);
+    }
+    const none = el("option", null, t("streamer.noAudioInput"));
+    none.value = NONE;
+    sel.prepend(none);
+  }
+  const want = cur ? inputValue(cur.deviceId, cur.channels) : NONE;
+  sel.value = [...sel.options].some((o) => o.value === want) ? want : (cur ? "" : NONE);
+}
+
+function chooseInput(value) {
+  if (value === NONE) {
+    setSetting({ audioDeviceId: NONE, audioChannels: null });
+    return;
+  }
+  const picked = inputChoices.get(value);
+  if (picked) setSetting({ audioDeviceId: picked.device.deviceId, audioChannels: picked.channels });
+  else setSetting({ audioDeviceId: "", audioChannels: null });
 }
 
 function fillDeviceSelect(sel, kind, devices, saved) {
@@ -2144,7 +2156,7 @@ function paintDevices() {
   painted.devices = sig;
   const side = ui.side;
   fillDeviceSelect(side.vsrc, "video", lists.video, settings.videoDeviceId);
-  fillDeviceSelect(side.asrc, "audio", lists.audio, settings.audioDeviceId);
+  fillInputChoice(side.asrc);
   side.res.value = settings.resolution;
   const offered = framesFor(settings.resolution);
   for (const o of side.fps.options) o.disabled = !offered.includes(Number(o.value));
@@ -2173,13 +2185,24 @@ function paintDevices() {
 
 /** The meter: the input's first two channels, each held and falling back,
  * segments lit by the dB scale; only changed segments are touched. */
+let autoPick = null;
+let meterInput = null;
 function paintMeter() {
   const side = ui.side;
   const live = inputState().live;
   const nowMs = performance.now();
+  // The meter shows the channels the take records (a second row: the pair's
+  // other half, else the same channel); the same input the take lane draws.
+  if (!meterInput || painted.meterSettings !== settings || painted.meterInputs !== inputs.devices) {
+    painted.meterSettings = settings;
+    painted.meterInputs = inputs.devices;
+    meterInput = recordingInput();
+  }
+  const chans = meterInput?.channels || [0];
+  autoPickInput(live);
   let top = 0;
   side.meterRows.forEach((row, c) => {
-    holdPeak(row.peak, live ? inputLevel(c) : 0, nowMs);
+    holdPeak(row.peak, live ? inputLevel(chans[c] ?? chans[0]) : 0, nowMs);
     top = Math.max(top, row.peak.value);
     const lit = litSegments(meterFraction(row.peak.value));
     if (lit === row.lit) return;
@@ -2188,12 +2211,32 @@ function paintMeter() {
     for (let k = from; k < to; k++) row.segs[k].classList.toggle("on", k < lit);
     row.lit = lit;
   });
+  const recFrac = takeOpen() ? Math.round(meterFraction(top) * 50) / 50 : 0;
+  if (painted.recLevel !== recFrac) {
+    painted.recLevel = recFrac;
+    ui.builder.recLevel.style.transform = `scaleX(${recFrac})`;
+  }
   const db = levelDb(top);
   if (painted.meterDb !== db) {
     painted.meterDb = db;
     side.level.textContent = `${db} dB`;
     side.meter.setAttribute("aria-valuenow", String(db));
   }
+}
+
+/** An input not picked by hand that stays silent while another channel of
+ * the same device carries a signal moves to it, once (the studio's rule). */
+function autoPickInput(live) {
+  const cap = live ? streamerMedia().capture : null;
+  if (!cap || !meterInput?.auto || meterInput.kind === "voice" || takeOpen()) {
+    autoPick = null;
+    return;
+  }
+  const step = autoPickStep(autoPick, meterInput.channels, (ch) => cap.channelLevel([ch]), cap.deviceChannels || 1);
+  autoPick = step.state;
+  if (step.pick < 0) return;
+  setSetting({ audioDeviceId: meterInput.deviceId, audioChannels: [step.pick] });
+  flashNote(t("streamer.mic.autoInput", { input: channelText([step.pick]) }), ui.side.asrc);
 }
 
 /** Phase 4's seam: the camera and input streams Streamer has open (or null). */
@@ -2260,6 +2303,7 @@ async function toggleRecording() {
     remove: part.job === job ? part.remove : "",
     jobId: job,
     capture: inputState().live ? media.capture : null,
+    channels: recordingInput()?.channels || [0],
     settings,
     aspect: scene.aspect,
     range: trimRange(scene, totalDuration),
@@ -2334,16 +2378,15 @@ function paintExport(st) {
   const sig = `${st.state}|${take}|${busy}|${elsewhere}|${exportNote}|${exportError?.code || ""}|${asRecorded}|${t("streamer.export.go")}`;
   if (painted.exp === sig) return;
   painted.exp = sig;
-  const show = Boolean(take) && !takeOpen();
-  s.exp.hidden = !show && !takeOpen() && !busy;
+  // Always there: the one way out of Streamer (export to a file), waiting
+  // for a take when there is none.
+  s.exp.hidden = false;
   if (takeOpen()) {
     s.expText.textContent = t(st.state === "stopping" ? "streamer.rec.saving" : "streamer.rec.recording");
     s.expBar.hidden = true;
     for (const btn of [s.expGo, s.expCancel, s.expReveal, s.expRaw]) btn.hidden = true;
-    s.ytExport.disabled = true;
     return;
   }
-  s.ytExport.disabled = !take || busy;
   s.expGo.hidden = busy;
   s.expGo.disabled = !take;
   s.expGo.textContent = t(exportError && exportError.code !== "no-encoder" ? "streamer.export.retry" : "streamer.export.go");
@@ -2356,10 +2399,10 @@ function paintExport(st) {
   const ready = asRecorded ? t("streamer.export.readyAsRecorded", { aspect: asRecorded }) : t("streamer.export.ready");
   s.expText.textContent = elsewhere
     ? t("streamer.export.otherSong", { note: exportNote })
-    : exportNote || (take ? ready : "");
+    : exportNote || (take ? ready : t("streamer.export.none"));
 }
 
-async function runExport({ youtube = false } = {}) {
+async function runExport() {
   const job = currentJobId;
   const takeId = job ? lastTake(job) : null;
   if (!takeId || exporting || takeOpen()) return;
@@ -2405,7 +2448,7 @@ async function runExport({ youtube = false } = {}) {
     // folder does not point at an older file.
     markExport(res.saved ? "done" : "cancel");
     exportNote = res.saved
-      ? t(youtube ? "streamer.export.savedYoutube" : "streamer.export.saved")
+      ? t("streamer.export.saved")
       : t("streamer.export.notSaved");
   } catch (err) {
     console.warn("[streamer] export failed:", err);
@@ -2495,11 +2538,71 @@ function saveRaw() {
  * part the musician plays (none when nothing is removed). */
 function laneSpecs() {
   const present = part.job === currentJobId ? part.present : [];
-  const { backing, part: played } = timelineLanes(part.job === currentJobId ? part.remove : "", present);
+  const remove = part.job === currentJobId ? part.remove : "";
+  const { backing, part: played } = timelineLanes(remove, present);
   const out = [];
   if (backing.length) out.push({ key: `b:${backing.join(",")}`, names: backing, label: t("streamer.backingTrack"), color: "#9aa3ad" });
-  if (played) out.push({ key: `p:${played}`, names: [played], label: laneLabel(played), color: STEM_COLORS[played] || "#9aa3ad" });
+  else out.push(null);
+  // The take lane: the musician's part (or their take over the whole song),
+  // never the stem file's wave: empty, forming live, then the take's own.
+  const label = played ? t("streamer.lane.yourPart", { name: laneLabel(played) }) : t("streamer.lane.yourTake");
+  const color = (played && STEM_COLORS[played]) || ui.accent;
+  const lane = takeLane();
+  if (lane.state === "live" || (lane.state === "saved" && !lane.peaksReady && live.take === lane.take && live.take)) {
+    out.push({ key: `l:${live.bucket}:${live.take || ""}`, live: true, label, color });
+  } else if (lane.state === "saved" && lane.peaksReady) {
+    out.push({ key: `s:${lane.take}`, names: [lane.take], label, color, take: true });
+  } else {
+    out.push({ key: "e", empty: true, label, color });
+  }
   return out;
+}
+
+// The live waveform of the take recording now: the input's peak per stretch
+// of the song, at the playhead (inputModel.js). One store, reused per take.
+const livePeaks = createLivePeaks(3000);
+let liveBars = new Float32Array(0);
+const live = { take: null, bucket: -1, active: false };
+
+/** The take lane's state: { state, take, info, peaksReady }. */
+function takeLane() {
+  const job = currentJobId;
+  const take = job ? lastTake(job) : null;
+  const info = take ? takeInfo(take) : null;
+  const remove = part.job === job ? part.remove : "";
+  const state = takeLaneState({ recording: takeOpen(), lastTake: take, takePart: info ? info.remove : null, part: remove });
+  const peaksReady = Boolean(take && overviewPeaks()?.data?.[take]);
+  return { state, take, info, peaksReady };
+}
+
+/** Each frame of a take: the input's level into the live waveform. */
+function feedLive(tNow) {
+  const st = recordState();
+  if (!takeOpen()) {
+    if (live.active) {
+      live.active = false;
+      // The take that was just recorded keeps its live wave until its own
+      // peaks arrive with the song's reload.
+      live.take = st.takeId || lastTake(currentJobId) || live.take;
+      painted.lanes = null;
+    }
+    return;
+  }
+  if (!live.active) {
+    live.active = true;
+    live.take = null;
+    live.bucket = -1;
+    resetLivePeaks(livePeaks, totalDuration);
+    painted.lanes = null;
+  }
+  if (st.state !== "recording") return;
+  const cap = streamerMedia().capture;
+  const chans = recordingInput()?.channels || [0];
+  const peak = cap && !cap.closed ? cap.channelLevel(chans) : 0;
+  // A quiet floor so the formed part reads even where it is soft.
+  const v = peak > 0 ? Math.max(0.04, meterFraction(peak)) : 0;
+  const b = addLivePeak(livePeaks, tNow, v);
+  if (b !== live.bucket) live.bucket = b;
 }
 
 // ── I play: the part left out of the backing ──
@@ -2922,13 +3025,52 @@ function paintTimeline(tNow) {
   const specs = laneSpecs();
   const left = tl.scroll.scrollLeft;
   const h = tl.audio.clientHeight;
-  const laneSig = `${specs.map((sp) => `${sp.key}:${sp.label}`).join("|")}|${view}x${h}|${left}|${pps}`;
-  if (painted.lanes !== laneSig || painted.lanesSrc !== src) {
-    painted.lanes = laneSig;
+  // Each lane redraws only when what it shows changed (the live lane as its
+  // waveform grows a bucket, about every 75 ms of a 4-minute song).
+  const base = `${view}x${h}|${left}|${pps}`;
+  if (!painted.lanes || painted.lanesSrc !== src) {
     painted.lanesSrc = src;
-    tl.lanes.forEach((lane, i) => drawLane(lane, specs[i] || null, src, left, view, pps, dur));
-    tl.noStems.hidden = !dur || !part.loaded || specs.length > 0;
+    for (const lane of tl.lanes) lane.sig = null;
   }
+  painted.lanes = "drawn";
+  tl.lanes.forEach((lane, i) => {
+    const sp = specs[i] || null;
+    const sig = `${sp ? `${sp.key}:${sp.label}:${sp.color}` : "-"}|${base}`;
+    if (lane.sig === sig) return;
+    lane.sig = sig;
+    drawLane(lane, sp, src, left, view, pps, dur);
+  });
+  const hint = Boolean(specs[1]?.empty && dur);
+  if (tl.takeHint.hidden === hint) tl.takeHint.hidden = !hint;
+  const noStems = !dur || !part.loaded || Boolean(specs[0]);
+  if (tl.noStems.hidden !== noStems) tl.noStems.hidden = noStems;
+  paintTakeBlock(x, dur);
+}
+
+/** The take on the video lane: growing while it records, then its frames. */
+function paintTakeBlock(x, dur) {
+  const block = ui.builder.timeline.takeBlock;
+  const lane = takeLane();
+  let from = null;
+  let to = null;
+  let film = "";
+  if (lane.state === "live" && recordState().state === "recording" && livePeaks.from >= 0) {
+    from = (livePeaks.from / livePeaks.peaks.length) * dur;
+    to = now();
+  } else if (lane.state === "saved" && Number.isFinite(lane.info?.from) && Number.isFinite(lane.info?.to)) {
+    from = lane.info.from;
+    to = lane.info.to;
+    film = `/api/jobs/${encodeURIComponent(currentJobId)}/takes/${encodeURIComponent(lane.take)}/filmstrip.jpg`;
+  }
+  const sig = from === null ? "none" : `${Math.round(x(from))}|${Math.round(x(to))}|${film}|${lane.state}`;
+  if (painted.takeBlock === sig) return;
+  painted.takeBlock = sig;
+  block.hidden = from === null;
+  if (from === null) return;
+  block.classList.toggle("live", lane.state === "live");
+  block.style.left = `${x(from)}px`;
+  block.style.width = `${Math.max(2, x(to) - x(from))}px`;
+  block.style.backgroundImage = film ? `url("${film}")` : "";
 }
 
 /** One lane: `spec` { names, label, color } (the peaks of `names`), or null. */
@@ -2951,15 +3093,32 @@ function drawLane(lane, spec, src, left, view, pps, dur) {
   const ctx = c.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  const names = (spec?.names || []).filter((n) => src?.data?.[n]);
-  if (!names.length || !dur || !pps) return;
+  if (!spec || spec.empty || !dur || !pps) return;
   const n = Math.max(1, Math.floor(w / 3));
   const from = (left + 16) / pps / dur;
   const to = (left + 16 + w) / pps / dur;
-  const bars = peakBars(src.data, names, n, from, to);
+  let bars;
+  if (spec.live) {
+    // The live take: the buckets recorded so far (none drawn past them).
+    if (liveBars.length !== n) liveBars = new Float32Array(n);
+    bars = fillLiveBars(livePeaks, liveBars, from, to);
+  } else {
+    const names = (spec.names || []).filter((nm) => src?.data?.[nm]);
+    if (!names.length) return;
+    bars = peakBars(src.data, names, n, from, to);
+  }
+  // A take's lane draws only where the take has sound: no bars before or
+  // after it, where a stem lane draws its quiet floor.
+  drawBars(ctx, bars, n, w, h, color, Boolean(spec.live || spec.take));
+}
+
+/** One lane's bars: the same drawing for a stem, a saved take and a take
+ * forming live (where a bar of 0 is not recorded yet and draws nothing). */
+function drawBars(ctx, bars, n, w, h, color, skipEmpty) {
   const step = w / n;
   ctx.fillStyle = color;
   for (let i = 0; i < n; i++) {
+    if (skipEmpty && !(bars[i] > 0)) continue;
     const bh = Math.min(h, ((3 + bars[i] * 20) / 26) * h);
     ctx.fillRect(i * step, (h - bh) / 2, Math.max(1, step - 1), bh);
   }

@@ -229,7 +229,7 @@ function releaseMic() {
   mic.key = "";
 }
 
-async function openMic(deviceId, key) {
+async function openMic(deviceId, key, channelCount = 2) {
   const engine = audioEngine;
   if (!engine?.audioContext) return; // no song open yet: nothing to measure on
   const token = ++mic.token;
@@ -238,7 +238,7 @@ async function openMic(deviceId, key) {
   notify();
   let res;
   try {
-    res = await openCapture(engine, { deviceId: deviceId || "", channelCount: 2 });
+    res = await openCapture(engine, { deviceId: deviceId || "", channelCount: Math.max(2, channelCount) });
   } catch (err) {
     res = { capture: null, reason: "unknown" };
     console.warn("[streamer] the input did not open:", err);
@@ -250,6 +250,10 @@ async function openMic(deviceId, key) {
   mic.pending = false;
   if (!res.capture) {
     mic.reason = res.reason || "unknown";
+    // Opened on an engine that went away meanwhile (the song reloaded: a
+    // take, the I play choice): not the input's fault; it opens again on
+    // the new one (reconcile clears a reason from another engine).
+    mic.reasonEngine = engine;
     mic.key = "";
     notify();
     return;
@@ -295,7 +299,7 @@ export function inputState() {
  * `audio`: the same for the input; `settings` sizes the camera.
  * While a studio take records, nothing is opened here ("recording").
  */
-export function reconcile({ camera, audio, settings }) {
+export function reconcile({ camera, audio, settings, audioChannelCount = 2 }) {
   const busy = isRecording();
   // Camera
   if (camera === null || camera === NONE) {
@@ -331,11 +335,15 @@ export function reconcile({ camera, audio, settings }) {
   } else {
     if (mic.reason === "recording") mic.reason = null;
     const key = `input:${audio}`; // never empty: an empty key means nothing is opening
+    if (mic.reason && mic.reasonEngine && mic.reasonEngine !== audioEngine) {
+      mic.reason = null;
+      mic.reasonEngine = null;
+    }
     // The song reloaded (a new engine, a new AudioContext): the input opens
     // again on the new one, or the meter and a take would hear nothing.
     if (mic.capture && (mic.capture.closed || mic.capture.ctx !== audioEngine?.audioContext)) releaseMic();
     if ((mic.capture && mic.deviceId !== audio) || (!mic.capture && mic.key && mic.key !== key)) releaseMic();
-    if (!mic.capture && !mic.key && !mic.reason && mayAsk.audio && checkCaptureSupport().ok) openMic(audio, key);
+    if (!mic.capture && !mic.key && !mic.reason && mayAsk.audio && checkCaptureSupport().ok) openMic(audio, key, audioChannelCount);
     else if (!checkCaptureSupport().ok && !mic.reason) mic.reason = checkCaptureSupport().reason;
   }
 }
