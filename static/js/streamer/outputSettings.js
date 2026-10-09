@@ -3,7 +3,7 @@
 //
 // RecordingSettings (stored per user in the app's store, sceneStore's
 // neighbour; deviceIds are per machine, which is where the store lives):
-//   { videoDeviceId, audioDeviceId, resolution, fps,
+//   { videoDeviceId, audioDeviceId, audioChannels, resolution, fps,
 //     recordMixedAudio, includeClick, autoStopAtEnd }
 // A device id of "" is the default device, NONE is "no camera" or "no audio
 // input". Nothing here touches the DOM or a device.
@@ -18,6 +18,9 @@ export function defaultRecordingSettings() {
   return {
     videoDeviceId: "",
     audioDeviceId: "",
+    // The input's channels ([0] Input 1, [1] Input 2, [0, 1] both), or null:
+    // not picked by hand (the first, moving to one with signal).
+    audioChannels: null,
     resolution: "1080",
     fps: 30,
     recordMixedAudio: true,
@@ -28,6 +31,8 @@ export function defaultRecordingSettings() {
 
 const idOf = (v) => (typeof v === "string" ? v.slice(0, 512) : "");
 const flag = (v, dflt) => (typeof v === "boolean" ? v : dflt);
+const channelsOf = (v) => (Array.isArray(v) && v.length >= 1 && v.length <= 2
+  && v.every((c) => Number.isInteger(c) && c >= 0 && c < 64) ? [...v] : null);
 
 /** Stored settings made safe: anything missing or wrong takes its default. */
 export function parseRecordingSettings(raw) {
@@ -40,6 +45,7 @@ export function parseRecordingSettings(raw) {
   return {
     videoDeviceId: idOf(data.videoDeviceId),
     audioDeviceId: idOf(data.audioDeviceId),
+    audioChannels: channelsOf(data.audioChannels),
     resolution: RESOLUTIONS.includes(String(data.resolution)) ? String(data.resolution) : d.resolution,
     fps: FRAME_RATES.includes(Number(data.fps)) ? Number(data.fps) : d.fps,
     ...fpsFor(data.resolution, data.fps),

@@ -244,6 +244,8 @@ html.streamer-open .daw-footer { display: none !important; }
   cursor: pointer;
 }
 .sm-rec-pill {
+  position: relative;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -616,7 +618,24 @@ html.streamer-open .daw-footer { display: none !important; }
   border-radius: 6px;
   background: #0b1422;
   overflow: hidden;
+  position: relative;
 }
+/* The take on the video lane: red while it records, then its frames. */
+.sm-tl-take {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  box-sizing: border-box;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, .25);
+  background-color: #1d3557;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+.sm-tl-take.live { background-color: rgba(229, 72, 77, .55); border-color: #ff6b70; }
+.sm-tl-take[hidden] { display: none; }
 .sm-tl-grip {
   flex: none;
   width: 12px;
@@ -855,9 +874,11 @@ html.streamer-open .daw-footer { display: none !important; }
   padding: 10px 10px 8px 0;
   overflow-y: auto;
 }
-.sm-out { flex: none; }
+/* The panel's one card (export to a file is the only way out for now):
+   it fills the panel, and the export sits at its foot. */
+.sm-out { flex: 1 0 auto; display: flex; flex-direction: column; }
 .sm-out-head { padding: 13px 16px; border-bottom: 1px solid var(--sm-line); font-size: 16px; font-weight: 600; }
-.sm-out-body { padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
+.sm-out-body { flex: 1 0 auto; padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
 .sm-flabel { font-size: 13px; font-weight: 500; color: var(--sm-text-2); }
 .sm-flabel + .sm-select, .sm-flabel + .sm-inp { margin-top: -3px; }
 /* The input meter: two rows of 36 segments (10 px in all), green to 70%,
@@ -913,20 +934,6 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-out-col .sm-flabel + .sm-select { margin-top: 0; }
 .sm-out-switches { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 
-.sm-yt {
-  flex: 1 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 13px 16px 14px;
-}
-.sm-yt-head { display: flex; align-items: center; gap: 12px; }
-.sm-yt-logo { flex: none; width: 30px; height: 21px; border-radius: 5px; background: #e5303a; display: inline-flex; align-items: center; justify-content: center; }
-.sm-yt-title { font-size: 16px; font-weight: 600; }
-.sm-yt-status { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 13px; }
-.sm-yt-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--sm-red); }
-.sm-yt-state { flex: 1; min-width: 0; color: var(--sm-text-2); }
-.sm-yt-connect { flex: none; height: 36px; padding: 0 14px; }
 .sm-inp {
   width: 100%;
   box-sizing: border-box;
@@ -939,15 +946,6 @@ html.streamer-open .daw-footer { display: none !important; }
   outline: none;
 }
 .sm-inp:focus { border-color: #6b5317; }
-.sm-yt-desc { height: 66px; resize: none; line-height: 1.45; }
-.sm-yt-count { align-self: flex-end; margin-top: -3px; font: 500 10.5px var(--font-mono); color: var(--sm-faint); }
-.sm-yt-count + .sm-flabel { margin-top: -8px; }
-.sm-yt-vis { width: 170px; }
-.sm-yt .sm-switch-row { padding: 1px 0; }
-.sm-yt-export { flex: none; height: 40px; font-size: 14px; gap: 8px; }
-.sm-yt-export[aria-disabled="true"] { cursor: default; }
-.sm-yt-export[aria-disabled="true"]:hover { background: var(--sm-button); }
-
 .sm-scrim { display: none; }
 
 /* No song open. */
@@ -1048,7 +1046,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-rec.recording .sm-rec-ring { border-color: #ff6b70; }
 .sm-rec.recording .sm-rec-dot { background: #ff4d55; animation: sm-rec-blink 1s steps(2, start) infinite; }
 @keyframes sm-rec-blink { to { visibility: hidden; } }
-.sm-export { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--sm-line); }
+.sm-export { display: flex; flex-direction: column; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--sm-line); }
 .sm-export[hidden] { display: none; }
 .sm-export-text { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--sm-text-2); overflow-wrap: break-word; }
 .sm-export-bar { width: 100%; height: 6px; accent-color: var(--sm-yellow); }
@@ -1056,9 +1054,15 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-export-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .sm-export-row .sm-ib { width: auto; height: 32px; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
 .sm-export-row [hidden] { display: none; }
-.sm-export-go { height: 32px; }
-.sm-yt-export:disabled { opacity: .45; cursor: default; }
+/* The primary action of the panel: full width, the yellow button. */
+.sm-export-go { flex: 1 1 100%; height: 40px; font-size: 14px; }
+.sm-export-go:disabled { opacity: .45; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .sm-rec.recording .sm-rec-dot { animation: none; }
 }
 .streamer:focus { outline: none; }
+
+/* The input level along the REC badge's bottom while a take records. */
+.sm-rec-level { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: #4ade80; transform: scaleX(0); transform-origin: left; pointer-events: none; }
+/* The empty take lane's hint: in its half of the stem row (the second lane). */
+.sm-tl-take-hint { position: absolute; left: 0; right: 0; bottom: 4px; height: calc(50% - 6px); display: flex; align-items: center; justify-content: center; z-index: 2; }

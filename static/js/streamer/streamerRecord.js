@@ -154,7 +154,7 @@ async function ensureTrack(jobId, name) {
  * `draw(ctx, width, height)` paints one output frame. Resolves
  * { ok: true } or { ok: false, reason }.
  */
-export async function startRecording({ jobId, capture, settings, aspect, range, trackName, draw, remove = "" }) {
+export async function startRecording({ jobId, capture, settings, aspect, range, trackName, draw, remove = "", channels = null }) {
   if (isTakeOpen(rec.state) || rec.state === "exporting") return { ok: false, reason: "busy" };
   const block = recordBlock();
   if (block) return { ok: false, reason: block };
@@ -178,7 +178,11 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
       if (!res.capture) throw Object.assign(new Error("no capture"), { code: res.reason || "unknown" });
       cap = res.capture;
     }
-    rec.recorder = cap.createRecorder(cap.channels >= 2 ? [0, 1] : [0]);
+    // The channels the musician chose (Input 1, Input 2 or both), as many as
+    // the device delivered; the silent capture has one.
+    const max = Math.max(1, cap.deviceChannels || cap.channels || 1);
+    const want = cap.silent ? [0] : (channels || [0]).filter((c) => c < max);
+    rec.recorder = cap.createRecorder(want.length ? want : [0]);
 
     // The picture: the scene at the output size, drawn before the first frame
     // is captured.
@@ -197,6 +201,9 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
     if (engine.isPlaying()) togglePlayPause();
     const from = startPoint(transport()?.getCurrentTime?.() ?? 0, range);
     setPlayheadTime(from);
+    // Where the take sits in the song (the take lane and its video block).
+    rec.recordedAt.from = from;
+    rec.recordedAt.to = from;
     rec.trackId = trackId;
     rec.session = startTake({
       engine,
@@ -215,6 +222,7 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
         // the song's end (which is expected, not worth a word).
         const at = transport()?.getCurrentTime?.() ?? 0;
         const dur = transport()?.getDuration?.() ?? 0;
+        if (rec.recordedAt) rec.recordedAt.to = at;
         rec.stopReason = why === "transport" && dur && at >= dur - 1 ? "end" : why;
       },
     });
@@ -244,6 +252,7 @@ export async function stopRecording() {
   }
   if (!rec.session || !isTakeOpen(rec.state)) return;
   rec.stopReason = rec.stopReason || "user";
+  if (rec.recordedAt && rec.state === "recording") rec.recordedAt.to = transport()?.getCurrentTime?.() ?? rec.recordedAt.to;
   set("stop");
   await rec.session.stop();
 }
@@ -318,7 +327,8 @@ export function takeInfo(takeId) {
   // `remove`: the part left out ("" the whole song; null for a take recorded
   // before Streamer had the choice).
   const removed = typeof v?.remove === "string" && ["", "drums", "bass", "guitar", "piano", "vocals"].includes(v.remove) ? v.remove : null;
-  const info = ok ? { aspect: v.aspect, resolution: String(v.resolution), fps: Number(v.fps), remove: removed } : null;
+  const span = (k) => (Number.isFinite(v?.[k]) && v[k] >= 0 ? v[k] : null);
+  const info = ok ? { aspect: v.aspect, resolution: String(v.resolution), fps: Number(v.fps), remove: removed, from: span("from"), to: span("to") } : null;
   takeInfos.set(takeId, info);
   return info;
 }

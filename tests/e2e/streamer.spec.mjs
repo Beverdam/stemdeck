@@ -212,12 +212,13 @@ test.describe("Streamer Mode", () => {
     await expect.poll(async () => (await savedScene(page))?.layers.find((l) => l.id === "lyrics").visible).toBe(false);
   });
 
-  test("Connect YouTube says it is coming soon", async ({ page }) => {
+  test("export to a file is the only way out: no upload card, Export MP4 waits for a take", async ({ page }) => {
     await openStudio(page);
     await openStreamer(page);
-    await sm(page, ".sm-yt-connect").click();
-    await expect(page.locator("#streamerNote")).toBeVisible();
-    await expect(page.locator("#streamerNote")).toHaveText("YouTube upload is coming soon.");
+    await expect(sm(page, ".sm-yt")).toHaveCount(0);
+    await expect(sm(page, ".sm-export-go")).toBeVisible();
+    await expect(sm(page, ".sm-export-go")).toBeDisabled();
+    await expect(sm(page, ".sm-export-text")).toHaveText("Record a take, then export it here as an MP4.");
   });
 });
 
@@ -714,5 +715,38 @@ test.describe("Streamer Mode fix pass", () => {
     await expect(sm(page, ".sm-export-go")).toBeEnabled({ timeout: 30000 });
     await sm(page, ".sm-aspect select").selectOption("9:16");
     await expect(sm(page, ".sm-export-text")).toContainText("16:9");
+  });
+});
+
+// The input a take records and the take lane (fix: the drums on an audio
+// interface were never recorded; the played part's lane showed the stem).
+test.describe("Streamer Mode input and take lane", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+  });
+
+  test("Audio Source lists the studio's inputs with their channels", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    const opts = await page.locator("#streamerAudioSrc option").evaluateAll((os) => os.map((o) => o.textContent));
+    expect(opts[0]).toBe("No audio input");
+    expect(opts.some((o) => /Input 1/.test(o))).toBe(true);
+  });
+
+  test("the played part's lane is empty until a take, never the stem's wave", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    const values = await page.locator("#streamerPart option").evaluateAll((os) => os.map((o) => o.value));
+    test.skip(!values.includes("drums"), "the test song has no drums stem");
+    await page.locator("#streamerPart").selectOption("drums");
+    await expect(sm(page, ".sm-tl-label-stem").nth(1)).toContainText("(you)");
+    await expect(sm(page, ".sm-tl-take-hint")).toBeVisible();
+    const ink = await ev(page, () => {
+      const c = document.querySelector("#streamer .sm-tl-lane-1");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
+      return false;
+    });
+    expect(ink).toBe(false);
   });
 });
