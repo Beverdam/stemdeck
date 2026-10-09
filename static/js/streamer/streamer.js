@@ -71,6 +71,7 @@ import {
   startRecording, stopRecording, drawOutput, recordState, takeOpen, onRecordChange, recordBlock,
   lastTake, streamerTrackId, markExport, takeInfo, forgetTake,
 } from "./streamerRecord.js";
+import { encoderNote } from "../videoEncoderNote.js";
 import { renderRequest, exportTake, cancelExport, saveRawRecording, rawRecordingType, canRevealSaved, revealSaved, forgetSaved } from "./streamerExport.js";
 import { shouldAutoStop, exportFileName, rawExtension } from "./recordModel.js";
 import { renderScene } from "./sceneRenderer.js";
@@ -2447,9 +2448,12 @@ async function runExport() {
     // Not saved (the save dialog was cancelled): back to ready, and Show in
     // folder does not point at an older file.
     markExport(res.saved ? "done" : "cancel");
-    exportNote = res.saved
-      ? t("streamer.export.saved")
-      : t("streamer.export.notSaved");
+    // Saved, with what made the video ("Encoded with NVIDIA GPU." or the
+    // GPU fallback sentence) when the server said.
+    const encoded = res.saved ? encoderNote(res, t) : "";
+    exportNote = !res.saved
+      ? t("streamer.export.notSaved")
+      : encoded ? t("streamer.export.savedWith", { note: encoded }) : t("streamer.export.saved");
   } catch (err) {
     console.warn("[streamer] export failed:", err);
     if (err?.code === "cancelled") {

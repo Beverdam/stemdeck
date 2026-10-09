@@ -32,8 +32,10 @@ from app.core.config import (
     EXPORT_LIMIT_DBFS,
     EXPORT_LIMIT_LOSSY_DBTP,
     TIMEOUT_FFMPEG,
+    VIDEO_CPU_ENCODER,
     ffmpeg_executable,
 )
+from app.pipeline import video_encoder
 
 logger = logging.getLogger("stemdeck.takes")
 
@@ -91,7 +93,15 @@ def export_limiter(lossy: bool) -> str:
 
 
 class TakeRenderError(RuntimeError):
-    """ffmpeg failed. The message is for the log, never for the client."""
+    """ffmpeg failed. The message is for the log, never for the client.
+
+    `code` says how, for the GPU fallback's reason: "exit" (ffmpeg failed),
+    "timeout", "stall" (no progress), or "invalid-<check>" (the file failed
+    video_encoder.validate_output)."""
+
+    def __init__(self, message: str, code: str = "exit") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def write_float_wav_header(fh, data_bytes: int, rate: int, channels: int) -> None:
@@ -370,6 +380,8 @@ def build_video_render_cmd(
     alt_aac: bool = False,
     size: str = "1080",
     fps: int = VIDEO_FPS,
+    encoder: str = VIDEO_CPU_ENCODER,
+    encoder_variant: int = 0,
 ) -> list[str]:
     """One ffmpeg command: backing mix + take audio + one camera tile -> MP4.
 
@@ -394,10 +406,18 @@ def build_video_render_cmd(
 
     `size` (720, 1080, 2160: the canvas's short side) and `fps` (24, 30, 60)
     are Streamer Mode's output choices; the defaults are the camera take's
-    1080p at 30 fps."""
+    1080p at 30 fps.
+
+    `encoder` is libx264 (the default, its arguments exactly as they always
+    were) or a GPU encoder from app/pipeline/video_encoder.py with the
+    argument set `encoder_variant` its probe passed with. Only the last
+    format filter and the codec arguments change; the graph stays on the CPU."""
     width, height = canvas_size(canvas, size)
     if fps not in VIDEO_FPS_CHOICES:
         raise ValueError(f"unsupported frame rate {fps}")
+    gpu = encoder != VIDEO_CPU_ENCODER
+    if gpu and not video_encoder.is_gpu_encoder(encoder):
+        raise ValueError(f"unknown encoder {encoder}")
     start_sample = max(0, int(round(start_sec * TAKE_RATE)))
     start_sec = start_sample / TAKE_RATE
     # In seconds, not samples, so a lane at another rate is cut at the same
@@ -405,6 +425,8 @@ def build_video_render_cmd(
     # nearest sample, and a sample is 22.7 microseconds).
     cut = f"atrim=start={start_sec:.6f},asetpts=PTS-STARTPTS," if start_sample else ""
     cmd: list[str] = [ffmpeg_executable(), "-nostdin", "-loglevel", "error"]
+    if gpu:
+        cmd += video_encoder.global_args(encoder)
     for lane in lanes:
         cmd += ["-i", str(lane.path)]
     take_idx = len(lanes)
@@ -432,7 +454,8 @@ def build_video_render_cmd(
     )
     # eof_action=pass: once the camera ends the black canvas carries on, so
     # the video always has its full length and never freezes on a last frame.
-    filters.append(f"[bg][cam]overlay=eof_action=pass:shortest=0,fps={fps},format=yuv420p[vout]")
+    out_format = video_encoder.output_filter(encoder) if gpu else "format=yuv420p"
+    filters.append(f"[bg][cam]overlay=eof_action=pass:shortest=0,fps={fps},{out_format}[vout]")
     cmd += [
         "-filter_complex",
         ";".join(filters),
@@ -440,18 +463,12 @@ def build_video_render_cmd(
         "[vout]",
         "-map",
         "[aout]",
-        "-c:v",
-        "libx264",
-        # 4K (Streamer Mode's 2160 output) has four times the pixels of 1080p:
-        # at x264's default preset ("medium") a song-length render takes many
-        # minutes and holds the pipeline lock all that time. "veryfast" cuts
-        # that several times over for a slightly larger file at the same crf.
-        # 720p and 1080p keep the default, as before.
-        *(["-preset", "veryfast"] if min(width, height) >= 2160 else []),
-        "-crf",
-        "20",
-        "-pix_fmt",
-        "yuv420p",
+    ]
+    if gpu:
+        cmd += video_encoder.encoder_args(encoder, width, height, fps, encoder_variant)
+    else:
+        cmd += libx264_args(width, height)
+    cmd += [
         "-r",
         str(fps),
         *(AAC_ENCODE_ARGS_ALT if alt_aac else AAC_ENCODE_ARGS),
@@ -466,6 +483,25 @@ def build_video_render_cmd(
         "+faststart",
     ]
     return cmd
+
+
+def libx264_args(width: int, height: int) -> list[str]:
+    """The CPU encode's video arguments, unchanged since before the GPU path
+    (a golden test holds them to the byte)."""
+    return [
+        "-c:v",
+        "libx264",
+        # 4K (Streamer Mode's 2160 output) has four times the pixels of 1080p:
+        # at x264's default preset ("medium") a song-length render takes many
+        # minutes and holds the pipeline lock all that time. "veryfast" cuts
+        # that several times over for a slightly larger file at the same crf.
+        # 720p and 1080p keep the default, as before.
+        *(["-preset", "veryfast"] if min(width, height) >= 2160 else []),
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+    ]
 
 
 class RenderCancelled(Exception):
@@ -495,13 +531,21 @@ def run_video_render(
     report: Callable[[float], None],
     on_proc: Callable[[subprocess.Popen | None], None],
     timeout: int,
+    check: Callable[[Path], None] | None = None,
+    stall_timeout: float | None = None,
 ) -> None:
     """Run the render to a temp file beside `dest`, reporting progress from
     ffmpeg's -progress stream, then rename it into place. Blocking.
 
     Raises RenderCancelled when `cancelled()` turns true (polled about every
     half second), TakeRenderError on any ffmpeg failure or timeout. Never
-    leaves a partial file at `dest`."""
+    leaves a partial file at `dest`.
+
+    A GPU render also passes `check` (video_encoder.validate_output on the
+    finished temp file, before it is trusted; its OutputInvalid becomes a
+    TakeRenderError "invalid-<check>") and `stall_timeout`: a render whose
+    progress has not moved for that long is killed ("stall"). The CPU render
+    passes neither and runs exactly as before."""
     tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.tmp.mp4")
     full = [*cmd, "-progress", "pipe:1", "-nostats", "-f", "mp4", "-y", str(tmp)]
     proc = subprocess.Popen(  # noqa: S603 -- list args, no shell, trusted ffmpeg
@@ -523,6 +567,9 @@ def run_video_render(
     drain = threading.Thread(target=drain_stderr, daemon=True)
     drain.start()
     stop = threading.Event()
+    # Monotonic time of the last forward step of out_time, for the stall check.
+    moved = [time.monotonic(), -1]
+    killed_for: list[str] = []
 
     def watchdog() -> None:
         # Cancellation and the overall timeout, checked off the reading
@@ -530,7 +577,11 @@ def run_video_render(
         # slow encode, and a blocked readline must not delay either.
         deadline = time.monotonic() + timeout
         while not stop.wait(0.5):
-            if cancelled() or time.monotonic() > deadline:
+            now = time.monotonic()
+            stalled = stall_timeout is not None and now - moved[0] > stall_timeout
+            if cancelled() or now > deadline or stalled:
+                if not cancelled():
+                    killed_for.append("stall" if stalled and now <= deadline else "timeout")
                 if proc.poll() is None:
                     proc.kill()
                 return
@@ -543,6 +594,8 @@ def run_video_render(
             key, _, value = line.strip().partition("=")
             # out_time_us is microseconds; out_time_ms is too, despite its name.
             if key == "out_time_us" and value.lstrip("-").isdigit() and duration_sec > 0:
+                if int(value) > moved[1]:
+                    moved[0], moved[1] = time.monotonic(), int(value)
                 report(max(0.0, min(0.99, int(value) / 1e6 / duration_sec)))
         proc.wait()
         drain.join(timeout=5)
@@ -550,8 +603,18 @@ def run_video_render(
             raise RenderCancelled()
         if proc.returncode != 0:
             raise TakeRenderError(
-                f"video render exit {proc.returncode}: " + " | ".join(list(stderr_tail)[-8:])
+                f"video render exit {proc.returncode}: " + " | ".join(list(stderr_tail)[-8:]),
+                killed_for[0] if killed_for else "exit",
             )
+        if check is not None:
+            try:
+                check(tmp)
+            except video_encoder.OutputInvalid as exc:
+                if cancelled():
+                    raise RenderCancelled() from None
+                raise TakeRenderError(f"video check failed: {exc}", f"invalid-{exc.code}") from None
+            if cancelled():
+                raise RenderCancelled()
         os.replace(tmp, dest)
         ok = True
         report(1.0)

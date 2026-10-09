@@ -17,6 +17,7 @@ import { takeStemsFromJob } from "./capture/takeLanes.js";
 import { notifyFailure, setReleasePending, dismissFailuresByJobId, dismissFailuresByKind } from "./notifications.js";
 // Aliased (not the bare "t") -- this file already uses "t"/"tr" as local
 // variable names for track objects and table rows in several scopes.
+import { wireVideoEncoderSetting } from "./videoEncoderSettings.js";
 import { t as i18nT, plural as i18nPlural, LANGUAGES, getLanguage, setLanguage, onLanguageChange, applyTranslations } from "./i18n.js";
 
 // Escape user-supplied strings before inserting into innerHTML.
@@ -5033,6 +5034,24 @@ function openLibraryEditor() {
             </select>
           </div>
         </div>
+        <div class="settings-section video-encoder-section">
+          <div class="settings-row">
+            <div class="settings-row-text">
+              <div class="settings-row-title" data-i18n="settings.export.encoder.title">Video encoder</div>
+              <div class="settings-row-desc set-video-encoder-desc" data-i18n="settings.export.encoder.desc">Encoder for the Streamer MP4 export. Auto uses a GPU encoder that passed a test on this computer, else the CPU. A GPU file that fails its check is made again on the CPU.</div>
+            </div>
+            <select class="settings-select settings-select-wide set-video-encoder" aria-label="Video encoder" data-i18n-aria-label="settings.export.encoder.title">
+              <option value="auto" data-i18n="settings.export.encoder.auto">Auto</option>
+              <option value="cpu" data-i18n="settings.export.encoder.cpu">CPU only</option>
+            </select>
+          </div>
+          <div class="video-encoder-actions">
+            <button class="settings-registry-refresh video-encoder-test" type="button" data-i18n="settings.export.encoder.test">Test encoders</button>
+            <button class="settings-registry-refresh video-encoder-copy" type="button" data-i18n="settings.export.encoder.copy" hidden>Copy</button>
+            <span class="settings-row-desc video-encoder-status" role="status"></span>
+          </div>
+          <div class="library-editor-table-wrap video-encoder-table-wrap" hidden></div>
+        </div>
       </div>
       <!-- Filled by static/js/capture/recordingSettings.js the first time the tab opens. -->
       <div class="settings-pane hidden" data-pane="recording"></div>
@@ -5147,6 +5166,7 @@ function openLibraryEditor() {
   const isDesktop = Boolean(window.__TAURI__?.core?.invoke);
   wireLanguageSetting(overlay);
   wireGeneralSettings(overlay);
+  wireVideoEncoderSetting(overlay, showError);
   wireAcoustidSetting(overlay);
   wireDiscogsSetting(overlay);
   wireStemsLocation(overlay);
