@@ -87,9 +87,11 @@ from app.core.config import (
     TAKE_SLACK_SEC,
     TAKES_DIRNAME,
     TIMEOUT_FILMSTRIP,
+    TIMEOUT_VIDEO_GPU_STALL,
     TIMEOUT_VIDEO_RENDER,
     TRACK_ID_RE,
     TRACK_MAX_PER_JOB,
+    VIDEO_CPU_ENCODER,
     ffmpeg_executable,
     ffprobe_executable,
 )
@@ -106,6 +108,7 @@ from app.core.takes import (
     take_entry,
     write_tracks,
 )
+from app.pipeline import video_encoder
 from app.pipeline.collect import merge_stem_peaks
 from app.pipeline.runner import _pipeline_lock
 from app.pipeline.take_render import (
@@ -1209,12 +1212,30 @@ async def get_take_filmstrip_image(job_id: str, take_id: str) -> FileResponse:
 
 
 @dataclass
+class _GpuPlan:
+    """What a GPU attempt needs: the command for (trim_db, alt_aac, encoder,
+    variant), and the geometry the encoder is probed and checked at."""
+
+    build: Any  # Callable[[float, bool, str, int], list[str]]
+    width: int
+    height: int
+    fps: int
+
+
+@dataclass
 class _RenderRun:
     status: str = "queued"  # queued | running | done | error
     progress: float = 0.0
     error: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
     proc: subprocess.Popen | None = None
+    # The encoder that made (or is making) the file, and why a GPU attempt
+    # was given up for libx264 ("exit", "stall", "timeout", "invalid-<check>"),
+    # else None. `gpu` is None for a render that never tries the GPU.
+    encoder: str | None = None
+    variant: int = 0
+    fallback: str | None = None
+    gpu: _GpuPlan | None = None
 
 
 _renders: dict[tuple[str, str], _RenderRun] = {}
@@ -1264,11 +1285,24 @@ def cancel_job_renders(job_id: str) -> None:
 def _render_view(job_id: str, take_id: str, folder: Path) -> dict[str, Any]:
     run = _renders.get((job_id, take_id))
     url = f"/api/jobs/{job_id}/takes/{take_id}/render.mp4"
+    # What made the file: known while this process remembers the run (the
+    # Streamer's "Encoded with" note reads it right after the export).
+    made = {
+        "encoder": run.encoder if run is not None else None,
+        "fallback": bool(run is not None and run.fallback),
+        "fallback_reason": run.fallback if run is not None else None,
+    }
     if run is not None and run.status != "done":
-        return {"status": run.status, "progress": run.progress, "error": run.error, "url": None}
+        return {
+            "status": run.status,
+            "progress": run.progress,
+            "error": run.error,
+            "url": None,
+            **made,
+        }
     if (folder / _RENDER_FILE).is_file():
-        return {"status": "done", "progress": 1.0, "error": None, "url": url}
-    return {"status": "none", "progress": 0.0, "error": None, "url": None}
+        return {"status": "done", "progress": 1.0, "error": None, "url": url, **made}
+    return {"status": "none", "progress": 0.0, "error": None, "url": None, **made}
 
 
 class RenderBody(BaseModel):
@@ -1455,10 +1489,11 @@ class _MasterRetry(NamedTuple):
     ceiling: float
 
 
-async def _verify_master(run_cmd, retry: _MasterRetry, dest: Path, job_id: str) -> None:
+async def _verify_master(render, retry: _MasterRetry, dest: Path, job_id: str) -> None:
     """Decode the rendered video's audio and render again, trimmed or with
     the alternative AAC coder, while it is over the master's ceiling (the
-    rule of stems._render_master_verified)."""
+    rule of stems._render_master_verified). `render(trim_db, alt_aac)` makes
+    the file again with the render's encoder (and its CPU fallback)."""
     trim, alt = 0.0, False
     for attempt in range(stems_api.LOSSY_RETRIES + 1):
         try:
@@ -1479,7 +1514,7 @@ async def _verify_master(run_cmd, retry: _MasterRetry, dest: Path, job_id: str) 
             alt = True
         else:
             trim += out.tp - retry.ceiling + stems_api.LOSSY_RETRY_MARGIN_DB
-        await run_cmd(retry.build(trim, alt))
+        await render(trim, alt)
 
 
 async def _render_task(
@@ -1499,6 +1534,7 @@ async def _render_task(
     def on_proc(proc: subprocess.Popen | None) -> None:
         run.proc = proc
 
+    gpu = run.gpu
     try:
         # Behind the pipeline lock like every other heavy on-demand run: an
         # x264 encode and a Demucs pass on the same CPU slow each other down
@@ -1507,8 +1543,22 @@ async def _render_task(
             if cancelled():
                 raise RenderCancelled()
             run.status = "running"
+            run.encoder = VIDEO_CPU_ENCODER
+            if gpu is not None:
+                # May run a 2 s test encode (cached afterwards, see
+                # video_encoder.probe); never raises.
+                choice = await asyncio.to_thread(
+                    video_encoder.choose, gpu.width, gpu.height, gpu.fps
+                )
+                run.encoder, run.variant = choice.encoder, choice.variant
+                logger.info(
+                    "[%s] video render encoder %s%s",
+                    job.id,
+                    choice.encoder,
+                    f" ({choice.reason})" if choice.reason else "",
+                )
 
-            async def run_cmd(c: list[str]) -> None:
+            async def run_cmd(c: list[str], check: Any = None, stall: float | None = None) -> None:
                 await asyncio.to_thread(
                     run_video_render,
                     c,
@@ -1518,11 +1568,56 @@ async def _render_task(
                     report=report,
                     on_proc=on_proc,
                     timeout=TIMEOUT_VIDEO_RENDER,
+                    check=check,
+                    stall_timeout=stall,
                 )
 
-            await run_cmd(cmd)
+            async def render(trim: float = 0.0, alt: bool = False) -> None:
+                """One render at (trim, alt): on the GPU encoder while it
+                holds, else (or after it failed) the CPU command, which is
+                exactly the one this render had before the GPU path."""
+                if gpu is not None and run.encoder != VIDEO_CPU_ENCODER:
+                    encoder = run.encoder
+
+                    def check(path: Path) -> None:
+                        video_encoder.validate_output(
+                            path,
+                            gpu.width,
+                            gpu.height,
+                            gpu.fps,
+                            duration,
+                            encoder,
+                            cancelled=cancelled,
+                            on_proc=on_proc,
+                        )
+
+                    try:
+                        await run_cmd(
+                            gpu.build(trim, alt, encoder, run.variant),
+                            check=check,
+                            stall=TIMEOUT_VIDEO_GPU_STALL,
+                        )
+                        return
+                    except TakeRenderError as exc:
+                        # The temp file is already gone (run_video_render).
+                        logger.warning(
+                            "[%s] GPU render with %s failed (%s), rendering on the CPU: %s",
+                            job.id,
+                            encoder,
+                            exc.code,
+                            exc,
+                        )
+                        await asyncio.to_thread(video_encoder.record_failure, encoder, exc.code)
+                        run.encoder, run.fallback = VIDEO_CPU_ENCODER, exc.code
+                        run.progress = 0.0
+                if trim == 0.0 and not alt:
+                    await run_cmd(cmd)
+                elif retry is not None:
+                    await run_cmd(retry.build(trim, alt))
+
+            await render()
             if retry is not None:
-                await _verify_master(run_cmd, retry, dest, job.id)
+                await _verify_master(render, retry, dest, job.id)
         run.status = "done"
         run.progress = 1.0
     except RenderCancelled:
@@ -1544,9 +1639,10 @@ async def _prepare_render(
     body: RenderBody,
     camera: Path,
     audio: _RenderAudio,
-) -> tuple[list[str], float, _MasterRetry | None, list[AudioLane], float]:
-    """The render's command, length, master retry, lanes and start, from the
-    take's sidecar and the request (the slow part of start_render)."""
+) -> tuple[list[str], float, _MasterRetry | None, list[AudioLane], float, _GpuPlan]:
+    """The render's command, length, master retry, lanes, start and GPU plan,
+    from the take's sidecar and the request (the slow part of start_render).
+    `cmd` is the CPU (libx264) command; the GPU plan builds the others."""
     sidecar = await asyncio.to_thread(_read_json, folder / _SIDECAR_FILE)
     video = sidecar.get("video") or {}
     offset_ms = (
@@ -1602,7 +1698,12 @@ async def _prepare_render(
         )
         master_chain = stems_api.plan_chain(plan, rate_in)
 
-    def make_cmd(trim_db: float = 0.0, alt_aac: bool = False) -> list[str]:
+    def make_cmd(
+        trim_db: float = 0.0,
+        alt_aac: bool = False,
+        encoder: str = VIDEO_CPU_ENCODER,
+        variant: int = 0,
+    ) -> list[str]:
         return build_video_render_cmd(
             lanes,
             folder / "audio.wav",
@@ -1622,12 +1723,16 @@ async def _prepare_render(
             alt_aac=alt_aac,
             size=body.size,
             fps=body.fps,
+            encoder=encoder,
+            encoder_variant=variant,
         )
 
     cmd = make_cmd()
     if master_settings is not None:
         retry = _MasterRetry(make_cmd, master_settings.ceiling)
-    return cmd, duration, retry, lanes, start
+    width, height = canvas_size(body.canvas, body.size)
+    gpu = _GpuPlan(make_cmd, width, height, body.fps)
+    return cmd, duration, retry, lanes, start, gpu
 
 
 @router.post("/{job_id}/takes/{take_id}/render", status_code=202)
@@ -1673,7 +1778,7 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
         # gets the same 409, and Cancel (or a delete) can reach it.
         _renders[key] = run
     try:
-        cmd, duration, retry, lanes, start = await _prepare_render(
+        cmd, duration, retry, lanes, start, run.gpu = await _prepare_render(
             job_id, take_id, folder, body, camera, audio
         )
     except BaseException:

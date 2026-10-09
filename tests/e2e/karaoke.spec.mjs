@@ -71,7 +71,7 @@ test.describe("Karaoke Mode", () => {
     await stubLyrics(page);
   });
 
-  test("Original, the backing track, is a card and plays; the voice is off", async ({ page }) => {
+  test("Original is the Backing track card and plays; the voice is off", async ({ page }) => {
     await withOriginal(page);
     await openStudio(page);
     await openKaraoke(page);
@@ -80,7 +80,7 @@ test.describe("Karaoke Mode", () => {
     const names = (await cardsOf(page)).map((c) => c.split(":")[0]);
     expect(names).toEqual(["original", "vocals"]);
     await expect(kk(page, ".kk-stem-row .kk-switch")).toHaveCount(1);
-    await expect(kk(page, '.kk-stem[data-stem="original"] .kk-stem-label')).toHaveText("Original");
+    await expect(kk(page, '.kk-stem[data-stem="original"] .kk-stem-label')).toHaveText("Backing track");
     const mix = await mixOf(page);
     expect(mix.original).toBe("--");
     expect(mix.vocals[0]).toBe("M");

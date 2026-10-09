@@ -336,6 +336,10 @@ async def test_render_places_the_camera_and_writes_a_faststart_mp4(
             "progress": 1.0,
             "error": None,
             "url": f"/api/jobs/{JOB}/takes/{tid}/render.mp4",
+            # What made the video (the suite runs with the CPU kill switch).
+            "encoder": "libx264",
+            "fallback": False,
+            "fallback_reason": None,
         }
         dl = await c.get(view["url"])
     assert dl.status_code == 200 and dl.headers["content-type"] == "video/mp4"

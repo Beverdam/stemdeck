@@ -610,6 +610,10 @@ test.describe("Streamer Mode polish", () => {
     const sel = page.locator("#streamerPart");
     const values = await sel.locator("option").evaluateAll((os) => os.map((o) => o.value));
     expect(values[0]).toBe("");
+    // Keys and Voice, the instrument families, not the stem names Piano and Vocals.
+    const texts = await sel.locator("option").evaluateAll((os) => Object.fromEntries(os.map((o) => [o.value, o.textContent])));
+    if ("piano" in texts) expect(texts.piano).toBe("Keys");
+    if ("vocals" in texts) expect(texts.vocals).toBe("Voice");
     test.skip(!values.includes("drums"), "the test song has no drums stem");
     await sel.selectOption("drums");
     await expect.poll(() => ev(page, async () => [...(await import("/js/player.js")).playbackExclusion().names])).toContain("drums");

@@ -45,8 +45,10 @@ export function renderRequest({ trackId, settings, aspect, range, remove = "" })
 }
 
 /**
- * Render and save. Resolves { saved: true|false } (false: the save dialog
- * was cancelled). Rejects with an Error whose `code` is "no-encoder" (offer
+ * Render and save. Resolves { saved: true|false, encoder, fallback } (saved
+ * false: the save dialog was cancelled; encoder: what made the video, e.g.
+ * "h264_nvenc" or "libx264"; fallback: a GPU attempt failed and the CPU made
+ * it). Rejects with an Error whose `code` is "no-encoder" (offer
  * the raw recording), "cancelled", or "failed".
  * `onProgress(fraction)`, `onTransferStart()` as triggerDownload's.
  */
@@ -84,7 +86,11 @@ export async function exportTake({ jobId, takeId, body, filename, onProgress, on
   const saved = await triggerDownload(url, filename, onTransferStart);
   // The desktop app's save token: Show in folder reveals this file only.
   if (typeof saved === "string") savedToken = saved;
-  return { saved: saved !== false };
+  return {
+    saved: saved !== false,
+    encoder: typeof status?.encoder === "string" ? status.encoder : null,
+    fallback: Boolean(status?.fallback),
+  };
 }
 
 let savedToken = null;

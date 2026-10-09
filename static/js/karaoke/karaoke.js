@@ -986,7 +986,7 @@ function paintStems() {
     const card = ui.stemCards.get(name);
     if (!card) continue;
     const on = !mixerState[name]?.muted;
-    const label = laneLabel(name);
+    const label = cardLabel(name);
     card.root.classList.toggle("on", on);
     card.root.classList.toggle("off", !on);
     card.toggle.setAttribute("aria-checked", String(on));
@@ -997,13 +997,20 @@ function paintStems() {
   }
 }
 
+/** A card's name: Original is what plays under the singer, so Karaoke calls it
+ * the backing track, the same words as Streamer's lane. Elsewhere it stays
+ * Original. */
+function cardLabel(name) {
+  return name === "original" ? t("streamer.backingTrack") : laneLabel(name);
+}
+
 function stemCard(name) {
   const root = el("div", "kk-stem");
   root.dataset.stem = name;
   root.style.setProperty("--kk-stem", STEM_COLORS[name] || "#9aa3ad");
   const iconBox = el("span", "kk-stem-icon");
   iconBox.append(icon(ICONS[STEM_ICON[name] || "other"], { size: 22, width: 1.9 }));
-  const label = el("span", "kk-stem-label", laneLabel(name));
+  const label = el("span", "kk-stem-label", cardLabel(name));
   const toggle = button("kk-switch", null);
   toggle.setAttribute("role", "switch");
   toggle.append(el("span", "kk-knob"));

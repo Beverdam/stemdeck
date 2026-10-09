@@ -1194,6 +1194,11 @@ input, textarea { font-family: inherit; }
 /* Settings → registry (read-only viewer) */
 .settings-registry-refresh { flex-shrink: 0; min-height: 28px; border-radius: 6px; border: 1px solid var(--border-strong); background: rgba(10,17,24,0.6); color: var(--fg-2); font-family: var(--font-mono); font-size: 11px; padding: 0 12px; cursor: pointer; }
 .settings-registry-refresh:hover { color: var(--fg); border-color: rgba(148,163,184,0.4); }
+/* Settings > Export > Video encoder: the Test and Copy buttons, and the result table. */
+.video-encoder-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.video-encoder-actions .settings-row-desc { margin-top: 0; }
+.video-encoder-table-wrap { flex: none; margin-top: 10px; overflow-x: auto; }
+.video-encoder-table td.is-ok { color: var(--take); }
 .settings-registry-view {
   flex: 1; min-height: 0; margin-top: 10px; resize: none;
   background: rgba(10,17,24,0.5); border: 1px solid var(--border); border-radius: 7px;

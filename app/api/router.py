@@ -15,6 +15,7 @@ from app.api.search import router as search_router
 from app.api.stems import router as stems_router
 from app.api.suggest import router as suggest_router
 from app.api.takes import router as takes_router
+from app.api.video_encoders import router as video_encoders_router
 
 router = APIRouter()
 router.include_router(config_router, tags=["config"])
@@ -30,3 +31,4 @@ router.include_router(queue_router, prefix="/queue", tags=["queue"])
 router.include_router(playlist_router, prefix="/playlist", tags=["playlist"])
 router.include_router(search_router, prefix="/search", tags=["search"])
 router.include_router(discogs_router, prefix="/discogs", tags=["discogs"])
+router.include_router(video_encoders_router, tags=["settings"])
