@@ -346,6 +346,27 @@ html.karaoke-open .daw-footer { display: none !important; }
 .kk-joined .kk-sq:first-child { border-radius: 8px 0 0 8px; }
 .kk-joined .kk-sq:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
 
+/* The Stems label and, at its right, the voice form toggle (karaoke.js
+   buildVoiceToggle): Backing vocals in the voice, or separate. */
+.kk-stems-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.kk-voice { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.kk-voice[hidden] { display: none; }
+.kk-voice-label { font-size: 11px; color: var(--kk-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.kk-voice-seg { display: flex; flex: none; border: 1px solid var(--kk-strong); border-radius: 7px; overflow: hidden; }
+.kk-voice-btn {
+  padding: 3px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--kk-muted);
+  font: 500 11.5px var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.kk-voice-btn + .kk-voice-btn { border-left: 1px solid var(--kk-strong); }
+.kk-voice-btn.on { background: var(--kk-card); color: var(--kk-yellow); font-weight: 600; }
+.kk-voice-btn:hover:not(:disabled):not(.on) { color: var(--kk-text); }
+.kk-voice-btn:disabled { opacity: .55; cursor: default; }
+.kk-voice-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .kk-stem-row { display: flex; gap: 8px; height: 64px; }
 .kk-stem {
   flex: 1 1 0;

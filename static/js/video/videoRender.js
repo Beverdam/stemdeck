@@ -53,6 +53,8 @@ export async function requestRender(jobId, takeId, {
   // Omitted when nothing is transposed, so a build without rubberband can
   // still render an untransposed song.
   if (mix?.pitches?.some((p) => p !== 0)) body.pitches = mix.pitches;
+  // The mode's own lanes (player.js _exportLanes): Original as playback built it.
+  if (Array.isArray(mix?.lanes)) body.lanes = mix.lanes;
   // The lanes' EQs (eqEngine.exportFxParam), only when one changes the sound.
   // The take gets its track's EQ on the server.
   if (fx) body.fx = fx;

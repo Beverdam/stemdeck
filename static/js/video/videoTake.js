@@ -457,7 +457,7 @@ function _takeRow(jobId, take, signal, songTitle) {
       // puts on the take.
       const fx = exportFxParam(take.track_id ? [...names, take.track_id] : names);
       await requestRender(jobId, take.id, {
-        cameraOffsetMs: offset, mix: { names, gains, pitches }, takeGain, span: span.value, fx,
+        cameraOffsetMs: offset, mix: { names, gains, pitches, lanes: lanes.lanes }, takeGain, span: span.value, fx,
         master: exportMasterParam(),
       });
     } catch (err) {

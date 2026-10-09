@@ -38,6 +38,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.api.stems import (
     _DISCONNECT_POLL_SEC,
     _MIXDOWN_NAMES,
+    LANES_PARAM_MAX_CHARS,
+    LANES_QUERY_DESCRIPTION,
     _expand_render_lanes,
     _is_recorded_lane,
     _lane_chain,
@@ -49,6 +51,7 @@ from app.api.stems import (
     _validate_stem_path,
     build_render_fx,
     parse_fx_query,
+    parse_lanes_param,
 )
 from app.core.config import CACHE_DIR, JOB_ID_RE, TIMEOUT_FFMPEG, ffmpeg_executable
 from app.pipeline.eq_analysis import (
@@ -307,6 +310,9 @@ async def suggest_master(
     fx: str = Query(default="", max_length=FX_PARAM_MAX_CHARS, description="As for mixdown"),
     target: str = Query(default="", max_length=40, description="Target id; default balanced"),
     mode: str = Query(default="replace", max_length=16, description="replace or merge"),
+    lanes: str | None = Query(
+        default=None, max_length=LANES_PARAM_MAX_CHARS, description=LANES_QUERY_DESCRIPTION
+    ),
 ) -> dict:
     """Measure the mix (as the export sums it, before the master EQ) and
     suggest master EQ bands and a loudness preset."""
@@ -325,7 +331,9 @@ async def suggest_master(
             status_code=422,
             detail="this ffmpeg build cannot transpose (no rubberband filter)",
         )
-    render_lanes, _unpitched = _expand_render_lanes(job_id, names, parsed_gains, parsed_pitches)
+    render_lanes, _unpitched = _expand_render_lanes(
+        job_id, names, parsed_gains, parsed_pitches, lanes=parse_lanes_param(lanes)
+    )
     paths = [lane.path for lane in render_lanes]
     # The lanes' EQ is part of the mix; the master EQ is what is suggested.
     lanes_only = FxRequest(lanes=fx_req.lanes)

@@ -201,41 +201,46 @@ def _mixdown_cache_key(
     lane_versions: list[str] | None = None,
     fx_fragment: str = "",
     master_fragment: str = "",
+    lanes_fragment: str = "",
 ) -> str:
     """Every render input is in the key, so a different mixer state, region,
     or a Settings change (export sample rate) misses cleanly -- never a stale
     hit. Stems are immutable once a job reaches "done", so job_id alone pins
     the underlying audio; gains are formatted to match the %.6f precision
     already used in the ffmpeg volume filter, so cosmetically-different but
-    ffmpeg-equivalent gain strings (e.g. "1" vs "1.0") share a cache entry."""
-    raw = "|".join(
-        [
-            _RENDER_CACHE_VERSION,
-            job_id,
-            ext,
-            ",".join(names),
-            ",".join(f"{g:.6f}" for g in gains),
-            "" if start is None else f"{start:.6f}",
-            "" if end is None else f"{end:.6f}",
-            str(get_export_sample_rate()),
-            # The click's own cache key already encodes the grid, rate and
-            # accent mode, so its filename plus gain fully identifies it.
-            "" if click_lane is None else f"{click_lane[0].name}:{click_lane[1]:.6f}",
-            # Appended only when something is actually transposed, so every
-            # export made before #592 keeps the exact key it already had and
-            # the cache survives the change.
-            "" if not (pitches and any(pitches)) else "p" + ",".join(str(p) for p in pitches),
-            # A take is not immutable like a stem: a nudge re-renders its
-            # audio.wav under the same name. Its size and mtime pin the file
-            # the render read, so a nudged take misses the cache.
-            ",".join(lane_versions or []),
-            # The EQ as the exact filter strings the render runs (RenderFx),
-            # empty when no EQ changes the sound.
-            fx_fragment,
-            # The master chain with its measured gain, empty when off.
-            master_fragment,
-        ]
-    )
+    ffmpeg-equivalent gain strings (e.g. "1" vs "1.0") share a cache entry.
+
+    `lanes_fragment` (the mode's lanes, which decide what Original holds) is
+    appended only when given, so every key made before lanes= is unchanged."""
+    parts = [
+        _RENDER_CACHE_VERSION,
+        job_id,
+        ext,
+        ",".join(names),
+        ",".join(f"{g:.6f}" for g in gains),
+        "" if start is None else f"{start:.6f}",
+        "" if end is None else f"{end:.6f}",
+        str(get_export_sample_rate()),
+        # The click's own cache key already encodes the grid, rate and
+        # accent mode, so its filename plus gain fully identifies it.
+        "" if click_lane is None else f"{click_lane[0].name}:{click_lane[1]:.6f}",
+        # Appended only when something is actually transposed, so every
+        # export made before #592 keeps the exact key it already had and
+        # the cache survives the change.
+        "" if not (pitches and any(pitches)) else "p" + ",".join(str(p) for p in pitches),
+        # A take is not immutable like a stem: a nudge re-renders its
+        # audio.wav under the same name. Its size and mtime pin the file
+        # the render read, so a nudged take misses the cache.
+        ",".join(lane_versions or []),
+        # The EQ as the exact filter strings the render runs (RenderFx),
+        # empty when no EQ changes the sound.
+        fx_fragment,
+        # The master chain with its measured gain, empty when off.
+        master_fragment,
+    ]
+    if lanes_fragment:
+        parts.append(lanes_fragment)
+    raw = "|".join(parts)
     # Cache key, not a security context -- usedforsecurity=False documents
     # that for both readers and static analysis (bandit flags bare sha1()).
     return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
@@ -667,6 +672,30 @@ def _parse_lane_gains(stems: str, gains: str) -> tuple[list[str], list[float]]:
     return names, parsed_gains
 
 
+# The longest lanes= value: the six base stem names and their commas.
+LANES_PARAM_MAX_CHARS = 64
+LANES_QUERY_DESCRIPTION = (
+    "The base stems that are lanes of their own in the mode exported, muted or "
+    "not, comma-separated (may be empty). With it, Original is rebuilt as every "
+    "other stem, as playback builds it. Absent: Original is the job's own file."
+)
+
+
+def parse_lanes_param(lanes: str | None) -> frozenset[str] | None:
+    """The `lanes=` value: None when absent (behaviour exactly as before it
+    existed), else the set of base stems with a lane of their own. Unknown or
+    repeated names are refused, never ignored: a dropped name would put its
+    stem into Original and the export would carry it twice."""
+    # Not a string: absent, or the Query default of a route called directly
+    # as a function (tests do), which is absent too.
+    if not isinstance(lanes, str):
+        return None
+    names = [n for n in lanes.split(",") if n]
+    if len(names) != len(set(names)) or any(n not in STEM_NAMES for n in names):
+        raise HTTPException(status_code=422, detail="lanes: unknown or repeated stem")
+    return frozenset(names)
+
+
 class _RenderLane(NamedTuple):
     """One ffmpeg input in the mixdown graph: a file, its gain, its shift, and
     the mixer lane it belongs to (whose EQ it gets; "" for the click)."""
@@ -948,6 +977,7 @@ def _expand_render_lanes(
     gains: list[float],
     pitches: list[int],
     remove: frozenset[str] = frozenset(),
+    lanes: frozenset[str] | None = None,
 ) -> tuple[list[_RenderLane], list[str]]:
     """Lanes to render, with "original" rebuilt from its parts when it is
     transposed. Returns the lanes and the names of any lane left unpitched.
@@ -969,8 +999,19 @@ def _expand_render_lanes(
     from its components without it, as playback does (playbackStems.js), so
     the export carries exactly the backing that was heard. A job that cannot
     be taken apart then gets a 422 rather than the removed part back.
+
+    `lanes` (the mode's own lanes: every base stem shown as a lane, muted or
+    not) makes Original exactly what playback plays: every base stem that is
+    neither a lane nor removed. Without it Original is the complement of the
+    *requested* names, and the client leaves muted and solo-silenced lanes out
+    of the request, so a transposed export with a muted lane put that stem
+    back inside Original (tests/test_mode_stems.py). With it, a mode whose
+    lanes differ from the job's selection never exports a stem twice: at key 0
+    the job's original.wav is used only when it holds exactly that set.
     """
-    lanes: list[_RenderLane] = []
+    if lanes is not None:
+        return _expand_mode_lanes(job_id, names, gains, pitches, remove, lanes)
+    lanes_out: list[_RenderLane] = []
     unpitched: list[str] = []
     selected = set(names)
     # A completed lead/backing split stands in for the base vocals source, so
@@ -985,13 +1026,13 @@ def _expand_render_lanes(
         # components when transposed, so the same URL was valid or not
         # depending on the pitch attached to it.
         if _is_recorded_lane(name):
-            lanes.append(_RenderLane(_take_lane_path(job_id, name), gain, pitch, name))
+            lanes_out.append(_RenderLane(_take_lane_path(job_id, name), gain, pitch, name))
             continue
         if name in remove:
             continue
         path = _validate_stem_path(job_id, name)
         if name != "original" or (pitch == 0 and not remove):
-            lanes.append(_RenderLane(path, gain, pitch, name))
+            lanes_out.append(_RenderLane(path, gain, pitch, name))
             continue
 
         components = [n for n in STEM_NAMES if n not in selected and n not in remove]
@@ -1014,16 +1055,98 @@ def _expand_render_lanes(
                 raise HTTPException(
                     status_code=422, detail="this song's stems cannot be mixed without one part"
                 )
-            lanes.append(_RenderLane(path, gain, 0, name))
+            lanes_out.append(_RenderLane(path, gain, 0, name))
             unpitched.append(name)
             continue
 
         # Each component carries the lane's own gain; amix sums them back to
         # what the single file would have been. effective_pitch keeps drums at 0.
         for comp, path in zip(components, paths, strict=True):
-            lanes.append(_RenderLane(path, gain, effective_pitch(comp, pitch), name))
+            lanes_out.append(_RenderLane(path, gain, effective_pitch(comp, pitch), name))
 
-    return lanes, unpitched
+    return lanes_out, unpitched
+
+
+def _job_original_set(job_id: str) -> frozenset[str] | None:
+    """The stems the job's own original.wav holds (make_original_track: every
+    base stem not selected), or None when it has no such file."""
+    job = registry_get(job_id)
+    path = (JOBS_DIR / job_id / "stems" / "original.wav").resolve()
+    if job is None or not path.is_file() or not path.is_relative_to(JOBS_DIR.resolve()):
+        return None
+    selected = set(job.selected_stems)
+    return frozenset(n for n in STEM_NAMES if n not in selected)
+
+
+def _expand_mode_lanes(
+    job_id: str,
+    names: list[str],
+    gains: list[float],
+    pitches: list[int],
+    remove: frozenset[str],
+    lanes: frozenset[str],
+) -> tuple[list[_RenderLane], list[str]]:
+    """_expand_render_lanes for a request that names its mode's lanes.
+
+    Original = every base stem that is neither in `lanes` nor removed, always,
+    whatever was muted. A base stem requested as a lane must be in `lanes`:
+    otherwise it would also be inside Original and play twice."""
+    laned = set(lanes)
+    if {"lead_vocals", "backing_vocals"} & set(names):
+        # The split halves are the Voice lane: vocals is not in Original.
+        laned.add("vocals")
+    for name in names:
+        if name in STEM_NAMES and name not in laned and name not in remove:
+            raise HTTPException(status_code=422, detail="lanes: a requested stem is not a lane")
+    components = [n for n in STEM_NAMES if n not in laned and n not in remove]
+    own_set = _job_original_set(job_id)
+
+    out: list[_RenderLane] = []
+    unpitched: list[str] = []
+    for name, gain, pitch in zip(names, gains, pitches, strict=True):
+        if _is_recorded_lane(name):
+            out.append(_RenderLane(_take_lane_path(job_id, name), gain, pitch, name))
+            continue
+        if name in remove:
+            continue
+        if name != "original":
+            out.append(_RenderLane(_validate_stem_path(job_id, name), gain, pitch, name))
+            continue
+        # The job id and state, as _validate_stem_path checks them; the file
+        # itself may not exist (a song extracted with all six stems).
+        if not JOB_ID_RE.match(job_id):
+            raise HTTPException(status_code=404, detail="job not found")
+        job = registry_get(job_id)
+        if job is None or job.status != "done":
+            raise HTTPException(status_code=404, detail="job not ready")
+        if not components:
+            continue
+        if pitch == 0 and own_set is not None and own_set == frozenset(components):
+            # The job's own file holds exactly this set: the export made
+            # before lanes= existed, byte for byte.
+            out.append(_RenderLane(_validate_stem_path(job_id, "original"), gain, 0, name))
+            continue
+        paths: list[Path] = []
+        for comp in components:
+            comp_path = (JOBS_DIR / job_id / "stems" / f"{comp}.wav").resolve()
+            if not comp_path.is_file() or not comp_path.is_relative_to(JOBS_DIR.resolve()):
+                paths = []
+                break
+            paths.append(comp_path)
+        if not paths:
+            if own_set is not None and own_set == frozenset(components):
+                # An older job whose parts are gone: its file, unpitched,
+                # the conservative choice playback makes.
+                path = _validate_stem_path(job_id, "original")
+                out.append(_RenderLane(path, gain, 0, name))
+                unpitched.append(name)
+                continue
+            raise HTTPException(
+                status_code=422, detail="this song's stems cannot be mixed for these lanes"
+            )
+        for comp, path in zip(components, paths, strict=True):
+            out.append(_RenderLane(path, gain, effective_pitch(comp, pitch), name))
+    return out, unpitched
 
 
 async def _drain_stderr(stream: asyncio.StreamReader, sink: deque[str]) -> None:
@@ -1606,6 +1729,9 @@ async def get_mixdown(
             "comp: 0..1}. Empty means no master. See app/pipeline/mastering.py."
         ),
     ),
+    lanes: str | None = Query(
+        default=None, max_length=LANES_PARAM_MAX_CHARS, description=LANES_QUERY_DESCRIPTION
+    ),
 ) -> FileResponse | StreamingResponse:
     """Render a mixdown of the given lanes at the given gains, streamed as WAV,
     MP3, FLAC, or OGG. Mirrors the studio mixer (per-stem volume, mute, solo) so the
@@ -1628,6 +1754,7 @@ async def get_mixdown(
     parsed_pitches = _parse_pitches(pitches, names)
     fx_req = parse_fx_query(fx)
     master_settings = parse_master_query(master)
+    lane_set = parse_lanes_param(lanes)
     if (start is None) != (end is None) or (start is not None and start >= end):
         raise HTTPException(
             status_code=422,
@@ -1648,7 +1775,9 @@ async def get_mixdown(
     # stem -- deliberately before the cache lookup below, so a deleted or
     # not-yet-done job 404s the same way it always has instead of serving a
     # stale cache entry from before the job was removed.
-    render_lanes, unpitched = _expand_render_lanes(job_id, names, parsed_gains, parsed_pitches)
+    render_lanes, unpitched = _expand_render_lanes(
+        job_id, names, parsed_gains, parsed_pitches, lanes=lane_set
+    )
     paths = [lane.path for lane in render_lanes]
     # Each lane's EQ as biquad filters with the live engine's coefficients;
     # "" for a lane without EQ, so its graph is unchanged.
@@ -1703,6 +1832,7 @@ async def get_mixdown(
         _take_versions(job_id, names),
         render_fx.fragment,
         master_fragment,
+        lanes_fragment="" if lane_set is None else "l:" + ",".join(sorted(lane_set)),
     )
     headers = {
         "Content-Disposition": (
@@ -1830,6 +1960,9 @@ async def get_mixdown_loudness(
     fx: str = Query(default="", max_length=FX_PARAM_MAX_CHARS, description="As for mixdown"),
     master: str = Query(..., max_length=MASTER_PARAM_MAX_CHARS, description="As for mixdown"),
     lossy: bool = Query(default=False, description="Plan for a lossy export's ceiling"),
+    lanes: str | None = Query(
+        default=None, max_length=LANES_PARAM_MAX_CHARS, description=LANES_QUERY_DESCRIPTION
+    ),
 ) -> dict:
     """The measured master of this mix (the same plan the export renders):
     loudness before, after the compressor and after the master, the gain and
@@ -1848,12 +1981,15 @@ async def get_mixdown_loudness(
     settings = parse_master_query(master)
     if settings is None:
         raise HTTPException(status_code=422, detail="master: required")
+    lane_set = parse_lanes_param(lanes)
     if any(parsed_pitches) and not await asyncio.to_thread(_rubberband_available):
         raise HTTPException(
             status_code=422,
             detail="this ffmpeg build cannot transpose (no rubberband filter)",
         )
-    render_lanes, _unpitched = _expand_render_lanes(job_id, names, parsed_gains, parsed_pitches)
+    render_lanes, _unpitched = _expand_render_lanes(
+        job_id, names, parsed_gains, parsed_pitches, lanes=lane_set
+    )
     paths = [lane.path for lane in render_lanes]
     render_fx = await asyncio.to_thread(
         build_render_fx, [lane.name for lane in render_lanes], paths, fx_req
@@ -1925,6 +2061,9 @@ async def get_video_mixdown(
         max_length=MASTER_PARAM_MAX_CHARS,
         description="The master, as for mixdown. Empty means no master.",
     ),
+    lanes: str | None = Query(
+        default=None, max_length=LANES_PARAM_MAX_CHARS, description=LANES_QUERY_DESCRIPTION
+    ),
 ) -> StreamingResponse:
     """Mux a fresh audio mixdown of the current mixer state with the job's preserved
     video into an MP4 (issue #219). Mirrors get_mixdown's audio graph (encoded
@@ -1958,7 +2097,9 @@ async def get_video_mixdown(
         )
     # Validates job_id (404), job done (404), and path traversal (404) per stem,
     # and rebuilds a transposed "original" lane from its parts.
-    render_lanes, _unpitched = _expand_render_lanes(job_id, names, parsed_gains, parsed_pitches)
+    render_lanes, _unpitched = _expand_render_lanes(
+        job_id, names, parsed_gains, parsed_pitches, lanes=parse_lanes_param(lanes)
+    )
     paths = [lane.path for lane in render_lanes]
 
     # Click is one more audio input. It must be appended before the video input

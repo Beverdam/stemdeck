@@ -1,9 +1,8 @@
 // catalog.js — library panel: folders, tracks, collapse, drag-and-drop
-import { STEM_NAMES } from "./constants.js";
 import { wireUpAudio, updateFooterTrack } from "./player.js";
+import { prepareLayout } from "./modeStems.js";
 import { initSections } from "./sections.js";
-import { audioEngine, bpmChip, foregroundJobId, keyChip, multitrack, saveSelectedStems, selectedStems, titleEl } from "./state.js";
-import { refreshStemChoiceVisuals } from "./stemChoice.js";
+import { audioEngine, bpmChip, foregroundJobId, keyChip, multitrack, selectedStems, titleEl } from "./state.js";
 import { trackFormat, formatIconSvg, paintNowPlayingArt } from "./formatIcon.js";
 import { formatKey } from "./keyLabel.js";
 import { showError, importFromUrl, detachForegroundJob, runVocalSplitIfWanted } from "./job.js";
@@ -563,6 +562,10 @@ export function getCurrentTrackInfo() {
     id: _currentTrackId,
     title: track.title || "",
     duration: Number(track.duration) || 0,
+    // Where it came from and whether it is separated: the Extract button
+    // changes an open, separated song's lanes instead of separating again.
+    sourceUrl: track.sourceUrl || "",
+    status: track.status || "",
     // What the file itself was tagged with at import, when it was: artist,
     // title, album, and lyrics if it carried them. Null for tracks imported
     // before tags were read, and for sources that had none.
@@ -795,6 +798,7 @@ function stateMetadataToTrack(state, fallbackTrack) {
     // The source's own artist, title, album and lyrics (#699), read at import.
     audioTags: state.audio_tags ? libraryAudioTags(state.audio_tags) : fallbackTrack.audioTags ?? null,
     mixUrl: state.mix_url ?? fallbackTrack.mixUrl ?? null,
+    vocalSplit: state.vocal_split ?? fallbackTrack.vocalSplit ?? null,
     hasVideo: state.has_video ?? fallbackTrack.hasVideo ?? false,
     videoStatus: state.video_status ?? fallbackTrack.videoStatus ?? null,
     createdAt: fallbackTrack.createdAt ?? state.created_at,
@@ -1076,20 +1080,6 @@ function setCatalogView(view) {
   document.dispatchEvent(new CustomEvent("catalogviewchange", { detail: { view: catalogView } }));
 }
 
-function applyStoredStemSelection(track) {
-  const stored = track.selectedStems || track.stems || [];
-  const next = stored.filter((name) => STEM_NAMES.includes(name));
-  if (!next.length) return;
-  selectedStems.clear();
-  for (const name of next) selectedStems.add(name);
-  saveSelectedStems();
-  // The whole row, not just the chips. Setting aria-pressed on each chip by
-  // hand here left the All button beside them claiming every stem was
-  // selected, and the Lead + Backing toggle on screen for a track with no
-  // vocals (#658).
-  refreshStemChoiceVisuals();
-}
-
 // A track's files went missing (folder deleted or moved outside the app).
 // URL-sourced tracks can be rebuilt from the source, so trigger that
 // directly rather than making the user hunt for a "resync" button in
@@ -1159,7 +1149,9 @@ async function loadTrackIntoStudio(trackId) {
   if (PROCESSING_STATUSES.has(track.status)) return;
   if (!track.audioStems?.length) return;
   if (track.status !== "done" && !hadStoredAudio) return;
-  applyStoredStemSelection(track);
+  // The Extract chips are not touched: they are the request for the next
+  // import, and the open song's lanes belong to each mode's own choice
+  // (modeStems.js). They used to be overwritten with this song's selection.
   setCurrentTrack(trackId);
 
   // The composer is an input the Extract stems button submits, not a caption for
@@ -1193,6 +1185,15 @@ async function loadTrackIntoStudio(trackId) {
   setResplitTarget(resplittable ? track : null);
 
   applyTrackInfoToPanel(track);
+  // The open mode's own lanes for this song (modeStems.js), read before the
+  // lanes are built: what Practice shows never depends on another mode.
+  await prepareLayout(
+    trackId,
+    track.selectedStems || track.stems || [],
+    track.audioStems.filter((s) => s?.url).map((s) => s.name),
+    track.vocalSplit || (track.audioStems.some((s) => s?.name === "lead_vocals") ? "done" : "none"),
+  );
+  if (token !== _loadTrackToken) return;
   wireUpAudio(trackId, [...track.audioStems, ...takeStemsFromJob(track.takes, track.tracks)], track.duration || 0, track.thumb, track.mixUrl ?? null, track.title || "", peaksPromise, track.hasVideo ?? false, track.videoStatus ?? null);
   initSections(trackId, track.sections, track.duration || 0);
   // Not awaited: the track is already loading, and the answer arrives as a

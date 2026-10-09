@@ -30,6 +30,8 @@ import { initModeUi } from "./modeUi.js";
 import { initKaraoke } from "./karaoke/karaoke.js";
 import { initStreamer } from "./streamer/streamer.js";
 import { initMixMode } from "./mixMode.js";
+import { initModeStems } from "./modeStems.js";
+import { initStemsControl } from "./stemsControl.js";
 
 // ─── Stem choice toggles on the import page ───
 //
@@ -506,6 +508,8 @@ initVideoTake().catch((err) => console.warn("[video] init failed:", err));
 initMasterPanel();
 initModeUi();
 initMixMode();
+initModeStems();
+initStemsControl();
 initKaraoke();
 initStreamer();
 // Re-measure after a language switch. Measured across en/fr/de/pl the strip

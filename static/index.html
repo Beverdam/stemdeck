@@ -644,6 +644,10 @@
           <div class="daw-wave-header">
             <div class="daw-wave-label">
               <span class="daw-label-title" data-i18n="mixer.title">Mixer</span>
+              <!-- Which stems are lanes in this mode, and which play inside
+                   Original (static/js/stemsControl.js, modeStems.js). Practice
+                   and Advanced only, each with its own choice. -->
+              <button class="lane-stems-btn" id="laneStemsBtn" type="button" hidden aria-haspopup="dialog" aria-expanded="false" title="Choose which stems get their own lane" data-i18n-title="stems.button"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span data-i18n="stems.button">Stems</span><svg class="lane-stems-caret" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
               <!-- A recording track: its own row and lane, armed to record into
                    (static/js/capture/takeLanes.js). An audio track records
                    sound; a video track also films with the camera. The row is

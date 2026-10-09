@@ -166,6 +166,9 @@ export function buildRenderRequest({
   // "I play": the part left out of the backing (the server leaves it out of
   // the mix exactly as playback did). Omitted for the whole song.
   if (remove) body.remove_stem = remove;
+  // The lanes the song was heard with (player.js _exportLanes), so Original
+  // is rebuilt as playback built it. Only with the mixed audio.
+  if (mixedAudio && Array.isArray(mix?.lanes)) body.lanes = [...mix.lanes];
   return body;
 }
 

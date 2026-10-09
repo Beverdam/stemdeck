@@ -27,6 +27,7 @@ import { karaokeLyrics, vocalEnvelopeFor } from "../lyrics.js";
 import { getCurrentTrackInfo, openTrackInStudio } from "../catalog.js";
 import { loadQueue, getQueue, shiftQueue, removeFromQueue, onQueueChange, mountQueue } from "./karaokeQueue.js";
 import { isRecording } from "../capture/recordUi.js";
+import { layoutState, changeLayout, requestSplit, onLayoutChange } from "../modeStems.js";
 import { takeOpen as streamerTakeOpen } from "../streamer/streamerRecord.js";
 import {
   transposedKey, semitoneLabel, clockShort, clockLong,
@@ -252,7 +253,12 @@ function buildWindowed() {
   const stems = el("div", "kk-panel kk-stems");
   const stemsLabel = el("span", "kk-label");
   const stemRow = el("div", "kk-stem-row");
-  stems.append(stemsLabel, stemRow);
+  // The voice form, Karaoke's own stem choice (modeStems.js): Backing vocals
+  // in the voice (one Vocals card) or separate (Lead and Backing cards).
+  const stemsHead = el("div", "kk-stems-head");
+  const voice = buildVoiceToggle();
+  stemsHead.append(stemsLabel, voice.root);
+  stems.append(stemsHead, stemRow);
   controls.append(play.panel, key.panel, stems);
 
   // No song open: a quiet note over the whole view.
@@ -264,7 +270,7 @@ function buildWindowed() {
   ui = {
     stage, bgArt, art, title, artist, fsBtn, lyrics, progress,
     side, sideTitle, queueList, queue, strip, stripQueue,
-    play, key, stemsLabel, stemRow, noTrack, stemCards: new Map(),
+    play, key, stemsLabel, stemRow, noTrack, stemCards: new Map(), voice,
   };
   relabel();
   return true;
@@ -498,6 +504,7 @@ export function openKaraoke() {
   paintRail();
   loop();
   notify();
+  repaintVoice();
   return true;
 }
 
@@ -882,6 +889,86 @@ function paintKey() {
   k.reset.disabled = !g.available;
 }
 
+// ── The voice form (Karaoke's stem choice) ──
+
+function buildVoiceToggle() {
+  const root = el("div", "kk-voice");
+  root.setAttribute("role", "radiogroup");
+  const label = el("span", "kk-voice-label");
+  label.id = "kkVoiceLabel";
+  root.setAttribute("aria-labelledby", label.id);
+  const seg = el("div", "kk-voice-seg");
+  const btns = {};
+  for (const form of ["combined", "split"]) {
+    const b = button("kk-voice-btn", null);
+    b.dataset.form = form;
+    b.setAttribute("role", "radio");
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      chooseVoice(form);
+    });
+    b.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      e.stopPropagation();
+      const other = form === "split" ? "combined" : "split";
+      btns[other].focus();
+      chooseVoice(other);
+    });
+    seg.append(b);
+    btns[form] = b;
+  }
+  root.append(label, seg);
+  return { root, label, btns };
+}
+
+let voiceBusy = false;
+
+async function chooseVoice(form) {
+  const state = layoutState();
+  if (!state.jobId || state.mode !== "karaoke" || voiceBusy) return;
+  const present = new Set(state.present);
+  const splitDone = present.has("lead_vocals") && present.has("backing_vocals");
+  const now = state.voice || (state.shown.split ? "split" : "combined");
+  if (form === now && (form === "combined" || splitDone)) return;
+  voiceBusy = true;
+  repaintVoice();
+  const why = form === "split" && !splitDone ? await requestSplit() : await changeLayout({ voice: form });
+  voiceBusy = false;
+  repaintVoice();
+  if (why === "recording") flashNote(t("karaoke.stopRecordingFirst"));
+  else if (why === "failed") flashNote(t("stems.splitFailed"));
+}
+
+function repaintVoice() {
+  if (!ui || !open) return;
+  painted.voice = null;
+  paintVoice();
+}
+
+function paintVoice() {
+  const v = ui.voice;
+  const state = layoutState();
+  const present = new Set(state.present);
+  const hasVoice = present.has("vocals") || (present.has("lead_vocals") && present.has("backing_vocals"));
+  const running = state.splitState === "running" || voiceBusy;
+  const form = state.voice || (state.shown.split ? "split" : "combined");
+  const sig = `${state.jobId}|${hasVoice}|${running}|${form}|${t("karaoke.voiceForm")}`;
+  if (painted.voice === sig) return;
+  painted.voice = sig;
+  v.root.hidden = !state.jobId || !hasVoice;
+  v.label.textContent = t("karaoke.voiceForm");
+  v.root.title = t("karaoke.voiceFormTitle");
+  for (const [f, b] of Object.entries(v.btns)) {
+    const on = f === form;
+    b.textContent = f === "split" && running ? t("karaoke.voiceFormRunning") : t(f === "split" ? "karaoke.voiceFormSplit" : "karaoke.voiceFormCombined");
+    b.setAttribute("aria-checked", String(on));
+    b.classList.toggle("on", on);
+    b.tabIndex = on ? 0 : -1;
+    b.disabled = running;
+  }
+}
+
 function paintStems() {
   const names = karaokeStems(presentLanes());
   const sig = names.map((n) => `${n}:${mixerState[n]?.muted ? 0 : 1}`).join("|") + `|${t("karaoke.stems")}`;
@@ -1075,7 +1162,11 @@ export function initKaraoke() {
   document.addEventListener("stemdeck:mix-loaded", (e) => {
     mixLoadedFor = e.detail?.id ?? null;
     enforceVoiceOff();
+    repaintVoice();
   });
+  // The voice form is painted on change, never per frame.
+  onLayoutChange(repaintVoice);
+  onLanguageChange(repaintVoice);
   // A song ended while Karaoke is open: the next one in the queue plays.
   document.addEventListener("stemdeck:track-ended", () => {
     if (open && !bringing) playQueued();

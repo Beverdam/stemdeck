@@ -2636,7 +2636,7 @@ async function loadPart(job) {
     console.warn("[streamer] reading the part choice failed:", err);
   }
   if (token !== partToken) return;
-  part = { job, remove: effectiveChoice(parseChoice(stored), present), present, loaded: true };
+  part = { job, remove: effectiveChoice(parseChoice(stored), present), present, loaded: true, record: stored };
   painted.part = null;
   painted.lanes = null;
   applyPart();
@@ -2654,8 +2654,11 @@ function choosePart(value) {
   if (!job || job !== currentJobId || !part.loaded) return;
   const remove = effectiveChoice({ remove: value }, part.present);
   if (remove === part.remove) return;
-  part = { ...part, remove };
-  storeSet(choiceKey(job, PART_MODE), serializeChoice({ remove }));
+  // The rest of the record (the voice form a lead/backing split froze,
+  // modeStems.js) is kept: only "I play" changes here.
+  const record = serializeChoice({ ...parseChoice(part.record), remove });
+  part = { ...part, remove, record };
+  storeSet(choiceKey(job, PART_MODE), record);
   painted.part = null;
   painted.lanes = null;
   // The backing file is made now, so the export does not wait for it.

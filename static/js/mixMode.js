@@ -28,6 +28,21 @@ let chain = Promise.resolve();
 
 const wanted = () => (karaokeOpen ? "karaoke" : streamerOpen ? "streamer" : getMode());
 
+/** The mode whose saved mix and stem layout are in force for the open song:
+ * Karaoke or Streamer while open, else Practice or Advanced ("daw"). */
+export function mixModeInForce() {
+  return wanted();
+}
+
+// Called with the mode after each switch settles (modeStems.js reloads the
+// song when the new mode shows other lanes). After the mix switch, so the
+// reload reads the new mode's record.
+const settledListeners = new Set();
+export function onMixModeSettled(cb) {
+  settledListeners.add(cb);
+  return () => settledListeners.delete(cb);
+}
+
 // Switches asked for and not finished: while any is, the record in force is
 // about to change, and a mute or solo made now could land in the wrong one.
 let pending = 0;
@@ -46,6 +61,11 @@ export function syncMixMode() {
       replaced = await switchMixMode(mode);
     } catch (err) {
       console.warn("[mixMode] could not switch the saved mix:", err);
+    }
+    if (mode === wanted()) {
+      for (const cb of settledListeners) {
+        try { cb(mode); } catch (err) { console.warn("[mixMode] settled listener failed:", err); }
+      }
     }
     if (!replaced || mode !== wanted()) return;
     refreshMixerVisuals();

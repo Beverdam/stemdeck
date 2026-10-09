@@ -6158,3 +6158,135 @@ html:not(.mode-daw) #master-drawer {
 .mode-item-desc { padding-left: 15px; font-size: 11px; line-height: 1.35; color: var(--muted); }
 .mode-note { margin: 4px 6px 2px; font-size: 11px; color: var(--accent); }
 .mode-note[hidden] { display: none; }
+
+/* ── Stems per mode (static/js/stemsControl.js) ──
+   A small button beside the Mixer title, and a popover in the Mode menu's
+   style. The button takes the space the title leaves and never pushes the
+   hint out of the 300px column: it shrinks first (label hidden under 250px
+   of label width by the container query below). */
+.daw-wave-label { container-type: inline-size; gap: 8px; }
+.daw-wave-label .daw-label-sub { margin-left: auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lane-stems-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 22px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.lane-stems-btn[hidden] { display: none; }
+.lane-stems-btn:hover,
+.lane-stems-btn[aria-expanded="true"] { background: var(--panel-2); color: var(--fg); border-color: var(--muted-2); }
+.lane-stems-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* A choice of its own in this mode: the accent says it differs from the song's. */
+.lane-stems-btn.chosen { color: var(--accent); border-color: var(--accent-2); }
+.lane-stems-btn svg { flex-shrink: 0; }
+@container (max-width: 210px) {
+  .lane-stems-btn > span { display: none; }
+}
+
+.stems-pop {
+  position: fixed;
+  z-index: 70;
+  width: 270px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 10px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+}
+.stems-pop[hidden] { display: none; }
+.stems-pop-title { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.stems-pop-hint { margin: 0; font-size: 11px; line-height: 1.35; color: var(--muted); }
+.stems-pop-list { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; }
+.stems-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.stems-pop-row:hover:not(.missing) { background: var(--panel-2); color: var(--fg); }
+.stems-pop-row.missing { cursor: default; opacity: 0.5; }
+.stems-pop-row input { margin: 0; accent-color: var(--accent); cursor: inherit; }
+.stems-pop-row input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.stems-pop-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--stem-c); }
+.stems-pop-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stems-pop-missing { font-size: 10px; color: var(--muted); }
+.stems-pop-voice {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 6px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.stems-pop-voice[hidden] { display: none; }
+.stems-pop-voice-label { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.stems-pop-seg { display: flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.stems-pop-seg[hidden] { display: none; }
+.stems-pop-seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.stems-pop-seg-btn + .stems-pop-seg-btn { border-left: 1px solid var(--border-strong); }
+.stems-pop-seg-btn[aria-checked="true"] { background: var(--panel-2); color: var(--accent); font-weight: 600; }
+.stems-pop-seg-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.stems-pop-split,
+.stems-pop-reset,
+.stems-pop-apply {
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-2);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.stems-pop-split[hidden], .stems-pop-reset[hidden] { display: none; }
+.stems-pop-split:hover:not(:disabled),
+.stems-pop-reset:hover:not(:disabled) { background: var(--panel-2); color: var(--fg); }
+.stems-pop-split:focus-visible,
+.stems-pop-reset:focus-visible,
+.stems-pop-apply:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.stems-pop-split:disabled,
+.stems-pop-reset:disabled,
+.stems-pop-apply:disabled { opacity: 0.45; cursor: default; }
+.stems-pop-split-note { margin: 0; font-size: 10.5px; line-height: 1.35; color: var(--muted); }
+.stems-pop-split-note[hidden] { display: none; }
+.stems-pop-holds { margin: 0; font-size: 11px; line-height: 1.35; color: var(--fg-2); }
+.stems-pop-status { margin: 0; font-size: 11px; line-height: 1.35; color: var(--accent); }
+.stems-pop-status:empty { display: none; }
+.stems-pop-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.stems-pop-apply { border-color: var(--accent-2); color: var(--accent); font-weight: 600; }
+.stems-pop-apply:hover:not(:disabled) { background: var(--panel-2); }

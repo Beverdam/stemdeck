@@ -148,10 +148,18 @@ def ensure_backing(job_id: str, job_dir: Path, remove: str) -> tuple[Path, bool]
     if not paths:
         raise BackingError("no stems to mix")
     out = backing_path(job_dir, remove)
+    built = _ensure_sum(job_id, remove, out, paths, {"removed": remove})
+    return out, built
+
+
+def _ensure_sum(job_id: str, key: str, out: Path, paths: list[Path], meta_extra: dict) -> bool:
+    """Build `out` as the sum of `paths` unless it is fresh. Returns whether it
+    was built. One build per (job, key) at a time: a second caller waits for
+    the first and then finds the file."""
     meta = out.with_suffix(".json")
-    with _lock(job_id, remove):
+    with _lock(job_id, key):
         if _fresh(out, meta, paths):
-            return out, False
+            return False
         tmp = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp.wav")
         try:
             gain = _mix(paths, tmp)
@@ -161,11 +169,112 @@ def ensure_backing(job_id: str, job_dir: Path, remove: str) -> tuple[Path, bool]
         finally:
             tmp.unlink(missing_ok=True)
         meta.write_text(
-            json.dumps({"removed": remove, "sources": _signature(paths), "gain": gain}),
+            json.dumps({**meta_extra, "sources": _signature(paths), "gain": gain}),
             encoding="utf-8",
         )
         if gain != 1.0:
-            logger.info(
-                "[%s] backing without %s scaled by %.4f to stay unclipped", job_id, remove, gain
-            )
-        return out, True
+            logger.info("[%s] %s scaled by %.4f to stay unclipped", job_id, out.name, gain)
+        return True
+
+
+# ── The rest of the song, for any set of stems ──
+#
+# A studio mode (Practice, Advanced, Karaoke) chooses which stems are lanes of
+# their own; its Original is the sum of every other stem. `rest_<set>.wav` is
+# that sum for one set (base stems, sorted, joined by "-"), with the same
+# signature, lock and peak guard as the backing. The engine plays Original from
+# the stem files themselves; this file is for what needs one file (the
+# streaming engine, the lane's download, a full-decode waveform).
+
+REST_PREFIX = "rest_"
+# Rest files kept per job: about one per mode that differs from the song's own
+# selection (Practice, Advanced, Karaoke) and one spare. The oldest by mtime
+# goes first, never the one just asked for.
+REST_MAX_FILES = 4
+_SET_SEP = "-"
+_prune_guard = threading.Lock()
+
+
+def parse_rest_set(raw: str) -> tuple[str, ...]:
+    """The stems of a rest set as spelled in its URL and file name: base stems
+    joined by "-", sorted, each once, 1 to 6 of them. Anything else raises
+    ValueError, so one set has exactly one spelling and one file."""
+    names = tuple(raw.split(_SET_SEP)) if raw else ()
+    if not 1 <= len(names) <= len(STEM_NAMES):
+        raise ValueError("a rest set holds 1 to 6 stems")
+    if any(n not in STEM_NAMES for n in names):
+        raise ValueError("unknown stem in the set")
+    if len(set(names)) != len(names) or list(names) != sorted(names):
+        raise ValueError("a rest set is sorted and names each stem once")
+    return names
+
+
+def rest_name(names: tuple[str, ...] | list[str]) -> str:
+    """The canonical spelling of a set of stems."""
+    return _SET_SEP.join(sorted(set(names)))
+
+
+def rest_path(job_dir: Path, names: tuple[str, ...]) -> Path:
+    return job_dir / f"{REST_PREFIX}{rest_name(names)}.wav"
+
+
+def rest_inputs(stems_dir: Path, names: tuple[str, ...]) -> list[Path]:
+    """The stem files the rest of `names` sums. Every named stem must be on
+    disk (a missing one raises BackingError: the sum would be another song),
+    except Voice, whose lead/backing halves stand in for a missing vocals.wav
+    as they do for the backing. The split halves are never added otherwise:
+    vocals.wav already holds them."""
+    paths: list[Path] = []
+    for name in names:
+        p = stems_dir / f"{name}.wav"
+        if p.is_file():
+            paths.append(p)
+            continue
+        split = [stems_dir / f"{n}.wav" for n in EXTRA_STEM_NAMES]
+        if name == "vocals" and all(s.is_file() for s in split):
+            paths += split
+            continue
+        raise BackingError(f"stem {name} is missing")
+    return paths
+
+
+def _prune_rest(job_dir: Path, keep: Path) -> None:
+    """At most REST_MAX_FILES rest files per job: the oldest by mtime go, never
+    `keep`. A file another request is still reading (Windows refuses the
+    delete) is left for the next prune."""
+    with _prune_guard:
+        others = []
+        for p in job_dir.glob(f"{REST_PREFIX}*.wav"):
+            if p == keep:
+                continue
+            try:
+                others.append((p.stat().st_mtime_ns, p))
+            except OSError:
+                continue
+        others.sort()
+        excess = len(others) + 1 - REST_MAX_FILES
+        for _, old in others[: max(0, excess)]:
+            try:
+                old.unlink()
+                old.with_suffix(".json").unlink(missing_ok=True)
+            except OSError:
+                logger.debug("rest prune: %s still in use", old.name, exc_info=True)
+
+
+def ensure_rest(job_id: str, job_dir: Path, names: tuple[str, ...]) -> tuple[Path, bool]:
+    """The sum of the stems `names` for the job in `job_dir`, built when it is
+    missing or stale, then the job's rest files capped. Returns (path, built).
+    Blocking. Raises ValueError for a bad set and BackingError when a stem is
+    missing or the mix fails."""
+    names = parse_rest_set(rest_name(names))
+    paths = rest_inputs(job_dir / "stems", names)
+    out = rest_path(job_dir, names)
+    built = _ensure_sum(job_id, REST_PREFIX + rest_name(names), out, paths, {"names": list(names)})
+    if not built:
+        # Asked for again: it counts as recent for the cap.
+        try:
+            os.utime(out)
+        except OSError:
+            logger.debug("rest: could not touch %s", out.name, exc_info=True)
+    _prune_rest(job_dir, out)
+    return out, built

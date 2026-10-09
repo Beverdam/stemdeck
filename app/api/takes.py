@@ -1298,6 +1298,10 @@ class RenderBody(BaseModel):
     # Streamer Mode's "I play": the stem the musician played, left out of the
     # backing exactly as it was left out of what they heard. None: the whole song.
     remove_stem: Literal["vocals", "drums", "bass", "guitar", "piano", "other"] | None = None
+    # The mode's own lanes, the export's lanes= value: every base stem shown as
+    # a lane, muted or not, so Original is rebuilt from every other stem as
+    # playback builds it. None: Original is the job's own file, as before.
+    lanes: list[str] | None = Field(default=None, max_length=6)
     # The studio EQ, the export's fx= value (app/pipeline/fx_filters.py). The
     # take gets its track's EQ; "" means no EQ.
     fx: str = Field(default="", max_length=stems_api.FX_PARAM_MAX_CHARS)
@@ -1382,8 +1386,9 @@ def _backing_lanes(job_id: str, take_id: str, body: RenderBody) -> list[tuple[Au
         raise HTTPException(
             status_code=422, detail="this ffmpeg build cannot transpose (no rubberband filter)"
         )
+    lane_set = None if body.lanes is None else stems_api.parse_lanes_param(",".join(body.lanes))
     lanes, _unpitched = stems_api._expand_render_lanes(
-        job_id, names, gains, pitches, removed_stems(body.remove_stem)
+        job_id, names, gains, pitches, removed_stems(body.remove_stem), lanes=lane_set
     )
     return [
         (AudioLane(lane.path, lane.gain, stems_api._pitch_filter(lane.pitch)), lane.name)

@@ -41,7 +41,8 @@ import { createAudioEngine, estimateDecodedBytes } from "./audioEngine.js";
 import { createChunkedAudioEngine } from "./chunkedAudioEngine.js";
 import { createPlaybackContext } from "./audioContext.js";
 import { effectivePitch } from "./pitchBus.js";
-import { addVisualOnlyStems, buildPlaybackStems } from "./playbackStems.js";
+import { addVisualOnlyStems, buildPlaybackStems, sumPeaks } from "./playbackStems.js";
+import { layoutLanes, originalSource, jobOriginalSet, layoutSignature, baseLanes } from "./partChoice.js";
 import { applyAllLaneEq, exportFxParam } from "./eqEngine.js";
 import { exportMasterParam, setMixSource, resetForSong as resetMasterForSong } from "./masterEngine.js";
 import { vuLevel } from "./vuScale.js";
@@ -321,6 +322,29 @@ export function setPlaybackExclusion(jobId, names) {
 /** The exclusion in force: { jobId, names }. */
 export function playbackExclusion() {
   return { jobId: _playbackExclusion.jobId, names: new Set(_playbackExclusion.names) };
+}
+
+// The open mode's stem layout for one song (modeStems.js): { jobId, lanes,
+// voice, songSelected }. Read once per load by wireUpAudio, like the
+// exclusion above: a change reloads the song.
+let _laneLayout = { jobId: null };
+// What the last load showed under a layout: { jobId, lanes, original, split, sig }.
+let _shownLayout = null;
+// The base stems of an Original that is not the job's own file, for its peaks.
+let _syntheticOriginal = null;
+
+/** Show `jobId` with `layout` ({ lanes, voice, songSelected }) from its next
+ * load; null clears it (the Extract chips decide again). */
+export function setLaneLayout(jobId, layout) {
+  _laneLayout = jobId && layout
+    ? { jobId, lanes: [...layout.lanes], voice: layout.voice || null, songSelected: [...(layout.songSelected || [])] }
+    : { jobId: null };
+}
+
+/** What the loaded song shows: { jobId, lanes, original, split, sig }, or
+ * null when it was loaded without a layout. */
+export function shownLaneLayout() {
+  return _shownLayout ? { ..._shownLayout } : null;
 }
 
 function clearOverviewWaveforms() {
@@ -1378,19 +1402,43 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   // the split, so it would otherwise still show up here too.
   const rawPresent = new Set(stems.map((s) => s.name));
   const splitDone = rawPresent.has("lead_vocals") && rawPresent.has("backing_vocals");
-  const wantsVocals = selectedStems.has("vocals");
-  stems = stems.filter((s) => {
-    if (s.name === "original") return true;
-    if (isTakeName(s.name)) return true;
-    if (s.name === "vocals") return wantsVocals && !splitDone;
-    if (s.name === "lead_vocals" || s.name === "backing_vocals") return wantsVocals && splitDone;
-    return selectedStems.has(s.name);
-  });
+  // The open mode's own layout for this song (modeStems.js, set before the
+  // load): which stems are lanes and which are folded into Original. Without
+  // one (a path that sets none), the Extract chips decide, as they always did.
+  const layout = _laneLayout.jobId === jobId ? _laneLayout : null;
+  _shownLayout = null;
+  _syntheticOriginal = null;
+  if (layout) {
+    const present = new Set(rawStems.filter((s) => s.url).map((s) => s.name));
+    const shown = layoutLanes(layout, present);
+    const keep = new Set(shown.lanes);
+    const urls = Object.fromEntries(rawStems.map((s) => [s.name, s.url]));
+    const src = originalSource(jobId, shown.original, jobOriginalSet(layout.songSelected, !!urls.original), urls);
+    stems = stems.filter((s) => isTakeName(s.name) || keep.has(s.name));
+    if (src.kind !== "none") stems.unshift({ name: "original", url: src.url });
+    // Its peaks are the job's only when it is the job's own file.
+    if (src.kind !== "job") _syntheticOriginal = shown.original;
+    _shownLayout = { jobId, ...shown, sig: layoutSignature(shown) };
+  } else {
+    const wantsVocals = selectedStems.has("vocals");
+    stems = stems.filter((s) => {
+      if (s.name === "original") return true;
+      if (isTakeName(s.name)) return true;
+      if (s.name === "vocals") return wantsVocals && !splitDone;
+      if (s.name === "lead_vocals" || s.name === "backing_vocals") return wantsVocals && splitDone;
+      return selectedStems.has(s.name);
+    });
+  }
   // A view may leave stems out of what is heard for this song (Streamer's
   // "I play"); none otherwise, so every other mode loads exactly as before.
   const exclude = _playbackExclusion.jobId === jobId ? _playbackExclusion.names : new Set();
   if (exclude.size) stems = stems.filter((s) => !exclude.has(s.name));
-  const playbackStems = buildPlaybackStems(rawStems, stems, STEM_NAMES, exclude);
+  // Under a layout, the job's own original.wav may hold a stem that is now a
+  // lane: the only "original" playback may fall back to is the layout's own.
+  const rawForPlayback = layout
+    ? [...rawStems.filter((s) => s.name !== "original"), ...stems.filter((s) => s.name === "original")]
+    : rawStems;
+  const playbackStems = buildPlaybackStems(rawForPlayback, stems, STEM_NAMES, exclude);
   const fullDecodeStems = addVisualOnlyStems(playbackStems, stems);
   _currentStems = stems;
   _mixUrl = mixUrl || null;
@@ -1417,6 +1465,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   // origin window, preventing stem WAV queuing that causes buffer underruns.
   let precomputedPeaks = {};
   const _footerStemName = stems.find((s) => s.name === "original") ? "original" : stems[0]?.name;
+  const synthOriginal = _syntheticOriginal;
   // Recording-track lanes borrow their active take's peaks (keyed by take id).
   const _peaksPromise = (peaksPromise ?? (jobId
     ? (() => {
@@ -1427,7 +1476,15 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
           .catch(() => ({}))
           .finally(() => clearTimeout(timer));
       })()
-    : Promise.resolve({}))).then(withTrackPeaks);
+    : Promise.resolve({}))).then(withTrackPeaks).then((peaks) => {
+    // An Original the layout made: its picture is the envelope of its stems'.
+    if (!synthOriginal || !peaks || typeof peaks !== "object") return peaks;
+    const summed = sumPeaks(peaks, synthOriginal);
+    const out = { ...peaks };
+    if (summed) out.original = summed;
+    else delete out.original;
+    return out;
+  });
 
   // Beat grid for the click track. Fetched alongside peaks; a 404 is the
   // normal answer for jobs separated before the beat-grid stage existed, and
@@ -2122,7 +2179,17 @@ function _effectiveMixGains() {
     // this being the only thing standing between a snare and a resampler.
     pitches.push(effectivePitch(s.name, m.pitch ?? 0, undefined));
   }
-  return { names, gains, pitches };
+  return { names, gains, pitches, lanes: _exportLanes() };
+}
+
+// The export's lanes=: every base stem that is a lane of its own, muted or
+// not, plus any stem left out of playback (Streamer's "I play"). The server
+// then builds Original from every other stem, exactly as playback does, so a
+// muted lane never returns inside Original and a laned stem never plays twice.
+function _exportLanes() {
+  const dedicated = _currentStems.filter((s) => s.name !== "original" && !isTakeName(s.name)).map((s) => s.name);
+  const excluded = _playbackExclusion.jobId === currentJobId ? [..._playbackExclusion.names] : [];
+  return baseLanes([...dedicated, ...excluded]);
 }
 
 // The camera take render (static/js/video/videoTake.js) sends the same backing
@@ -2134,12 +2201,13 @@ export { _effectiveMixGains as currentMixLanes, _triggerDownload as triggerDownl
 // the whole song for exactly this query (GET mixdown/loudness).
 function _mixQuery() {
   if (!currentJobId) return null;
-  const { names, gains, pitches } = _effectiveMixGains();
+  const { names, gains, pitches, lanes } = _effectiveMixGains();
   if (!names.length) return null;
   const q = new URLSearchParams({
     stems: names.join(","),
     gains: gains.map((g) => g.toFixed(3)).join(","),
     ...(pitches.some((p) => p !== 0) ? { pitches: pitches.join(",") } : {}),
+    lanes: lanes.join(","),
   });
   const fx = exportFxParam(names);
   if (fx) q.set("fx", fx);
@@ -2213,12 +2281,13 @@ export function setExportClickAvailable(on) {
 // when every lane is silenced; `region` appends the loop bounds.
 function _mixdownUrl(ext, region) {
   if (!currentJobId) return null;
-  const { names, gains, pitches } = _effectiveMixGains();
+  const { names, gains, pitches, lanes } = _effectiveMixGains();
   if (!names.length) return null;
   const q = new URLSearchParams({
     stems: names.join(","),
     gains: gains.map((g) => g.toFixed(3)).join(","),
     ...(pitches.some((p) => p !== 0) ? { pitches: pitches.join(",") } : {}),
+    lanes: lanes.join(","),
   });
   // The lanes' EQs and the master EQ, only when one changes the sound, so an
   // export without EQ keeps exactly the URL (and cache entry) it had.
@@ -2272,12 +2341,13 @@ export function downloadCurrentMix(ext = "wav", onTransferStart) {
 // there's no video track or every lane is muted.
 export function downloadCurrentVideo(onTransferStart) {
   if (!currentJobId || !_currentHasVideo) return false;
-  const { names, gains, pitches } = _effectiveMixGains();
+  const { names, gains, pitches, lanes } = _effectiveMixGains();
   if (!names.length) return false;
   const q = new URLSearchParams({
     stems: names.join(","),
     gains: gains.map((g) => g.toFixed(3)).join(","),
     ...(pitches.some((p) => p !== 0) ? { pitches: pitches.join(",") } : {}),
+    lanes: lanes.join(","),
   });
   const fx = exportFxParam(names);
   if (fx) q.set("fx", fx);

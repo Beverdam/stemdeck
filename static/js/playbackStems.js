@@ -66,6 +66,29 @@ export function buildPlaybackStems(rawStems, visibleStems, baseStemNames, exclud
 }
 
 /**
+ * The waveform points of a lane that sums `names` (an Original a mode's
+ * layout made): per point, the sum of the stems' [min, max]. An envelope at
+ * or above the true one, close enough for a lane picture, and no server work.
+ * Null when none of them has peaks; a stem without peaks counts as silence.
+ */
+export function sumPeaks(peaks, names) {
+  const lists = (names || []).map((n) => peaks?.[n]).filter((p) => Array.isArray(p) && p.length);
+  if (!lists.length) return null;
+  const len = Math.min(...lists.map((p) => p.length));
+  const out = new Array(len);
+  for (let i = 0; i < len; i++) {
+    let mn = 0;
+    let mx = 0;
+    for (const p of lists) {
+      mn += p[i][0];
+      mx += p[i][1];
+    }
+    out[i] = [Math.max(-1, mn), Math.min(1, mx)];
+  }
+  return out;
+}
+
+/**
  * Full-decode mode also supplies AudioBuffers for waveform rendering. Add any
  * visible source that playback reconstructed from other files as decode-only.
  */
