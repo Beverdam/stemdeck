@@ -947,6 +947,7 @@ def _expand_render_lanes(
     names: list[str],
     gains: list[float],
     pitches: list[int],
+    remove: frozenset[str] = frozenset(),
 ) -> tuple[list[_RenderLane], list[str]]:
     """Lanes to render, with "original" rebuilt from its parts when it is
     transposed. Returns the lanes and the names of any lane left unpitched.
@@ -962,6 +963,12 @@ def _expand_render_lanes(
     -- the lane cannot be taken apart, so it stays at its original key. That is
     deliberately the same conservative choice playback makes: melodic content
     stays in the old key rather than the drums being resampled.
+
+    `remove` (Streamer Mode's "I play": the stems the musician plays) is left
+    out: a lane of that name is dropped, and "original" is always rebuilt
+    from its components without it, as playback does (playbackStems.js), so
+    the export carries exactly the backing that was heard. A job that cannot
+    be taken apart then gets a 422 rather than the removed part back.
     """
     lanes: list[_RenderLane] = []
     unpitched: list[str] = []
@@ -980,12 +987,17 @@ def _expand_render_lanes(
         if _is_recorded_lane(name):
             lanes.append(_RenderLane(_take_lane_path(job_id, name), gain, pitch, name))
             continue
+        if name in remove:
+            continue
         path = _validate_stem_path(job_id, name)
-        if name != "original" or pitch == 0:
+        if name != "original" or (pitch == 0 and not remove):
             lanes.append(_RenderLane(path, gain, pitch, name))
             continue
 
-        components = [n for n in STEM_NAMES if n not in selected]
+        components = [n for n in STEM_NAMES if n not in selected and n not in remove]
+        if not components:
+            # Everything the lane held is removed or has a lane of its own.
+            continue
         # Deliberately not `path`: that name holds the validated "original.wav"
         # this lane falls back to, and reusing it here left the fallback
         # pointing at whichever component was tried last.
@@ -998,6 +1010,10 @@ def _expand_render_lanes(
             paths.append(comp_path)
 
         if not paths:
+            if remove:
+                raise HTTPException(
+                    status_code=422, detail="this song's stems cannot be mixed without one part"
+                )
             lanes.append(_RenderLane(path, gain, 0, name))
             unpitched.append(name)
             continue

@@ -26,10 +26,12 @@ function sourceSpec(stem, controlName = stem.name, pitched = stem.name !== "drum
  * @param {{name:string,url:string}[]} rawStems Every source returned by the job.
  * @param {{name:string,url:string}[]} visibleStems Lanes shown in the mixer.
  * @param {string[]} baseStemNames Canonical separation stems for this server.
+ * @param {Set<string>} [exclude] Stems left out entirely, as a lane and as a
+ *   part of "original" (Streamer Mode's "I play": the musician plays it).
  */
-export function buildPlaybackStems(rawStems, visibleStems, baseStemNames) {
+export function buildPlaybackStems(rawStems, visibleStems, baseStemNames, exclude = new Set()) {
   const rawByName = new Map(rawStems.filter(playable).map((stem) => [stem.name, stem]));
-  const visible = visibleStems.filter(playable);
+  const visible = visibleStems.filter((stem) => playable(stem) && !exclude.has(stem.name));
   const dedicated = visible.filter((stem) => stem.name !== "original");
   const result = dedicated.map((stem) => sourceSpec(stem));
 
@@ -42,7 +44,7 @@ export function buildPlaybackStems(rawStems, visibleStems, baseStemNames) {
     dedicatedNames.add("vocals");
   }
 
-  const complementNames = baseStemNames.filter((name) => !dedicatedNames.has(name));
+  const complementNames = baseStemNames.filter((name) => !dedicatedNames.has(name) && !exclude.has(name));
   if (complementNames.length === 0) return result;
 
   const canReconstruct = complementNames.every((name) => rawByName.has(name));
@@ -57,8 +59,9 @@ export function buildPlaybackStems(rawStems, visibleStems, baseStemNames) {
   // cannot be separated client-side, so keep the entire lane unpitched. This
   // is intentionally conservative: melodic content may remain in the old key,
   // but drums are never resampled and no source is played twice.
+  // With a stem excluded the rendered mix would bring it back: nothing then.
   const original = rawByName.get("original");
-  if (original) result.push(sourceSpec(original, "original", false));
+  if (original && exclude.size === 0) result.push(sourceSpec(original, "original", false));
   return result;
 }
 

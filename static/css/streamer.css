@@ -465,7 +465,7 @@ html.streamer-open .daw-footer { display: none !important; }
    streamer.js). Everything in the song's column is placed from one scale. */
 .sm-tl {
   /* The label column (56 px in a narrow workspace). */
-  --sm-label-w: 82px;
+  --sm-label-w: 88px;
   flex: 1;
   min-height: 0;
   position: relative;
@@ -491,7 +491,7 @@ html.streamer-open .daw-footer { display: none !important; }
   /* zoom row, markers, ruler, gap, video, gap, stems */
   /* The stem lanes take what height is left, up to twice the design's, and
      never less than two readable lanes (the rest scrolls). */
-  grid-template-rows: minmax(0, 24px) minmax(34px, 46px) 24px 5px 34px 4px minmax(64px, 136px);
+  grid-template-rows: 32px minmax(34px, 46px) 24px 5px 34px 4px minmax(64px, 136px);
   column-gap: 8px;
   align-content: start;
 }
@@ -580,6 +580,9 @@ html.streamer-open .daw-footer { display: none !important; }
   white-space: nowrap;
 }
 .sm-tl-label svg { flex: none; }
+/* The stem lanes are told apart by colour and name ("Backing track" needs
+   the room the icon took). */
+.sm-tl-label-stem > svg { display: none; }
 .sm-tl-label[hidden] { display: none; }
 .sm-tl-label-video { grid-column: 1; grid-row: 5; height: 34px; border-color: #2f5ba8; background: #121c2b; color: #8cb8ff; }
 .sm-tl-audio-labels {
@@ -637,22 +640,16 @@ html.streamer-open .daw-footer { display: none !important; }
   min-height: 0;
   overflow: hidden;
 }
-/* The second lane's stem: a select that reads as the label's text. */
-.sm-tl-lane-sel {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  padding: 0 2px 0 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-/* Only one stem to show: it reads as plain text, no arrow. */
-.sm-tl-lane-sel:disabled { cursor: default; opacity: 1; appearance: none; }
-.sm-tl-lane-sel option { background: var(--panel); color: var(--fg); }
+/* "I play": the part left out of the backing track, top left of the
+   timeline card, level with the zoom control on the right. */
+/* Over the playhead's time label when the playhead is near the start (the
+   clock under the preview shows the time too). */
+.sm-part { position: absolute; left: 12px; top: 8px; z-index: 6; display: flex; align-items: center; gap: 8px; padding-right: 6px; background: var(--sm-card); }
+.sm-part-label { font-size: 12.5px; font-weight: 600; color: var(--sm-text-2); white-space: nowrap; }
+.sm-part-select { width: 170px; }
+.sm-part-select .sm-sel { height: 28px; padding: 0 30px 0 10px; font-size: 12.5px; }
+.sm-part-select .sm-sel-caret { top: 9px; right: 10px; }
+.sm-part-select .sm-sel:disabled { opacity: .6; cursor: default; }
 /* A song without stems or sections: said in the row, no layout change. */
 .sm-tl-note { margin: 0; font-size: 12px; color: var(--sm-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .sm-tl-note[hidden] { display: none; }
@@ -1036,6 +1033,10 @@ html.streamer-open .daw-footer { display: none !important; }
   .sm-tabs-row { flex-wrap: wrap; row-gap: 8px; }
   .sm-tab { padding: 0 14px; white-space: nowrap; }
   .sm-aspect { width: 160px; }
+  /* I play and the zoom share the timeline's top row: the zoom keeps its
+     buttons, its slider goes. */
+  .sm-part-select { width: 140px; }
+  .sm-zoom-track { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

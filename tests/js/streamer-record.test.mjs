@@ -98,5 +98,13 @@ check("closed while starting: the take goes back to idle, nothing recorded", nex
 }
 check("the raw recording is named after what was recorded", rawExtension("video/mp4") === "mp4" && rawExtension("video/webm;codecs=vp9") === "webm" && rawExtension("") === "webm" && rawExtension("video/x-matroska") === "mkv");
 
+// I play: the render leaves the same part out of the backing.
+{
+  const mix = { names: ["original", "vocals"], gains: [1, 0.8], pitches: [0, 0] };
+  const withPart = buildRenderRequest({ mix, remove: "bass", range: { in: 1, out: 4 } });
+  const whole = buildRenderRequest({ mix, range: { in: 1, out: 4 } });
+  check("the part played goes to the server as remove_stem, the whole song sends none", withPart.remove_stem === "bass" && !("remove_stem" in whole));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

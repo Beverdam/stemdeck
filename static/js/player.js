@@ -308,6 +308,21 @@ function destroyMultitrack() {
   }
 }
 
+// Stems left out of playback for one song, set by a view that owns the
+// choice (Streamer's "I play") and cleared when it closes. Read once per load
+// by wireUpAudio: the caller reloads the song after a change.
+let _playbackExclusion = { jobId: null, names: new Set() };
+
+/** Leave `names` out of `jobId`'s playback from its next load (none: an empty set). */
+export function setPlaybackExclusion(jobId, names) {
+  _playbackExclusion = { jobId: names?.size ? jobId : null, names: names?.size ? new Set(names) : new Set() };
+}
+
+/** The exclusion in force: { jobId, names }. */
+export function playbackExclusion() {
+  return { jobId: _playbackExclusion.jobId, names: new Set(_playbackExclusion.names) };
+}
+
 function clearOverviewWaveforms() {
   document.querySelector(".stem-waveform-layer")?.remove();
 }
@@ -1371,7 +1386,11 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
     if (s.name === "lead_vocals" || s.name === "backing_vocals") return wantsVocals && splitDone;
     return selectedStems.has(s.name);
   });
-  const playbackStems = buildPlaybackStems(rawStems, stems, STEM_NAMES);
+  // A view may leave stems out of what is heard for this song (Streamer's
+  // "I play"); none otherwise, so every other mode loads exactly as before.
+  const exclude = _playbackExclusion.jobId === jobId ? _playbackExclusion.names : new Set();
+  if (exclude.size) stems = stems.filter((s) => !exclude.has(s.name));
+  const playbackStems = buildPlaybackStems(rawStems, stems, STEM_NAMES, exclude);
   const fullDecodeStems = addVisualOnlyStems(playbackStems, stems);
   _currentStems = stems;
   _mixUrl = mixUrl || null;

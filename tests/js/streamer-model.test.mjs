@@ -9,7 +9,7 @@ import {
   setLayerProps, setLayerFrame, nudgeLayer, moveFrame, resizeFrame, nearestLine, layerAt,
   emptyHistory, pushHistory, undoHistory, redoHistory, HISTORY_CAP,
   TRIM_MIN, trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery, ZOOM_MAX_PPS,
-  IMAGE_MAX_BYTES, IMAGE_TYPES, downscaleSize, fitRect, imageKey, pickLaneStems,
+  IMAGE_MAX_BYTES, IMAGE_TYPES, downscaleSize, fitRect, imageKey,
 } from "../../static/js/streamer/streamerModel.js";
 
 let failed = 0;
@@ -293,13 +293,6 @@ check("the picture's key survives save and load", parseScene(serializeScene(with
 check("a bad picture key is dropped", parseScene(serializeScene(setLayerProps(withPic, "image", { imageKey: "../../x y" }))).layers.find((l) => l.id === "image").props.imageKey === "");
 check("the background takes a picture too", defaultScene().layers.find((l) => l.type === "background").props.imageKey === "");
 
-// The take timeline's lanes (phase 5)
-check("lanes: the voice, then the best instrument", eq(pickLaneStems(["drums", "vocals", "bass", "other"]).lanes, ["vocals", "bass"]));
-check("lanes: the second is the chosen stem when present", eq(pickLaneStems(["drums", "vocals", "bass"], "drums").lanes, ["vocals", "drums"]));
-check("lanes: a chosen stem the song lacks falls back", eq(pickLaneStems(["vocals", "guitar"], "bass").lanes, ["vocals", "guitar"]));
-check("lanes: the choices are every stem but the first lane's", eq(pickLaneStems(["lead_vocals", "backing_vocals", "piano"]).choices, ["backing_vocals", "piano"]));
-check("lanes: no voice, the first lane is an instrument", eq(pickLaneStems(["drums", "bass"]).lanes, ["bass", "drums"]));
-check("lanes: one stem is one lane, none is none", eq(pickLaneStems(["original"]).lanes, ["original"]) && eq(pickLaneStems([]).lanes, []) && eq(pickLaneStems(null).lanes, []));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

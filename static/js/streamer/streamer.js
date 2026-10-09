@@ -21,13 +21,17 @@
 // recording (streamerRecord.js) and export (streamerExport.js).
 
 import { t, onLanguageChange } from "../i18n.js";
-import { currentJobId, mixerState, trackIndex, totalDuration } from "../state.js";
-import { transport, setPlayheadTime, togglePlayPause, stopTransport } from "../transport.js";
+import { currentJobId, mixerState, trackIndex, totalDuration, audioEngine, loopEnabled, loopStart, loopEnd } from "../state.js";
+import { transport, setPlayheadTime, togglePlayPause, stopTransport, setLoopRange } from "../transport.js";
 import { laneLabel, STEM_COLORS } from "../constants.js";
 import { karaokeLyrics } from "../lyrics.js";
 import { getCurrentTrackInfo } from "../catalog.js";
 import { getSections, sectionDisplayName } from "../sections.js";
-import { overviewPeaks } from "../player.js";
+import { overviewPeaks, setPlaybackExclusion, playbackExclusion } from "../player.js";
+import {
+  choiceKey, parseChoice, serializeChoice, offeredChoices, effectiveChoice, excludedNames, sameNames,
+  timelineLanes, BASE_STEMS,
+} from "../partChoice.js";
 import { isRecording } from "../capture/recordUi.js";
 import { isKaraokeOpen, closeKaraoke } from "../karaoke/karaoke.js";
 import { sungLines } from "../karaoke/karaokeModel.js";
@@ -39,11 +43,11 @@ import {
   setLayerFrame, nudgeLayer, moveFrame, resizeFrame, layerAt,
   emptyHistory, pushHistory, undoHistory, redoHistory,
   trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery,
-  outputSize, imageKey, pickLaneStems, IMAGE_TYPES, IMAGE_MAX_BYTES,
+  outputSize, imageKey, IMAGE_TYPES, IMAGE_MAX_BYTES,
 } from "./streamerModel.js";
 import { preparePicture, saveImage, pictureFor, onPictureLoaded, forgetAllPictures, pruneImages } from "./sceneImages.js";
 import { getBeats, getBeatGridSnap } from "../beatgrid.js";
-import { getTracks } from "../capture/takeLanes.js";
+import { getTracks, requestTakesReload } from "../capture/takeLanes.js";
 import { loadScene, saveScene, flushScene } from "./sceneStore.js";
 import {
   SETTINGS_KEY, NONE, defaultRecordingSettings, parseRecordingSettings, serializeRecordingSettings,
@@ -88,7 +92,10 @@ const NO_TITLE = String.fromCharCode(0x2014);
 // Snapping reach on screen, and the timeline's zoom step.
 const SNAP_PX = 6;
 const ZOOM_STEP = 0.1;
-const LANE2_KEY = (job) => `stemdeck.streamer.lane2.${job}`;
+// "I play": the part the musician plays, left out of the backing track they
+// hear and export. Streamer's own choice per song (partChoice.js); the other
+// modes keep theirs.
+const PART_MODE = "streamer";
 
 let root = null;
 let railBtn = null;
@@ -530,26 +537,20 @@ function buildTimeline() {
     const label = el("div", "sm-tl-label sm-tl-label-stem");
     const name = el("span", "sm-tl-label-name");
     label.append(icon(ICONS.wave, { size: 14, width: 2 }), name);
-    // The second lane's stem is the person's to choose (kept per song).
-    let sel = null;
-    if (i === 1) {
-      sel = el("select", "sm-tl-lane-sel");
-      tx(sel, "streamer.lane2Aria", "aria-label");
-      sel.addEventListener("change", () => {
-        laneChoices.set(currentJobId, sel.value);
-        try { localStorage.setItem(LANE2_KEY(currentJobId), sel.value); } catch (err) {
-          console.warn("[streamer] saving the lane choice failed:", err);
-        }
-        painted.lanes = null;
-      });
-      name.hidden = true;
-      label.append(sel);
-    }
     audioLabels.append(label);
     const c = el("canvas", `sm-tl-lane sm-tl-lane-${i}`);
     audio.append(c);
-    lanes.push({ label, name, sel, canvas: c, stem: null });
+    lanes.push({ label, name, canvas: c, key: null });
   }
+  // "I play": the part left out of the backing track (top left of the card).
+  const partBox = el("div", "sm-part");
+  const partSel = selectBox("sm-part-select");
+  partSel.sel.id = "streamerPart";
+  const partLabel = tx(el("label", "sm-part-label"), "streamer.part.label");
+  partLabel.htmlFor = "streamerPart";
+  tx(partSel.sel, "streamer.part.aria", "title");
+  partSel.sel.addEventListener("change", () => choosePart(partSel.sel.value));
+  partBox.append(partLabel, partSel.wrap);
   // A song without stems, and one without sections, say so in their rows.
   const noStems = tx(el("p", "sm-tl-note sm-tl-no-stems"), "streamer.noStems");
   noStems.hidden = true;
@@ -592,8 +593,9 @@ function buildTimeline() {
     e.preventDefault();
     scroll.scrollLeft += e.deltaY;
   }, { passive: false });
-  card.append(zoomBox, scroll);
+  card.append(partBox, zoomBox, scroll);
   return {
+    partSel: partSel.sel,
     card, zoomBox, zTrack, zFill, zThumb, zOut, zIn, scroll, grid, mask, markers, ruler, video, audio, lanes,
     range, trimIn, trimOut, dimL, dimR, tip, head, headTime, noStems, noSections,
   };
@@ -1086,6 +1088,8 @@ export function closeStreamer() {
   flushScene(sceneJob);
   paintRail();
   notify();
+  // The whole song again (only playback changes; the choice stays saved).
+  applyPart();
   const a = document.activeElement;
   if (!a || a === document.body || root.contains(a)) {
     const back = opener?.isConnected && opener.offsetParent ? opener : railBtn;
@@ -1219,6 +1223,7 @@ function frame() {
     }
     painted.exp = null;
     if (job) checkLastTake(job);
+    loadPart(job);
   }
   const hasTrack = Boolean(job && transport() && totalDuration > 0);
   if (painted.hasTrack !== hasTrack) {
@@ -1254,6 +1259,7 @@ function frame() {
   paintPreview(tNow, meta, lyrics, data);
   paintClock(tNow);
   paintTimeline(tNow);
+  paintPart();
 }
 
 let songChangeStop = false;
@@ -2251,6 +2257,7 @@ async function toggleRecording() {
   }
   const media = streamerMedia();
   const res = await startRecording({
+    remove: part.job === job ? part.remove : "",
     jobId: job,
     capture: inputState().live ? media.capture : null,
     settings,
@@ -2277,6 +2284,7 @@ function paintRecord() {
     ui.side.fps.disabled = open2;
     ui.side.vsrc.disabled = open2;
     ui.side.asrc.disabled = open2;
+    painted.part = null;
     takeDevices = open2 ? { ...wantedDevices() } : null;
     // A new take: the last one's export error is history.
     if (open2) {
@@ -2373,6 +2381,8 @@ async function runExport({ youtube = false } = {}) {
       trackId: streamerTrackId(job),
       settings: { ...settings, resolution: shot.resolution, fps: shot.fps },
       aspect: shot.aspect,
+      // The part left out while it was recorded: the export's backing is the same.
+      remove: shot.remove ?? (part.job === job ? part.remove : ""),
       range: trimRange(scene, totalDuration),
     });
     const res = await exportTake({
@@ -2423,7 +2433,7 @@ async function runExport({ youtube = false } = {}) {
 
 /** What `takeId` was recorded at, else the current scene and settings. */
 function recordedShape(takeId) {
-  return takeInfo(takeId) || { aspect: scene.aspect, resolution: settings.resolution, fps: settings.fps };
+  return takeInfo(takeId) || { aspect: scene.aspect, resolution: settings.resolution, fps: settings.fps, remove: null };
 }
 
 /** A short, readable reason from a failed export (the server's detail), or "". */
@@ -2481,24 +2491,149 @@ function saveRaw() {
 
 // ── Take timeline ──
 
-/** The two lanes: the voice, then the stem chosen for the second lane (kept
- * per song), else the best instrument heard against the voice. Only the
- * song's audio stems: not a take's camera or Streamer track. */
-function laneStems() {
-  const tracks = new Set(getTracks().map((tr) => tr.id));
-  const present = Object.keys(trackIndex || {}).filter((n) => !tracks.has(n));
-  return pickLaneStems(present, laneChoice(currentJobId));
+/** The two lanes: the backing track (every stem but the part played) and the
+ * part the musician plays (none when nothing is removed). */
+function laneSpecs() {
+  const present = part.job === currentJobId ? part.present : [];
+  const { backing, part: played } = timelineLanes(part.job === currentJobId ? part.remove : "", present);
+  const out = [];
+  if (backing.length) out.push({ key: `b:${backing.join(",")}`, names: backing, label: t("streamer.backingTrack"), color: "#9aa3ad" });
+  if (played) out.push({ key: `p:${played}`, names: [played], label: laneLabel(played), color: STEM_COLORS[played] || "#9aa3ad" });
+  return out;
 }
 
-// The second lane's stem per song, read from localStorage once.
-const laneChoices = new Map();
-function laneChoice(job) {
-  if (!laneChoices.has(job)) {
-    let v = "";
-    try { v = localStorage.getItem(LANE2_KEY(job)) || ""; } catch { v = ""; }
-    laneChoices.set(job, v);
+// ── I play: the part left out of the backing ──
+
+// The open song's choice: { job, remove, present (stems with a file), loaded }.
+let part = { job: null, remove: "", present: [], loaded: false };
+let partToken = 0;
+// A reload to apply a new choice: the playhead goes back where it was.
+let pendingSeek = null;
+
+/** The song's stems on disk and Streamer's saved choice for it. */
+async function loadPart(job) {
+  const token = ++partToken;
+  part = { job, remove: "", present: [], loaded: false };
+  painted.part = null;
+  painted.lanes = null;
+  if (!job) {
+    applyPart();
+    return;
   }
-  return laneChoices.get(job);
+  let present = [];
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(job)}`, { cache: "no-store" });
+    const data = res.ok ? await res.json() : null;
+    present = (data?.stems || []).filter((s) => s?.url && BASE_STEMS.includes(s.name)).map((s) => s.name);
+  } catch (err) {
+    console.warn("[streamer] reading the song's stems failed:", err);
+  }
+  let stored = null;
+  try { stored = await storeGet(choiceKey(job, PART_MODE), null); } catch (err) {
+    console.warn("[streamer] reading the part choice failed:", err);
+  }
+  if (token !== partToken) return;
+  part = { job, remove: effectiveChoice(parseChoice(stored), present), present, loaded: true };
+  painted.part = null;
+  painted.lanes = null;
+  applyPart();
+}
+
+/** The musician chose what they play: saved for this song in Streamer, and
+ * heard now. Refused while a take is open (the take hears what it began with). */
+function choosePart(value) {
+  if (takeOpen()) {
+    flashNote(t("streamer.rec.stopFirst"), ui.builder.timeline.partSel);
+    painted.part = null;
+    return;
+  }
+  const job = part.job;
+  if (!job || job !== currentJobId || !part.loaded) return;
+  const remove = effectiveChoice({ remove: value }, part.present);
+  if (remove === part.remove) return;
+  part = { ...part, remove };
+  storeSet(choiceKey(job, PART_MODE), serializeChoice({ remove }));
+  painted.part = null;
+  painted.lanes = null;
+  // The backing file is made now, so the export does not wait for it.
+  if (remove) fetch(`/api/jobs/${encodeURIComponent(job)}/backing/${remove}.wav`, { method: "HEAD" }).catch(() => {});
+  applyPart();
+}
+
+/**
+ * Make what is heard match the choice: while Streamer is open, the open
+ * song's playback leaves the part out (player.js setPlaybackExclusion, read
+ * when the song loads, so the song reloads); closed, nothing is left out.
+ * Only the open song is ever affected, and only playback: no mode's saved
+ * mix changes.
+ */
+function applyPart() {
+  const job = currentJobId;
+  const want = open && job && part.job === job && part.loaded ? excludedNames(part.remove) : new Set();
+  const have = playbackExclusion();
+  const haveForJob = have.jobId === job ? have.names : new Set();
+  if (sameNames(want, haveForJob)) {
+    // Another song's leftover choice is dropped without a reload.
+    if (have.jobId && have.jobId !== job) setPlaybackExclusion(null, new Set());
+    return;
+  }
+  setPlaybackExclusion(job, want);
+  if (!job) return;
+  // The loop region is cleared by a load: kept here and set again after.
+  pendingSeek = {
+    job, t: now(), engine: audioEngine, until: performance.now() + 20000, readyAt: 0,
+    loop: loopEnabled && loopEnd > loopStart ? { start: loopStart, end: loopEnd } : null,
+  };
+  requestTakesReload(job);
+  // Checked by a timer, not the frame loop: a close reloads too, after the
+  // loop has stopped.
+  clearInterval(seekTimer);
+  seekTimer = setInterval(() => {
+    finishPartReload();
+    if (!pendingSeek || performance.now() > pendingSeek.until) {
+      pendingSeek = null;
+      clearInterval(seekTimer);
+    }
+  }, 100);
+}
+let seekTimer = 0;
+
+/** After a reload for the choice: the playhead back where it was. */
+function finishPartReload() {
+  if (!pendingSeek) return;
+  if (currentJobId !== pendingSeek.job) {
+    pendingSeek = null;
+    return;
+  }
+  if (!(audioEngine && audioEngine !== pendingSeek.engine && totalDuration > 0 && transport())) return;
+  // The new engine is up; its load settles its own position a moment later,
+  // so the seek waits a little and is checked until it holds.
+  const nowMs = performance.now();
+  if (!pendingSeek.readyAt) pendingSeek.readyAt = nowMs;
+  if (nowMs - pendingSeek.readyAt < 300) return;
+  const { t: t0, loop } = pendingSeek;
+  if (loop && !loopEnabled) setLoopRange(loop.start, loop.end);
+  if (t0 <= 0 || Math.abs(now() - t0) < 0.25) {
+    pendingSeek = null;
+    return;
+  }
+  setPlayheadTime(t0);
+}
+
+function paintPart() {
+  const sel = ui.builder.timeline.partSel;
+  const offered = part.job === currentJobId ? offeredChoices(part.present) : [""];
+  const sig = `${offered.join(",")}|${part.remove}|${part.loaded}|${takeOpen()}|${t("streamer.part.none")}`;
+  if (painted.part === sig) return;
+  painted.part = sig;
+  sel.replaceChildren(...offered.map((c) => {
+    const o = el("option", null, c ? laneLabel(c) : t("streamer.part.none"));
+    o.value = c;
+    return o;
+  }));
+  sel.value = part.remove;
+  sel.disabled = takeOpen() || !part.loaded || offered.length < 2;
+  sel.title = part.loaded && offered.length < 2 ? t("streamer.part.noStems") : t("streamer.part.aria");
 }
 
 /** The label column and its gap: the left edge of the song's column. */
@@ -2784,39 +2919,25 @@ function paintTimeline(tNow) {
   // Stem lanes: only the part in view is drawn (a whole song at full zoom
   // would be wider than a canvas may be).
   const src = overviewPeaks();
-  const { lanes: stems, choices } = laneStems();
+  const specs = laneSpecs();
   const left = tl.scroll.scrollLeft;
   const h = tl.audio.clientHeight;
-  const laneSig = `${stems.join(",")}|${choices.join(",")}|${view}x${h}|${left}|${pps}`;
+  const laneSig = `${specs.map((sp) => `${sp.key}:${sp.label}`).join("|")}|${view}x${h}|${left}|${pps}`;
   if (painted.lanes !== laneSig || painted.lanesSrc !== src) {
     painted.lanes = laneSig;
     painted.lanesSrc = src;
-    fillLaneChoice(tl.lanes[1].sel, choices, stems[1] || "");
-    tl.lanes.forEach((lane, i) => drawLane(lane, stems[i] || null, src, left, view, pps, dur));
-    tl.noStems.hidden = !dur || stems.length > 0;
+    tl.lanes.forEach((lane, i) => drawLane(lane, specs[i] || null, src, left, view, pps, dur));
+    tl.noStems.hidden = !dur || !part.loaded || specs.length > 0;
   }
 }
 
-/** The second lane's stem choices, and the one shown. */
-function fillLaneChoice(sel, choices, value) {
-  const sig = `${choices.join(",")}|${t("streamer.lane2Aria")}`;
-  if (sel.dataset.sig !== sig) {
-    sel.dataset.sig = sig;
-    sel.replaceChildren(...choices.map((n) => {
-      const o = el("option", null, laneLabel(n));
-      o.value = n;
-      return o;
-    }));
-  }
-  if (sel.value !== value) sel.value = value;
-  sel.disabled = choices.length < 2;
-}
-
-function drawLane(lane, stem, src, left, view, pps, dur) {
-  lane.stem = stem;
-  lane.label.hidden = !stem;
-  lane.name.textContent = stem ? laneLabel(stem) : "";
-  const color = (stem && STEM_COLORS[stem]) || "#9aa3ad";
+/** One lane: `spec` { names, label, color } (the peaks of `names`), or null. */
+function drawLane(lane, spec, src, left, view, pps, dur) {
+  lane.key = spec?.key ?? null;
+  lane.label.hidden = !spec;
+  lane.name.textContent = spec ? spec.label : "";
+  lane.label.title = spec ? spec.label : "";
+  const color = spec?.color || "#9aa3ad";
   lane.label.style.setProperty("--sm-lane", color);
   const c = lane.canvas;
   const w = Math.max(0, Math.min(view, dur * pps - left) - 32);
@@ -2830,11 +2951,12 @@ function drawLane(lane, stem, src, left, view, pps, dur) {
   const ctx = c.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  if (!stem || !src?.data?.[stem] || !dur || !pps) return;
+  const names = (spec?.names || []).filter((n) => src?.data?.[n]);
+  if (!names.length || !dur || !pps) return;
   const n = Math.max(1, Math.floor(w / 3));
   const from = (left + 16) / pps / dur;
   const to = (left + 16 + w) / pps / dur;
-  const bars = peakBars(src.data, [stem], n, from, to);
+  const bars = peakBars(src.data, names, n, from, to);
   const step = w / n;
   ctx.fillStyle = color;
   for (let i = 0; i < n; i++) {

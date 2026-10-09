@@ -122,11 +122,12 @@ export function exportFileName(title, artist, ext = "mp4") {
  * - the canvas at the scene's aspect, `resolution` and `fps`, fit "fill"
  *   (the recorded picture is the scene, already the canvas's shape);
  * - the kept range as span "range";
- * - the click, the lanes' EQ and the master when given.
+ * - the click, the lanes' EQ and the master when given;
+ * - `remove`: the part the musician played, left out of the backing.
  */
 export function buildRenderRequest({
   mix, exclude = [], mixedAudio = true, includeClick = false, aspect = "16:9",
-  resolution = "1080", fps = 30, range, fx = "", master = "",
+  resolution = "1080", fps = 30, range, fx = "", master = "", remove = "",
 }) {
   const names = [];
   const gains = [];
@@ -162,6 +163,9 @@ export function buildRenderRequest({
   if (pitches.some((p) => p !== 0)) body.pitches = pitches;
   if (fx) body.fx = fx;
   if (master) body.master = master;
+  // "I play": the part left out of the backing (the server leaves it out of
+  // the mix exactly as playback did). Omitted for the whole song.
+  if (remove) body.remove_stem = remove;
   return body;
 }
 
