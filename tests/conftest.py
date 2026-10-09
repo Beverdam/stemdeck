@@ -170,3 +170,17 @@ def _isolate_network_settings(tmp_path, monkeypatch):
     _settings._state = None  # force a fresh load from the isolated path
     yield
     _settings._state = None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_video_encoder(tmp_path, monkeypatch):
+    """No test touches the machine's GPU encoders or the real probe cache.
+    The suite defaults to the CPU kill switch, so every existing render runs
+    libx264 exactly as before; tests/test_video_encoder.py clears it."""
+    from app.pipeline import video_encoder as _ve
+
+    monkeypatch.setattr(_ve, "_cache_path", tmp_path / "video_encoders.json")
+    monkeypatch.setattr(_ve, "VIDEO_ENCODER_OVERRIDE", "cpu")
+    _ve.reset_state()
+    yield
+    _ve.reset_state()

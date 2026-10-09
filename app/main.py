@@ -72,6 +72,7 @@ from app.core.settings import (
     get_port,
     get_separation_quality,
     get_transcribe_lyrics,
+    get_video_encoder,
     get_video_max_height,
     set_acoustid_api_key,
     set_allow_network,
@@ -89,6 +90,7 @@ from app.core.settings import (
     set_port,
     set_separation_quality,
     set_transcribe_lyrics,
+    set_video_encoder,
     set_video_max_height,
 )
 from app.core.stems_location import (
@@ -394,6 +396,9 @@ def _settings_payload() -> dict[str, object]:
         # Whisper lyrics for a job no lookup found any for: "auto" (on a GPU
         # only) | "on" | "off".
         "transcribe_lyrics": get_transcribe_lyrics(),
+        # The take render's H.264 encoder: "auto" | "cpu" | an encoder name.
+        # GET/POST /api/video-encoders list and test what this machine has.
+        "video_encoder": get_video_encoder(),
         # Absent unless the user set one. Only the path is exposed, never the
         # file's contents -- those are the user's YouTube session.
         "cookies_file": get_cookies_file(),
@@ -547,6 +552,14 @@ async def update_settings(request: Request) -> dict[str, object]:
         try:
             set_transcribe_lyrics(str(body["transcribe_lyrics"]))
         except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+    if "video_encoder" in body:
+        if not isinstance(body["video_encoder"], str):
+            raise HTTPException(status_code=422, detail="video_encoder must be a string")
+        try:
+            set_video_encoder(body["video_encoder"])
+        except ValueError as e:
+            # The message lists the whitelist; it never echoes the value.
             raise HTTPException(status_code=422, detail=str(e)) from None
     return _settings_payload()
 

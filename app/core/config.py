@@ -400,6 +400,55 @@ TIMEOUT_BACKING = _env_int("STEMDECK_TIMEOUT_BACKING", 120)
 # 5-minute 1080p30 encode runs about 1x to 3x realtime on a desktop CPU.
 TIMEOUT_VIDEO_RENDER = _env_int("STEMDECK_TIMEOUT_VIDEO_RENDER", 3600)
 
+# The take render's hardware (GPU) H.264 encoders (app/pipeline/video_encoder.py).
+# libx264 stays the default and the fallback for every failure. h264_mf
+# (Windows Media Foundation) is deliberately absent: it refused 4K on the test
+# machine and has no constant-quality mode.
+VIDEO_CPU_ENCODER = "libx264"
+VIDEO_GPU_ENCODERS = ("h264_nvenc", "h264_qsv", "h264_amf", "h264_vaapi", "h264_videotoolbox")
+# The setting's values: "auto" tries the GPU encoders, "cpu" never does, an
+# encoder name tries only that one.
+VIDEO_ENCODER_CHOICES = ("auto", "cpu", *VIDEO_GPU_ENCODERS)
+
+
+def _env_choice(name: str, choices: tuple[str, ...]) -> str:
+    """An env value from a fixed list, lowercased; "" when unset or unknown."""
+    raw = os.environ.get(name, "").strip().lower()
+    return raw if raw in choices else ""
+
+
+# STEMDECK_VIDEO_ENCODER=cpu is the kill switch: it wins over the setting.
+# Any other choice ("auto", an encoder name) also wins; "" leaves the setting.
+VIDEO_ENCODER_OVERRIDE = _env_choice("STEMDECK_VIDEO_ENCODER", VIDEO_ENCODER_CHOICES)
+# A probe is a real 2 s encode of a test picture at the render's size and rate.
+VIDEO_ENCODER_PROBE_SEC = 2
+TIMEOUT_VIDEO_ENCODER_PROBE = _env_int("STEMDECK_TIMEOUT_VIDEO_ENCODER_PROBE", 20)
+# How long a probe result is trusted. A pass for a week, a failure for a day (a
+# driver installed today is tried tomorrow, or at once with Test encoders), a
+# timeout or a busy device for ten minutes (never as a lasting answer).
+VIDEO_ENCODER_PASS_TTL_SEC = 7 * 24 * 3600
+VIDEO_ENCODER_FAIL_TTL_SEC = 24 * 3600
+VIDEO_ENCODER_RETRY_SEC = 600
+# Failed GPU renders before that encoder is left alone until the next start.
+VIDEO_ENCODER_MAX_FAILURES = 2
+# A GPU render whose progress has not moved for this long is stopped and made
+# again on the CPU (a hung driver never ends on its own).
+TIMEOUT_VIDEO_GPU_STALL = _env_int("STEMDECK_TIMEOUT_VIDEO_GPU_STALL", 60)
+# The check of a GPU file: a full decode, bounded by this floor or this many
+# seconds per second of video, whichever is longer.
+TIMEOUT_VIDEO_VALIDATE_MIN = _env_int("STEMDECK_TIMEOUT_VIDEO_VALIDATE", 120)
+VIDEO_VALIDATE_SEC_PER_SEC = 1.0
+VIDEO_VALIDATE_DURATION_TOL_SEC = 0.5
+# The Settings "Test encoders" run: every candidate at 1080p30 and 4K30,
+# stopped when this much time has gone.
+VIDEO_ENCODER_TEST_BUDGET_SEC = 150
+# The GPU encoders' bitrate ceiling, in bits per pixel per frame (31 Mbps at
+# 1080p30, 124 Mbps at 4K30). Measured on the RTX 3080: NVENC at cq 19 spent
+# 0.5 to 0.9 Mbps on a real 1080p scene take (libx264 crf 20: 0.34) with a
+# higher SSIM, and on pure noise topped out near 35 Mbps whatever the cap, so
+# the cap only guards a runaway file.
+VIDEO_GPU_MAX_BITS_PER_PIXEL = 0.5
+
 # Ceilings of the limiter at the end of every mixdown (export clipping fix).
 # Stems summed at unity measured +0.9 dBFS with 77 clipped samples on a real
 # song (docs/plans 01-mastering 3.3).
