@@ -379,6 +379,20 @@ TAKE_MAX_SEQ = 100_000
 TAKE_SLACK_SEC = 120
 TAKE_AUDIO_MAX_BYTES_PER_SEC = 48000 * 2 * 4  # float32 stereo at 48 kHz
 TAKE_CAMERA_MAX_BYTES_PER_SEC = 20_000_000 // 8  # 20 Mbit/s, 2.5x the 8 Mbit/s recorder
+# Streamer Mode's recorder asks for at most 70% of that (recordModel.js
+# BITRATE_MAX), so a busy scene's overshoot still fits.
+# A take render's output: the canvas's short side for each size it offers.
+CANVAS_SHORT_SIDES = {"720": 720, "1080": 1080, "2160": 2160}
+# The click's level in a take render: the export's default (stems.py).
+RENDER_CLICK_GAIN = 0.6
+# A song's cover fetched for Streamer Mode (app/api/cover.py): its size cap,
+# the whole fetch's deadline, the hosts it may come from (a suffix on a dot
+# boundary: YouTube's i.ytimg.com, yt3.ggpht.com, lh3.googleusercontent.com
+# and SoundCloud's i1.sndcdn.com), and how long a failed fetch is not retried.
+COVER_MAX_BYTES = 5 * 1024 * 1024
+COVER_DEADLINE_SEC = 15.0
+COVER_HOSTS = ("ytimg.com", "ggpht.com", "googleusercontent.com", "sndcdn.com")
+COVER_RETRY_AFTER_SEC = 60.0
 # Video render of a take (libx264 + AAC). Slower than any audio export: a
 # 5-minute 1080p30 encode runs about 1x to 3x realtime on a desktop CPU.
 TIMEOUT_VIDEO_RENDER = _env_int("STEMDECK_TIMEOUT_VIDEO_RENDER", 3600)

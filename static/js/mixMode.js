@@ -28,7 +28,17 @@ let chain = Promise.resolve();
 
 const wanted = () => (karaokeOpen ? "karaoke" : streamerOpen ? "streamer" : getMode());
 
+// Switches asked for and not finished: while any is, the record in force is
+// about to change, and a mute or solo made now could land in the wrong one.
+let pending = 0;
+
+/** True while a switch of the saved mix is queued or running. */
+export function isMixSwitching() {
+  return pending > 0;
+}
+
 export function syncMixMode() {
+  pending += 1;
   chain = chain.then(async () => {
     const mode = wanted();
     let replaced = false;
@@ -44,7 +54,7 @@ export function syncMixMode() {
     applyAllLaneEq();
     restoreGlobals();
     document.dispatchEvent(new CustomEvent("stemdeck:mix-switched", { detail: { id: currentJobId, mode } }));
-  });
+  }).finally(() => { pending -= 1; });
   return chain;
 }
 

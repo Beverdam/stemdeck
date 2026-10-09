@@ -42,6 +42,7 @@ export function parseRecordingSettings(raw) {
     audioDeviceId: idOf(data.audioDeviceId),
     resolution: RESOLUTIONS.includes(String(data.resolution)) ? String(data.resolution) : d.resolution,
     fps: FRAME_RATES.includes(Number(data.fps)) ? Number(data.fps) : d.fps,
+    ...fpsFor(data.resolution, data.fps),
     recordMixedAudio: flag(data.recordMixedAudio, d.recordMixedAudio),
     includeClick: flag(data.includeClick, d.includeClick),
     autoStopAtEnd: flag(data.autoStopAtEnd, d.autoStopAtEnd),
@@ -66,7 +67,30 @@ export function resolveDeviceId(saved, devices) {
   return ids.includes(saved) ? saved : "";
 }
 
-/** 4K or 60 fps: allowed, with a warning (the 4K policy is not decided). */
+/** The frame rates offered at `resolution`: no 60 at 4K (the maintainer's
+ * decision; the server refuses it too). */
+export function framesFor(resolution) {
+  return String(resolution) === "2160" ? FRAME_RATES.filter((n) => n !== 60) : [...FRAME_RATES];
+}
+
+/** A stored 4K at 60 fps reads as 4K at 30 (only for that pair: the
+ * caller's own resolution and fps are kept otherwise). */
+function fpsFor(resolution, fps) {
+  return String(resolution) === "2160" && Number(fps) === 60 ? { fps: 30 } : {};
+}
+
+/**
+ * `patch` applied to `s`, kept to what is offered: 4K with 60 fps falls back
+ * to 30. Returns { settings, fellBack } (fellBack: the rate was changed).
+ */
+export function applySettings(s, patch) {
+  const next = parseRecordingSettings({ ...s, ...patch });
+  const asked = Number(patch?.fps ?? s?.fps);
+  return { settings: next, fellBack: next.resolution === "2160" && asked === 60 && next.fps !== 60 };
+}
+
+/** A heavy choice (4K at 30 fps, or 60 fps at 1080p or 720p): allowed, with
+ * a warning about the computer's load. */
 export function isHeavy(s) {
   return s?.resolution === "2160" || Number(s?.fps) === 60;
 }

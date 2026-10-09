@@ -58,8 +58,15 @@ export async function exportTake({ jobId, takeId, body, filename, onProgress, on
   if (!res.ok) {
     const detail = await detailOf(res);
     const err = new Error(detail);
-    err.code = isNoEncoder(res.status, detail) ? "no-encoder" : "failed";
+    // 404: the take (or its picture) is no longer on the server.
+    err.code = isNoEncoder(res.status, detail) ? "no-encoder" : res.status === 404 ? "gone" : "failed";
     throw err;
+  }
+  // Cancel pressed while the POST was on its way: the server has a render
+  // queued now that nothing will follow; stop it.
+  if (signal?.aborted) {
+    await cancelRender(jobId, takeId).catch((err) => console.warn("[streamer] cancel failed:", err));
+    throw Object.assign(new Error("cancelled"), { code: "cancelled" });
   }
   let status;
   try {
@@ -74,12 +81,26 @@ export async function exportTake({ jobId, takeId, body, filename, onProgress, on
   // already proposes it.
   const url = `${renderDownloadUrl(jobId, takeId, status)}?name=${encodeURIComponent(filename)}`;
   const saved = await triggerDownload(url, filename, onTransferStart);
+  // The desktop app's save token: Show in folder reveals this file only.
+  if (typeof saved === "string") savedToken = saved;
   return { saved: saved !== false };
 }
+
+let savedToken = null;
 
 /** Stop a render that is queued or running. */
 export function cancelExport(jobId, takeId) {
   return cancelRender(jobId, takeId).catch((err) => console.warn("[streamer] cancel failed:", err));
+}
+
+/** The raw recording's Content-Type (its file's own container), or "". */
+export async function rawRecordingType(jobId, takeId) {
+  try {
+    const res = await fetch(`${base(jobId, takeId)}/camera`, { method: "HEAD", cache: "no-store" });
+    return res.ok ? res.headers.get("content-type") || "" : "";
+  } catch {
+    return "";
+  }
 }
 
 /** Save the raw recording (the take's picture as recorded) when no MP4 can be made. */
@@ -89,11 +110,16 @@ export function saveRawRecording(jobId, takeId, filename, onTransferStart) {
 
 /** Desktop only: show the file just saved in the file manager. */
 export function canRevealSaved() {
-  return Boolean(window.__TAURI__?.core?.invoke);
+  return Boolean(window.__TAURI__?.core?.invoke) && Boolean(savedToken);
 }
 
 export function revealSaved() {
   const invoke = window.__TAURI__?.core?.invoke;
-  if (!invoke) return Promise.resolve(false);
-  return invoke("reveal_last_export").then(() => true);
+  if (!invoke || !savedToken) return Promise.resolve(false);
+  return invoke("reveal_saved", { token: savedToken }).then(() => true);
+}
+
+/** A new export starts: Show in folder no longer points at the last file. */
+export function forgetSaved() {
+  savedToken = null;
 }

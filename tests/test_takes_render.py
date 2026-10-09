@@ -437,7 +437,7 @@ async def test_render_refusals(jobs_dir, client, tmp_path, monkeypatch):
         assert r.status_code == 422 and "libx264" in r.json()["detail"]
 
 
-async def test_a_running_render_blocks_a_second_one_edit_and_delete(jobs_dir, client, tmp_path):
+async def test_a_running_render_blocks_a_second_one_and_an_edit(jobs_dir, client, tmp_path):
     skip_without_ffmpeg()
     _make_job(jobs_dir)
     async with client as c:
@@ -446,13 +446,25 @@ async def test_a_running_render_blocks_a_second_one_edit_and_delete(jobs_dir, cl
         takes_mod._renders[(JOB, tid)] = run
         base = f"/api/jobs/{JOB}/takes/{tid}"
         assert (await c.patch(base, json={"label": "x"})).status_code == 409
-        assert (await c.delete(base)).status_code == 409
         if take_render.libx264_available():
             assert (await c.post(f"{base}/render", json={})).status_code == 409
         r = await c.post(f"{base}/render/cancel")
         assert r.json()["status"] == "none"
         assert run.cancel.is_set()
         assert (await c.delete(base)).status_code == 200
+
+
+async def test_deleting_a_take_stops_its_running_render(jobs_dir, client, tmp_path):
+    """A delete is never refused for a render: the render stops first (the
+    fix pass; it used to answer 409 and leave the take)."""
+    skip_without_ffmpeg()
+    _make_job(jobs_dir)
+    async with client as c:
+        tid = await _take_with_camera(c, tmp_path)
+        run = takes_mod._RenderRun(status="running")
+        takes_mod._renders[(JOB, tid)] = run
+        assert (await c.delete(f"/api/jobs/{JOB}/takes/{tid}")).status_code == 200
+        assert run.cancel.is_set() and (JOB, tid) not in takes_mod._renders
 
 
 def test_deleting_a_job_stops_its_renders():

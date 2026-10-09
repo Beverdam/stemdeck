@@ -40,7 +40,14 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from app.core.config import JOB_ID_RE, JOBS_DIR
+from app.core.config import (
+    COVER_DEADLINE_SEC,
+    COVER_HOSTS,
+    COVER_MAX_BYTES,
+    COVER_RETRY_AFTER_SEC,
+    JOB_ID_RE,
+    JOBS_DIR,
+)
 from app.core.registry import get as registry_get
 
 logger = logging.getLogger("stemdeck.api")
@@ -48,15 +55,16 @@ logger = logging.getLogger("stemdeck.api")
 router = APIRouter(tags=["jobs"])
 
 COVER_FILE = "cover.img"
-COVER_MAX_BYTES = 5 * 1024 * 1024
-# The whole fetch, redirects and the slowest trickle of bytes included.
-COVER_DEADLINE_SEC = 15.0
-_CHUNK = 64 * 1024
+# Read as soon as any bytes arrive (read1), at most this much at a time, so
+# the deadline (COVER_DEADLINE_SEC, the whole fetch, redirects and the
+# slowest trickle of bytes included) is checked between small reads.
+_CHUNK = 16 * 1024
 _USER_AGENT = "StemDeck cover fetch"
-# Where the sources StemDeck imports from keep their pictures: YouTube
-# (i.ytimg.com, yt3.ggpht.com, lh3.googleusercontent.com) and SoundCloud
-# (i1.sndcdn.com). The host must be one of these or end in "." + one.
-COVER_HOSTS = ("ytimg.com", "ggpht.com", "googleusercontent.com", "sndcdn.com")
+
+# A fetch that failed is not tried again for COVER_RETRY_AFTER_SEC: every
+# frame of a scene asks for the cover, and a dead host would otherwise be
+# asked again each time. job id -> monotonic time of the failure.
+_failed_at: dict[str, float] = {}
 
 # One fetch per song at a time: a second request waits for the first and then
 # finds the cached file. Entries are removed once nobody waits on them.
@@ -147,7 +155,9 @@ def fetch_cover(url: str, *, deadline_sec: float = COVER_DEADLINE_SEC) -> tuple[
         while True:
             if time.monotonic() > deadline:
                 raise CoverRefused("cover took too long")
-            chunk = response.read(_CHUNK)
+            # read1: what has arrived, not a full chunk, so a slow drip
+            # cannot hold one read past the deadline.
+            chunk = response.read1(_CHUNK)
             if not chunk:
                 break
             size += len(chunk)
@@ -199,6 +209,9 @@ async def get_cover(job_id: str) -> Response:
     url = job.thumbnail
     if not url or not isinstance(url, str):
         raise HTTPException(status_code=404, detail="no cover")
+    failed = _failed_at.get(job_id)
+    if failed is not None and time.monotonic() - failed < COVER_RETRY_AFTER_SEC:
+        raise HTTPException(status_code=404, detail="no cover")
 
     lock = _fetch_locks.setdefault(job_id, asyncio.Lock())
     _fetch_waiters[job_id] = _fetch_waiters.get(job_id, 0) + 1
@@ -212,7 +225,9 @@ async def get_cover(job_id: str) -> Response:
                 data, kind = await asyncio.to_thread(fetch_cover, url)
             except (ValueError, OSError, http.client.HTTPException):
                 logger.warning("[%s] cover not fetched", job_id, exc_info=True)
+                _failed_at[job_id] = time.monotonic()
                 raise HTTPException(status_code=404, detail="no cover") from None
+            _failed_at.pop(job_id, None)
             try:
                 await asyncio.to_thread(_write_atomic, path, data)
             except OSError:

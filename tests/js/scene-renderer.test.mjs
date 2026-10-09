@@ -1,7 +1,7 @@
 // Streamer Mode's scene renderer (static/js/streamer/sceneRenderer.js), on a
 // stub 2D context that records what is drawn: the output never carries the
 // editor's overlays, hidden layers draw nothing, text is the song's.
-import { renderScene, wrapText, fitText } from "../../static/js/streamer/sceneRenderer.js";
+import { renderScene, wrapText, fitText, aspectScale } from "../../static/js/streamer/sceneRenderer.js";
 import { defaultScene, withLayerVisible, addLayer, setLayerProps } from "../../static/js/streamer/streamerModel.js";
 
 let failed = 0;
@@ -87,7 +87,7 @@ check("a hidden selected layer has no outline", dashed(noSelection) === 0);
 const empty = draw(scene, null, { ...frame, lyrics: [] });
 check("no lyrics: the output draws no empty box text", !texts(empty).includes("No synced lyrics"));
 const emptyEd = draw(scene, { selection: null, safeZones: false }, { ...frame, lyrics: [] });
-check("no lyrics: the editor says so", texts(emptyEd).includes("No synced lyrics"));
+check("no lyrics: nothing drawn in the editor either (the layers panel says so)", !texts(emptyEd).includes("No synced lyrics") && !texts(emptyEd).includes("Move into the light now"));
 
 // Same picture at two sizes: positions scale with the output.
 const small = stubContext();
@@ -154,6 +154,25 @@ const camCalls = (editor) => {
 };
 const flips = (calls) => calls.filter((c) => c.name === "scale" && c.args[0] === -1).length;
 check("the camera mirror is the preview's only, never the video's", flips(camCalls({ selection: null })) === 1 && flips(camCalls(null)) === 0);
+
+// Pictures and portrait sizes (phase 5)
+check("portrait and square draw larger than landscape", aspectScale(1080, 1920) === 1.3 && aspectScale(1080, 1080) === 1.15 && aspectScale(1920, 1080) === 1 && aspectScale(0, 0) === 1);
+const pic = { naturalWidth: 400, naturalHeight: 200, width: 400, height: 200, complete: true };
+const picScene = setLayerProps(setLayerProps(withLayerVisible(addLayer(scene, "image"), "background", true), "background", { imageKey: "j:background:1" }), "image", { imageKey: "j:image:1" });
+const picCtx = (images) => {
+  const ctx = stubContext();
+  renderScene(ctx, picScene, { ...frame, images }, { width: 1920, height: 1080, font: "Inter", labels: labels2, editor: null });
+  return ctx;
+};
+const picDraws = (ctx) => ctx.calls.filter((c) => c.name === "drawImage" && c.args[0] === pic);
+const drawnPics = picDraws(picCtx(new Map([["j:background:1", pic], ["j:image:1", pic]])));
+const bg = drawnPics[0]?.args;
+check("a background picture covers the whole frame", drawnPics.length === 2 && bg && bg[3] >= 1920 - 0.01 && bg[4] >= 1080 - 0.01 && (Math.abs(bg[3] - 1920) < 0.01 || Math.abs(bg[4] - 1080) < 0.01));
+const imgFrame = picScene.layers.find((l) => l.id === "image").frame;
+const ia = drawnPics[1]?.args;
+check("an image layer's picture fits inside its frame", ia && ia[3] <= imgFrame.w * 1920 + 0.01 && ia[4] <= imgFrame.h * 1080 + 0.01 && (Math.abs(ia[3] - imgFrame.w * 1920) < 0.01 || Math.abs(ia[4] - imgFrame.h * 1080) < 0.01));
+const notYet = picCtx(new Map());
+check("a picture not loaded yet draws nothing in the video", picDraws(notYet).length === 0 && !texts(notYet).includes("Image placeholder"));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

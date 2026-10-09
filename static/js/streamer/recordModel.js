@@ -7,6 +7,7 @@
 // ── The recorder's states ──
 //
 //   idle -> starting -> recording -> stopping -> saved
+//   starting -> idle (aborted: the view closed before the take began)
 //   any of them -> failed (with a reason), saved or failed -> idle (a new take)
 //   saved -> exporting -> exported | exportFailed, either -> exporting again
 export const RECORD_STATES = Object.freeze([
@@ -15,7 +16,8 @@ export const RECORD_STATES = Object.freeze([
 
 const MOVES = {
   idle: { start: "starting" },
-  starting: { started: "recording", stop: "stopping", fail: "failed" },
+  // abort: Streamer closed before the take began (nothing was recorded).
+  starting: { started: "recording", stop: "stopping", fail: "failed", abort: "idle" },
   recording: { stop: "stopping", fail: "failed" },
   stopping: { saved: "saved", fail: "failed" },
   saved: { start: "starting", export: "exporting", reset: "idle" },
@@ -71,10 +73,18 @@ export function outputPixels(aspect, resolution) {
   return aspect === "9:16" ? { width: short, height: long } : { width: long, height: short };
 }
 
-/** The recorder's bit rate: about 0.1 bit per pixel per frame, 2.5 to 40 Mbps. */
+// The server keeps at most 20 Mbit/s of a take's picture per second of song
+// (app/core/config.py TAKE_CAMERA_MAX_BYTES_PER_SEC). The recorder's rate is
+// a target, not a ceiling (a busy scene overshoots it), so it asks for
+// 70% of that at most.
+export const CAMERA_CAP_BPS = 20_000_000;
+export const BITRATE_MAX = Math.floor(CAMERA_CAP_BPS * 0.7);
+
+/** The recorder's bit rate: about 0.1 bit per pixel per frame, 2.5 Mbps to
+ * BITRATE_MAX (14 Mbps). */
 export function videoBitrate({ width, height }, fps) {
   const bits = width * height * (Number(fps) || 30) * 0.1;
-  return Math.round(Math.max(2_500_000, Math.min(40_000_000, bits)));
+  return Math.round(Math.max(2_500_000, Math.min(BITRATE_MAX, bits)));
 }
 
 // ── The exported file ──
@@ -93,7 +103,10 @@ export function exportFileName(title, artist, ext = "mp4") {
   const t = clean(title);
   const a = clean(artist);
   let base = t ? (a ? `${t} - ${a}` : t) : "";
-  if (base.length > 120) base = base.slice(0, 120).trim().replace(/[.\s]+$/g, "");
+  // Cut by code points, never inside an emoji's surrogate pair (half a pair
+  // would make the URL encoder throw).
+  const chars = Array.from(base);
+  if (chars.length > 120) base = chars.slice(0, 120).join("").trim().replace(/[.\s]+$/g, "");
   // A name Windows reserves (CON, NUL, COM1...) is not a file name there.
   if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(base)) base = `${base} song`;
   return base ? `${base} (Streamer).${ext}` : `Streamer.${ext}`;
@@ -150,6 +163,16 @@ export function buildRenderRequest({
   if (fx) body.fx = fx;
   if (master) body.master = master;
   return body;
+}
+
+/** The raw recording's file extension from its Content-Type ("webm" when
+ * unknown): Chromium records MP4 where it can, WebM elsewhere. */
+export function rawExtension(contentType) {
+  const type = String(contentType || "").toLowerCase();
+  if (type.includes("mp4")) return "mp4";
+  if (type.includes("quicktime")) return "mov";
+  if (type.includes("matroska")) return "mkv";
+  return "webm";
 }
 
 /** Whether a refused render means "this ffmpeg cannot make MP4" (the raw

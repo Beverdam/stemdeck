@@ -78,7 +78,37 @@ function cover(ctx, img, x, y, w, h, mirror = false) {
 
 // ── Layers ──
 
-function drawBackground(ctx, b) {
+/** A picture of the scene (Image or Background Image layer), or null. */
+function pictureOf(env, layer) {
+  const key = layer.props?.imageKey;
+  const img = key ? env.frame.images?.get?.(key) : null;
+  return isDrawable(img) ? img : null;
+}
+
+/** `img` in the box, covering it (cut at the sides) or contained (bars left clear). */
+function drawPicture(ctx, img, b, mode) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return;
+  const s = mode === "cover" ? Math.max(b.w / iw, b.h / ih) : Math.min(b.w / iw, b.h / ih);
+  const w = iw * s;
+  const h = ih * s;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(b.x, b.y, b.w, b.h);
+  ctx.clip();
+  ctx.drawImage(img, b.x + (b.w - w) / 2, b.y + (b.h - h) / 2, w, h);
+  ctx.restore();
+}
+
+function drawBackground(ctx, b, env, layer) {
+  const img = layer ? pictureOf(env, layer) : null;
+  if (img) {
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    drawPicture(ctx, img, b, "cover");
+    return;
+  }
   const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
   g.addColorStop(0, "#141a24");
   g.addColorStop(1, "#0c1016");
@@ -239,9 +269,14 @@ function drawText(ctx, b, env, layer) {
   ctx.restore();
 }
 
-/** An image layer: no file can be picked yet (phase 5), so the editor shows
- * where it goes and the video shows nothing. */
-function drawImage(ctx, b, env) {
+/** An image layer: its picture contained in the frame; without one, the
+ * editor shows where it goes and the video shows nothing. */
+function drawImage(ctx, b, env, layer) {
+  const img = pictureOf(env, layer);
+  if (img) {
+    drawPicture(ctx, img, b, "contain");
+    return;
+  }
   if (!env.editor) return;
   const { u } = env;
   ctx.save();
@@ -317,7 +352,9 @@ function drawWaveform(ctx, b, env, layer) {
 function drawLyrics(ctx, b, env, layer) {
   const { u, frame } = env;
   const lines = frame.lyrics || [];
-  if (!lines.length && !(env.editor && env.labels.noLyrics)) return;
+  // No synced lyrics: nothing is drawn, in the preview or the video (the
+  // Lyrics row of the layers panel says so).
+  if (!lines.length) return;
   ctx.fillStyle = "rgba(14,13,14,.8)";
   rr(ctx, b.x, b.y, b.w, b.h, 6 * u);
   ctx.fill();
@@ -439,9 +476,24 @@ function drawSafeZones(ctx, env) {
 // ── Entry point ──
 
 /**
+ * How much larger text and padding are drawn for a portrait (1.3) or square
+ * (1.15) output than for a landscape one: measured on the short side, a
+ * phone-shaped picture would otherwise read small (the default frames of
+ * streamerModel.js are sized to match).
+ */
+export function aspectScale(W, H) {
+  if (!(W > 0 && H > 0)) return 1;
+  const r = W / H;
+  if (r < 0.9) return 1.3;
+  if (r <= 1.1) return 1.15;
+  return 1;
+}
+
+/**
  * Draw `scene` at the output size `width` x `height` into `ctx` (already
  * scaled for the device's pixels by the caller).
- * - frame: { t, duration, title, artist, art, camera, lyrics: [{ text, role }], bars: [0..1] }
+ * - frame: { t, duration, title, artist, art, camera, lyrics: [{ text, role }], bars: [0..1],
+ *            images: Map(imageKey -> picture) }
  * - opts: { width, height, font, accent, accentDim, labels, editor }
  *   editor: null for the output, or { selection: layer id | null, safeZones }.
  */
@@ -452,7 +504,7 @@ export function renderScene(ctx, scene, frame, opts) {
   const env = {
     W,
     H,
-    u: Math.min(W, H) / DESIGN_SHORT,
+    u: (Math.min(W, H) / DESIGN_SHORT) * aspectScale(W, H),
     font: opts.font || "sans-serif",
     accent: opts.accent || "#f4b740",
     accentDim: opts.accentDim || "rgba(244,183,64,.55)",

@@ -706,20 +706,20 @@
   pointer-events: none;
   display: flex;
   flex-direction: column;
-  --lane-playhead: 0%;
 }
 /* The playhead over the lanes. The ruler's line runs under this layer (z 3),
    so a solid lane (a video track's frames) hid it; this one is drawn in the
    layer, above the lanes' waveforms and frames, and below an open EQ panel
    (.eq-panel-body, z 2), which it must not cross. Placed by
-   updatePlayheadMarker (transport.js). */
-.stem-waveform-layer::before {
-  content: "";
+   updatePlayheadMarker (transport.js), which sets its left and height: an
+   element of its own, so moving it restyles it alone (a custom property on
+   the layer restyled every lane under it, every frame). */
+.lane-playhead-line {
   position: absolute;
   top: 0;
   /* Down to the last lane's bottom, not into the + track row under it. */
-  height: var(--lane-playhead-h, 100%);
-  left: var(--lane-playhead);
+  height: 100%;
+  left: 0;
   width: 1.5px;
   transform: translateX(-50%);
   background: #e54e4e;
@@ -727,7 +727,7 @@
   pointer-events: none;
   z-index: 1;
 }
-.app.is-import .stem-waveform-layer::before { display: none; }
+.app.is-import .lane-playhead-line { display: none; }
 
 .stem-waveform-row {
   /* Fixed 48px height matches the multitrack lane height

@@ -168,10 +168,12 @@ struct BackendStateInner {
     /// secret. Every live token maps to a path the user chose in a native
     /// dialog, so guessing one only ever yields another approved destination.
     next_save_token: u64,
-    /// The file the last completed export was written to, for Streamer Mode's
-    /// "Show in folder". Set only by download_to_path after the whole file is
-    /// on disk; JS never hands Rust a path to reveal.
-    last_saved: Option<PathBuf>,
+    /// The files completed exports were written to, by the token of their
+    /// save, for Streamer Mode's "Show in folder": a caller can reveal only
+    /// the file its own save wrote, never another caller's later one. Set
+    /// only by download_to_path after the whole file is on disk; JS never
+    /// hands Rust a path to reveal.
+    saved_files: HashMap<String, PathBuf>,
 }
 
 /// Cap on unconsumed destinations. A pick whose download never runs (the user
@@ -549,7 +551,7 @@ fn main() {
             save_audio_file,
             pick_export_destination,
             download_to_path,
-            reveal_last_export,
+            reveal_saved,
             pick_stems_folder,
             pick_exports_folder,
             current_exports_dir,
@@ -3581,28 +3583,40 @@ async fn download_to_path(
     validate_download_url(&url)?;
     let dest = take_pending_save(&state, &token)?;
     stream_url_to_file(&url, &dest).await?;
-    record_last_saved(&state, dest)
+    record_saved(&state, &token, dest)
 }
 
-/// Remembers the file an export just wrote, for reveal_last_export.
-fn record_last_saved(state: &BackendState, dest: PathBuf) -> Result<(), String> {
+/// Remembers the file the save `token` just wrote, for reveal_saved. At most
+/// MAX_PENDING_SAVES are kept (the oldest token goes first).
+fn record_saved(state: &BackendState, token: &str, dest: PathBuf) -> Result<(), String> {
     let mut guard = state
         .inner
         .lock()
         .map_err(|_| "state poisoned".to_string())?;
-    guard.last_saved = Some(dest);
+    if guard.saved_files.len() >= MAX_PENDING_SAVES && !guard.saved_files.contains_key(token) {
+        if let Some(oldest) = guard
+            .saved_files
+            .keys()
+            .min_by_key(|k| k.parse::<u64>().unwrap_or(u64::MAX))
+            .cloned()
+        {
+            guard.saved_files.remove(&oldest);
+        }
+    }
+    guard.saved_files.insert(token.to_string(), dest);
     Ok(())
 }
 
-/// The last exported file, if it is still there.
-fn last_saved_file(state: &BackendState) -> Result<PathBuf, String> {
+/// The file the save `token` wrote, if it is still there.
+fn saved_file(state: &BackendState, token: &str) -> Result<PathBuf, String> {
     let path = state
         .inner
         .lock()
         .map_err(|_| "state poisoned".to_string())?
-        .last_saved
-        .clone()
-        .ok_or_else(|| "nothing has been saved yet".to_string())?;
+        .saved_files
+        .get(token)
+        .cloned()
+        .ok_or_else(|| "nothing was saved by this export".to_string())?;
     if !path.is_file() {
         return Err("the saved file is no longer there".to_string());
     }
@@ -3635,18 +3649,23 @@ fn reveal_command(path: &Path) -> (&'static str, Vec<std::ffi::OsString>) {
     }
 }
 
-/// Shows the last exported file in the system's file manager (Streamer Mode's
-/// "Show in folder"). Takes no path: only a file this app has just written,
-/// recorded by download_to_path, can be revealed.
+/// Shows the file an export saved in the system's file manager (Streamer
+/// Mode's "Show in folder"). Takes the save's token, never a path: only a file
+/// this app wrote for that caller's own save can be revealed. Async, so the
+/// command never holds the main thread; the file manager's process is waited
+/// on in a thread of its own so it never lingers as a zombie.
 #[tauri::command]
-fn reveal_last_export(state: tauri::State<'_, BackendState>) -> Result<(), String> {
-    let path = last_saved_file(&state)?;
+async fn reveal_saved(state: tauri::State<'_, BackendState>, token: String) -> Result<(), String> {
+    let path = saved_file(&state, &token)?;
     let (program, args) = reveal_command(&path);
-    Command::new(program)
+    let mut child = Command::new(program)
         .args(&args)
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("could not open the file manager: {e}"))
+        .map_err(|e| format!("could not open the file manager: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Streams a URL to `dest`, via a temp file so a failure never leaves a
@@ -7788,18 +7807,50 @@ b6052160df96b31c9b1e33854a4dcda3d4b57641b880270f31736fb9f445d384  ffmpeg-n7.1-la
     #[test]
     fn reveal_needs_a_file_this_app_saved() {
         let state = super::BackendState::default();
-        assert!(super::last_saved_file(&state).is_err(), "nothing saved yet");
+        assert!(super::saved_file(&state, "1").is_err(), "nothing saved yet");
         let dir = std::env::temp_dir().join(format!("stemdeck-reveal-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("Song - Artist (Streamer).mp4");
         std::fs::write(&file, b"x").unwrap();
-        super::record_last_saved(&state, file.clone()).unwrap();
-        assert_eq!(super::last_saved_file(&state).unwrap(), file);
+        super::record_saved(&state, "1", file.clone()).unwrap();
+        assert_eq!(super::saved_file(&state, "1").unwrap(), file);
         std::fs::remove_file(&file).unwrap();
         assert!(
-            super::last_saved_file(&state).is_err(),
+            super::saved_file(&state, "1").is_err(),
             "a file that has gone is not revealed"
         );
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn reveal_shows_only_the_callers_own_save() {
+        let state = super::BackendState::default();
+        let dir = std::env::temp_dir().join(format!("stemdeck-reveal2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mine = dir.join("Streamer take.mp4");
+        let later = dir.join("A mix export.wav");
+        std::fs::write(&mine, b"x").unwrap();
+        std::fs::write(&later, b"y").unwrap();
+        super::record_saved(&state, "7", mine.clone()).unwrap();
+        // Another export saved afterwards does not change what token 7 reveals.
+        super::record_saved(&state, "8", later.clone()).unwrap();
+        assert_eq!(super::saved_file(&state, "7").unwrap(), mine);
+        assert_eq!(super::saved_file(&state, "8").unwrap(), later);
+        assert!(
+            super::saved_file(&state, "9").is_err(),
+            "an unknown token reveals nothing"
+        );
+        // Bounded: the oldest tokens go first.
+        for i in 10..(10 + super::MAX_PENDING_SAVES) {
+            super::record_saved(&state, &i.to_string(), later.clone()).unwrap();
+        }
+        assert!(state.inner.lock().unwrap().saved_files.len() <= super::MAX_PENDING_SAVES);
+        assert!(
+            super::saved_file(&state, "7").is_err(),
+            "the oldest save was dropped"
+        );
+        let _ = std::fs::remove_file(&mine);
+        let _ = std::fs::remove_file(&later);
         let _ = std::fs::remove_dir(&dir);
     }
 

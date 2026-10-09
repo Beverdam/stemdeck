@@ -39,11 +39,15 @@ import {
   setLayerFrame, nudgeLayer, moveFrame, resizeFrame, layerAt,
   emptyHistory, pushHistory, undoHistory, redoHistory,
   trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery,
+  outputSize, imageKey, pickLaneStems, IMAGE_TYPES, IMAGE_MAX_BYTES,
 } from "./streamerModel.js";
+import { preparePicture, saveImage, pictureFor, onPictureLoaded, forgetAllPictures, pruneImages } from "./sceneImages.js";
+import { getBeats, getBeatGridSnap } from "../beatgrid.js";
+import { getTracks } from "../capture/takeLanes.js";
 import { loadScene, saveScene, flushScene } from "./sceneStore.js";
 import {
   SETTINGS_KEY, NONE, defaultRecordingSettings, parseRecordingSettings, serializeRecordingSettings,
-  resolveDeviceId, isHeavy, METER_SEGMENTS, METER_FLOOR_DB, meterFraction, levelDb, segmentZone,
+  resolveDeviceId, isHeavy, applySettings, framesFor, METER_SEGMENTS, METER_FLOOR_DB, meterFraction, levelDb, segmentZone,
   litSegments, holdPeak, newPeakState,
 } from "./outputSettings.js";
 import {
@@ -54,13 +58,14 @@ import { reasonMessage } from "../capture/capturePermission.js";
 import { friendlyName } from "../capture/trackInputs.js";
 import { openRecordingSettings } from "../capture/recordingSettings.js";
 import { storeGet, storeSet } from "../utils.js";
-import { toggleStemMute } from "../mixer.js";
+import { toggleStemMute, getMixMode } from "../mixer.js";
+import { isMixSwitching } from "../mixMode.js";
 import {
   startRecording, stopRecording, drawOutput, recordState, takeOpen, onRecordChange, recordBlock,
-  lastTake, streamerTrackId, markExport,
+  lastTake, streamerTrackId, markExport, takeInfo, forgetTake,
 } from "./streamerRecord.js";
-import { renderRequest, exportTake, cancelExport, saveRawRecording, canRevealSaved, revealSaved } from "./streamerExport.js";
-import { shouldAutoStop, exportFileName } from "./recordModel.js";
+import { renderRequest, exportTake, cancelExport, saveRawRecording, rawRecordingType, canRevealSaved, revealSaved, forgetSaved } from "./streamerExport.js";
+import { shouldAutoStop, exportFileName, rawExtension } from "./recordModel.js";
 import { renderScene } from "./sceneRenderer.js";
 
 const SAFE_KEY = "stemdeck.streamer.safeZones";
@@ -83,7 +88,7 @@ const NO_TITLE = String.fromCharCode(0x2014);
 // Snapping reach on screen, and the timeline's zoom step.
 const SNAP_PX = 6;
 const ZOOM_STEP = 0.1;
-const LABEL_COL = 90; // the timeline's label column and its gap
+const LANE2_KEY = (job) => `stemdeck.streamer.lane2.${job}`;
 
 let root = null;
 let railBtn = null;
@@ -269,6 +274,8 @@ function buildView() {
   if (!root) return false;
   root.replaceChildren();
   tx(root, "streamer.regionAria", "aria-label");
+  // Focus moves here on open (Delete, R and the arrows are then Streamer's).
+  root.tabIndex = -1;
 
   const center = el("div", "sm-center");
   const head = buildHead();
@@ -521,13 +528,34 @@ function buildTimeline() {
   const lanes = [];
   for (let i = 0; i < 2; i++) {
     const label = el("div", "sm-tl-label sm-tl-label-stem");
-    const name = el("span");
+    const name = el("span", "sm-tl-label-name");
     label.append(icon(ICONS.wave, { size: 14, width: 2 }), name);
+    // The second lane's stem is the person's to choose (kept per song).
+    let sel = null;
+    if (i === 1) {
+      sel = el("select", "sm-tl-lane-sel");
+      tx(sel, "streamer.lane2Aria", "aria-label");
+      sel.addEventListener("change", () => {
+        laneChoices.set(currentJobId, sel.value);
+        try { localStorage.setItem(LANE2_KEY(currentJobId), sel.value); } catch (err) {
+          console.warn("[streamer] saving the lane choice failed:", err);
+        }
+        painted.lanes = null;
+      });
+      name.hidden = true;
+      label.append(sel);
+    }
     audioLabels.append(label);
     const c = el("canvas", `sm-tl-lane sm-tl-lane-${i}`);
     audio.append(c);
-    lanes.push({ label, name, canvas: c, stem: null });
+    lanes.push({ label, name, sel, canvas: c, stem: null });
   }
+  // A song without stems, and one without sections, say so in their rows.
+  const noStems = tx(el("p", "sm-tl-note sm-tl-no-stems"), "streamer.noStems");
+  noStems.hidden = true;
+  audio.append(noStems);
+  const noSections = tx(el("p", "sm-tl-note sm-tl-no-sections"), "streamer.noSections");
+  noSections.hidden = true;
   // The kept range: a yellow box with an in and an out handle; what is
   // trimmed off is dimmed.
   const range = el("div", "sm-tl-range");
@@ -555,7 +583,7 @@ function buildTimeline() {
   head.append(headTime, el("span", "sm-tl-playhead-line"));
   overlay.append(head);
 
-  grid.append(mask, markers, ruler, videoLabel, video, audioLabels, audio, dims, overlay, tip);
+  grid.append(mask, markers, noSections, ruler, videoLabel, video, audioLabels, audio, dims, overlay, tip);
   scroll.append(grid);
   scroll.addEventListener("scroll", () => { painted.lanes = null; });
   // A plain wheel scrolls the zoomed song sideways.
@@ -566,8 +594,8 @@ function buildTimeline() {
   }, { passive: false });
   card.append(zoomBox, scroll);
   return {
-    card, zoomBox, zTrack, zFill, zThumb, zOut, zIn, scroll, grid, markers, ruler, video, audio, lanes,
-    range, trimIn, trimOut, dimL, dimR, tip, head, headTime,
+    card, zoomBox, zTrack, zFill, zThumb, zOut, zIn, scroll, grid, mask, markers, ruler, video, audio, lanes,
+    range, trimIn, trimOut, dimL, dimR, tip, head, headTime, noStems, noSections,
   };
 }
 
@@ -653,6 +681,9 @@ function buildSide() {
   // 4K or 60 fps is allowed, with a warning (the 4K policy is not decided).
   const heavy = tx(el("p", "sm-heavy"), "streamer.heavy");
   heavy.hidden = true;
+  // Why 60 fps is greyed out at 4K.
+  const fpsWhy = tx(el("p", "sm-fps-why"), "streamer.fps60No4k");
+  fpsWhy.hidden = true;
   const switches = el("div", "sm-out-switches");
   const sw = {};
   for (const [key, k] of [["recordMixedAudio", "streamer.recMixed"], ["includeClick", "streamer.recClick"], ["autoStopAtEnd", "streamer.recAutostop"]]) {
@@ -689,7 +720,7 @@ function buildSide() {
   body.append(
     field("streamer.videoSource", "streamerVideoSrc", vsrc.sel), vsrc.wrap, vstate.line,
     field("streamer.audioSource", "streamerAudioSrc", asrc.sel), asrc.wrap, astate.line,
-    meterRow, grid, heavy, switches, exp,
+    meterRow, grid, fpsWhy, heavy, switches, exp,
   );
   rec.append(recHead, body);
 
@@ -745,7 +776,7 @@ function buildSide() {
   aside.append(rec, yt);
   return {
     aside, fps: fps.sel, titleIn, vsrc: vsrc.sel, asrc: asrc.sel, vstate, astate,
-    meter, meterRows, level, res: res.sel, heavy, sw,
+    meter, meterRows, level, res: res.sel, heavy, fpsWhy, sw,
     exp, expText, expBar, expGo, expCancel, expReveal, expRaw, ytExport: exportBtn,
   };
 }
@@ -799,8 +830,15 @@ function setAspect(aspect) {
 function toggleDrawer(force) {
   if (!ui) return;
   const on = typeof force === "boolean" ? force : !root.classList.contains("sm-drawer-open");
+  const was = root.classList.contains("sm-drawer-open");
+  // The drawer opens under the mode header, wherever it ends (it wraps when narrow).
+  const head = ui.head.card.getBoundingClientRect();
+  root.style.setProperty("--sm-drawer-top", `${Math.round(head.bottom - root.getBoundingClientRect().top + 8)}px`);
   root.classList.toggle("sm-drawer-open", on);
   ui.head.output.setAttribute("aria-expanded", String(on));
+  // Opened: focus goes into it. Closed with focus inside: back to Output.
+  if (on && !was) ui.side.vsrc.focus({ preventScroll: true });
+  else if (!on && was && ui.side.aside.contains(document.activeElement)) ui.head.output.focus({ preventScroll: true });
 }
 
 // ── State reads (the player's own; never copied) ──
@@ -843,23 +881,56 @@ async function showSceneFor(job) {
   closeProps();
   if (ui) ui.head.aspect.value = scene.aspect;
   if (!scene.layers.some((l) => l.id === selected)) selected = null;
-  afterChange();
+  // Shown, not edited: nothing is saved (sceneStore.js: a song only viewed
+  // leaves no trace).
+  afterChange({ save: false });
 }
 
 /** The scene is now `next`, made from `from` (the scene before the edit):
  * one undo step, saved for this song. */
 function commit(next, from = scene) {
   if (!next || next === from) return false;
+  // While a take is open: no new aspect, set of layers, order or trim.
+  if (takeOpen() && reshapes(from, next)) return false;
   history = pushHistory(history, from);
   scene = next;
   afterChange();
   return true;
 }
 
-/** Repaint and save after the scene changed (an edit, undo or redo). */
-function afterChange() {
+// Pictures nothing can show any more (replaced, removed, their layer
+// deleted) leave IndexedDB a moment after the change: kept while the scene or
+// its undo history still names them.
+let pruneTimer = 0;
+function schedulePrune() {
+  clearTimeout(pruneTimer);
+  const job = sceneJob;
+  if (!job) return;
+  pruneTimer = setTimeout(() => {
+    if (job !== sceneJob) return;
+    const keep = new Set();
+    for (const sc of [scene, ...history.past, ...history.future]) {
+      for (const l of sc?.layers || []) if (l.props?.imageKey) keep.add(l.props.imageKey);
+    }
+    pruneImages(`${job}:`, keep).catch((err) => console.warn("[streamer] clearing old pictures failed:", err));
+  }, 2000);
+}
+
+/** Whether `next` changes what a take films the shape of: the aspect, the
+ * layers or their order, or the trim. */
+function reshapes(from, next) {
+  const ids = (sc) => sc.layers.map((l) => l.id).join("|");
+  const trim = (sc) => JSON.stringify(sc.trim || null);
+  return from.aspect !== next.aspect || ids(from) !== ids(next) || trim(from) !== trim(next);
+}
+
+/** Repaint, and save after the scene changed (an edit, undo or redo). */
+function afterChange({ save = true } = {}) {
   if (selected && !scene.layers.some((l) => l.id === selected)) selected = null;
-  saveScene(sceneJob, scene);
+  if (save) {
+    saveScene(sceneJob, scene);
+    schedulePrune();
+  }
   if (ui) ui.head.aspect.value = scene.aspect;
   painted.scene = null;
   painted.layers = null;
@@ -868,6 +939,8 @@ function afterChange() {
 }
 
 function doUndo() {
+  // While a take is open the scene's shape stays as it is being filmed.
+  if (takeOpen()) return;
   const r = undoHistory(history, scene);
   if (!r.scene) return;
   history = r.history;
@@ -876,6 +949,7 @@ function doUndo() {
 }
 
 function doRedo() {
+  if (takeOpen()) return;
   const r = redoHistory(history, scene);
   if (!r.scene) return;
   history = r.history;
@@ -885,8 +959,8 @@ function doRedo() {
 
 function paintHistory() {
   if (!ui) return;
-  ui.builder.undo.disabled = !history.past.length;
-  ui.builder.redo.disabled = !history.future.length;
+  ui.builder.undo.disabled = !history.past.length || takeOpen();
+  ui.builder.redo.disabled = !history.future.length || takeOpen();
 }
 
 function setLayerVisible(id, visible) {
@@ -971,7 +1045,19 @@ export function openStreamer() {
   paintRail();
   loop();
   notify();
+  // Focus goes into the view, and back to what opened it on close.
+  opener = document.activeElement instanceof HTMLElement && !root.contains(document.activeElement) ? document.activeElement : null;
+  focusView();
   return true;
+}
+
+let opener = null;
+
+/** Focus the preview (the view itself while no song is open). */
+function focusView() {
+  const preview = ui?.builder.preview;
+  const usable = preview && tab === "builder" && !ui.center.inert && preview.offsetParent;
+  (usable ? preview : root).focus({ preventScroll: true });
 }
 
 export function closeStreamer() {
@@ -1000,11 +1086,32 @@ export function closeStreamer() {
   flushScene(sceneJob);
   paintRail();
   notify();
+  const a = document.activeElement;
+  if (!a || a === document.body || root.contains(a)) {
+    const back = opener?.isConnected && opener.offsetParent ? opener : railBtn;
+    back?.focus({ preventScroll: true });
+  }
+  opener = null;
 }
 
 export function toggleStreamer() {
-  if (open) closeStreamer();
-  else openStreamer();
+  if (open) {
+    if (refuseWhileTake(railBtn)) return;
+    closeStreamer();
+  } else openStreamer();
+}
+
+/** A Streamer take is open (starting, recording or stopping). */
+export function isStreamerTakeOpen() {
+  return takeOpen();
+}
+
+/** Leaving Streamer (the rail, another mode) waits for the take to stop:
+ * true (and a note beside `anchor`) when it is refused. */
+export function refuseWhileTake(anchor) {
+  if (!open || !takeOpen()) return false;
+  flashNote(t("streamer.rec.stopFirst"), anchor || railBtn);
+  return true;
 }
 
 export function isStreamerOpen() {
@@ -1099,16 +1206,38 @@ function frame() {
     shownJob = job;
     for (const k of Object.keys(painted)) delete painted[k];
     loadLyrics();
+    // The last song's pictures are let go (they load again when shown).
+    forgetAllPictures();
     if (job) showSceneFor(job);
     // A title typed for the last song is not this one's.
     delete ui.side.titleIn.dataset.edited;
+    // The last song's export result is not this one's (an export still
+    // running says whose take it is: paintExport).
+    if (!exporting) {
+      exportNote = "";
+      exportError = null;
+    }
+    painted.exp = null;
+    if (job) checkLastTake(job);
   }
   const hasTrack = Boolean(job && transport() && totalDuration > 0);
   if (painted.hasTrack !== hasTrack) {
     painted.hasTrack = hasTrack;
     root.classList.toggle("sm-empty-view", !hasTrack);
     ui.noTrack.hidden = hasTrack;
+    // No song: the message covers the view and nothing under it is reachable.
+    for (const node of [ui.center, ui.side.aside]) node.toggleAttribute("inert", !hasTrack);
+    if (!hasTrack) toggleDrawer(false);
   }
+  // A take filming one song while another opens stops (and is kept with its
+  // song): once, not every frame while it is stopping.
+  if (takeOpen() && recordState().jobId && recordState().jobId !== job) {
+    if (!songChangeStop) {
+      songChangeStop = true;
+      stopRecording();
+      flashNote(t("streamer.rec.songChanged"), ui.builder.rec);
+    }
+  } else if (!takeOpen()) songChangeStop = false;
   const tNow = hasTrack ? now() : 0;
   const meta = trackMeta();
   paintYoutubeTitle(meta);
@@ -1118,20 +1247,55 @@ function frame() {
   muteStreamerTrack(job);
   const lyrics = lyricWindow(lyr.lines, tNow, 7);
   const data = frameData(tNow, meta, lyrics);
-  if (takeOpen()) {
-    // The take films the scene without the editor's overlays, on every tab.
-    drawOutput((ctx, w, h) => renderScene(ctx, scene, data, sceneOptions(w, h, null)));
-    const st = recordState();
-    if (st.state === "recording" && shouldAutoStop({ t: tNow, range: trimRange(scene, totalDuration), duration: totalDuration, autoStop: settings.autoStopAtEnd })) {
-      stopRecording();
-    }
-  }
+  takeTick(tNow, data);
   paintRecord();
   if (tab !== "builder") return;
   paintLayers(meta, lyrics);
   paintPreview(tNow, meta, lyrics, data);
   paintClock(tNow);
   paintTimeline(tNow);
+}
+
+let songChangeStop = false;
+let lastOutMs = -Infinity;
+let hiddenTimer = 0;
+
+/**
+ * While a take is open: the output frame, drawn when the next one is due at
+ * the take's frame rate (the canvas stream takes no more than that), and the
+ * stop at the trim's out point. From the frame loop, or from a timer while
+ * the window is hidden (no frames are drawn there).
+ */
+function takeTick(tNow, data = null) {
+  if (!takeOpen()) return;
+  const nowMs = performance.now();
+  const fps = Number(settings.fps) || 30;
+  if (nowMs - lastOutMs >= 1000 / fps - 4) {
+    lastOutMs = nowMs;
+    const d = data || frameData(tNow, trackMeta(), lyricWindow(lyr.lines, tNow, 7));
+    // The take films the scene without the editor's overlays, on every tab.
+    drawOutput((ctx, w, h) => renderScene(ctx, scene, d, sceneOptions(w, h, null)));
+  }
+  const st = recordState();
+  if (st.state === "recording" && shouldAutoStop({ t: tNow, range: trimRange(scene, totalDuration), duration: totalDuration, autoStop: settings.autoStopAtEnd })) {
+    stopRecording();
+  }
+}
+
+/** A hidden window draws no frames: a take keeps its picture and its
+ * auto-stop going from a timer (about ten times a second) until it shows. */
+function onVisibility() {
+  clearInterval(hiddenTimer);
+  hiddenTimer = 0;
+  if (!document.hidden || !open) return;
+  hiddenTimer = setInterval(() => {
+    if (!document.hidden || !open || !takeOpen()) {
+      clearInterval(hiddenTimer);
+      hiddenTimer = 0;
+      return;
+    }
+    try { takeTick(now()); } catch (err) { console.warn("[streamer] hidden take tick failed:", err); }
+  }, 100);
 }
 
 function paintTransport(hasTrack) {
@@ -1188,7 +1352,25 @@ function frameData(tNow, meta, lyrics) {
     camera: cameraSource(),
     lyrics,
     bars: waveBars(),
+    images: scenePictures(),
   };
+}
+
+/** The scene's chosen pictures that have loaded: imageKey -> <img>. */
+function scenePictures() {
+  const out = new Map();
+  for (const l of scene.layers) {
+    const key = l.props?.imageKey;
+    if (!key || out.has(key)) continue;
+    const img = pictureFor(key);
+    if (img) out.set(key, img);
+  }
+  return out;
+}
+
+/** The output's width at the chosen resolution and the scene's aspect. */
+function outputWidth() {
+  return outputSize(scene.aspect, Number(settings.resolution) || 1080).width;
 }
 
 /** The renderer's options at `w` x `h`; `editor` null for the take. */
@@ -1276,6 +1458,16 @@ function paintSelBox(f) {
  * zones and the centre lines (Alt: no snapping). The whole drag is one undo
  * step.
  */
+// A drag in progress (the preview or a trim handle): a key that edits the
+// scene (Delete, undo) ends it first, put back where it began, so no
+// half-made step is left behind or undone twice.
+let liveDrag = null;
+function cancelLiveDrag() {
+  const d = liveDrag;
+  liveDrag = null;
+  d?.cancel();
+}
+
 function wirePreview(preview, rec) {
   let drag = null;
   preview.addEventListener("pointerdown", (e) => {
@@ -1296,6 +1488,16 @@ function wirePreview(preview, rec) {
     e.preventDefault();
     preview.setPointerCapture(e.pointerId);
     drag = { id: layer.id, corner, x0: e.clientX, y0: e.clientY, start: { ...layer.frame }, base: scene, f, moved: false };
+    const pointerId = e.pointerId;
+    liveDrag = {
+      cancel: () => {
+        if (!drag) return;
+        scene = drag.base;
+        drag = null;
+        painted.scene = null;
+        try { preview.releasePointerCapture(pointerId); } catch { /* already released */ }
+      },
+    };
   });
   preview.addEventListener("pointermove", (e) => {
     if (!drag) return;
@@ -1312,6 +1514,7 @@ function wirePreview(preview, rec) {
     if (!drag) return;
     const d = drag;
     drag = null;
+    liveDrag = null;
     if (d.moved && scene !== d.base) {
       // The live scene is the result; the step goes back to where it began.
       const result = scene;
@@ -1355,9 +1558,9 @@ function layerSub(layer, meta, lyrics) {
     case "waveform": return t("streamer.sub.waveform");
     case "lowerThird": return `${layer.props?.handle || t("streamer.lowerHandle")}  |  ${layer.props?.subtitle || t("streamer.lowerSub")}`;
     case "albumArt": return t("streamer.sub.albumArt");
-    case "background": return t("streamer.sub.background");
+    case "background": return t(layer.props?.imageKey ? "streamer.sub.imageChosen" : "streamer.sub.background");
     case "text": return layer.props?.text || t("streamer.sub.textEmpty");
-    case "image": return t("streamer.sub.image");
+    case "image": return t(layer.props?.imageKey ? "streamer.sub.imageChosen" : "streamer.sub.image");
     default: return "";
   }
 }
@@ -1722,6 +1925,10 @@ function openProps(id, anchor) {
     case "title":
       body.append(switchField("streamer.props.showArtist", layer.props.showArtist !== false, (on) => set({ showArtist: on })));
       break;
+    case "image":
+    case "background":
+      body.append(pictureFields(layer, set));
+      break;
     default:
       body.append(el("p", "sm-props-hint", t("streamer.props.none")));
   }
@@ -1749,10 +1956,72 @@ function openProps(id, anchor) {
   box.querySelector("input, select, button")?.focus();
 }
 
+/** Choose a picture (PNG, JPEG or WebP) from the computer, or remove it.
+ * The background covers the picture, an image layer contains it. */
+function pictureFields(layer, set) {
+  const wrap = el("div", "sm-props-picture");
+  const file = el("input");
+  file.type = "file";
+  file.accept = IMAGE_TYPES.join(",");
+  file.hidden = true;
+  file.tabIndex = -1;
+  const row = el("div", "sm-props-row");
+  const choose = button("sm-primary sm-props-choose");
+  const remove = button("sm-ib sm-props-remove");
+  remove.textContent = t("streamer.props.removeImage");
+  const msg = el("p", "sm-props-hint sm-props-picture-msg");
+  msg.setAttribute("role", "status");
+  const paint = (has) => {
+    choose.textContent = t(has ? "streamer.props.replaceImage" : "streamer.props.chooseImage");
+    remove.hidden = !has;
+  };
+  paint(Boolean(layer.props.imageKey));
+  msg.textContent = t(layer.type === "background" ? "streamer.props.imageHintCover" : "streamer.props.imageHintContain");
+  choose.addEventListener("click", () => file.click());
+  remove.addEventListener("click", () => {
+    set({ imageKey: "" });
+    paint(false);
+    msg.textContent = t("streamer.props.imageRemoved");
+    choose.focus({ preventScroll: true });
+  });
+  const job = sceneJob;
+  file.addEventListener("change", async () => {
+    const f = file.files?.[0];
+    file.value = "";
+    if (!f || !job) return;
+    msg.textContent = t("streamer.props.imageWorking");
+    choose.disabled = true;
+    try {
+      const blob = await preparePicture(f, outputWidth());
+      const key = imageKey(job, layer.id, Date.now().toString(36));
+      await saveImage(key, blob);
+      // The song may have changed while it was being shrunk: its scene only.
+      if (sceneJob !== job) return;
+      set({ imageKey: key });
+      pictureFor(key);
+      paint(true);
+      msg.textContent = t("streamer.props.imageSaved", { kb: Math.max(1, Math.round(blob.size / 1024)) });
+    } catch (err) {
+      console.warn("[streamer] the picture was not kept:", err);
+      const code = err?.code;
+      msg.textContent = code === "too-big"
+        ? t("streamer.props.imageTooBig", { mb: Math.round(IMAGE_MAX_BYTES / 1048576) })
+        : t(code === "type" || code === "decode" ? "streamer.props.imageType" : "streamer.props.imageFailed");
+    } finally {
+      choose.disabled = false;
+    }
+  });
+  row.append(choose, remove);
+  wrap.append(file, row, msg);
+  return wrap;
+}
+
 function closeProps({ focus = true } = {}) {
   if (!props) return;
   const { box, anchor } = props;
   props = null;
+  // Its texts go with it (they would pile up with every panel opened).
+  texts = texts.filter(([n]) => !box.contains(n));
   box.remove();
   if (focus && anchor?.isConnected) anchor.focus({ preventScroll: true });
 }
@@ -1771,7 +2040,10 @@ async function loadSettings() {
 }
 
 function setSetting(patch) {
-  settings = parseRecordingSettings({ ...settings, ...patch });
+  const r = applySettings(settings, patch);
+  settings = r.settings;
+  // 4K chosen while 60 fps was: the rate drops to 30, and says so.
+  if (r.fellBack && ui) flashNote(t("streamer.fps4kFallback"), ui.side.fps);
   storeSet(SETTINGS_KEY, serializeRecordingSettings(settings));
   painted.devices = null;
   painted.layers = null;
@@ -1792,10 +2064,15 @@ function cameraName(label) {
 
 /** What the view wants open now: the camera for a visible Camera layer in
  * the Scene Builder, the input while Streamer is open. */
+// The devices a take opened with: kept as they are until it ends (no tab,
+// layer or select change closes the camera or the input mid-take).
+let takeDevices = null;
+
 function wantedDevices() {
+  if (takeOpen() && takeDevices) return takeDevices;
   const lists = deviceLists();
   const camLayer = scene.layers.some((l) => l.type === "camera" && l.visible);
-  const camera = tab === "builder" && camLayer && settings.videoDeviceId !== NONE
+  const camera = (tab === "builder" || takeOpen()) && camLayer && settings.videoDeviceId !== NONE
     ? resolveDeviceId(settings.videoDeviceId, lists.video) : null;
   const audio = settings.audioDeviceId !== NONE ? resolveDeviceId(settings.audioDeviceId, lists.audio) : null;
   return { camera, audio, settings };
@@ -1841,12 +2118,12 @@ function actionKey(st) {
   return null;
 }
 
-function paintDeviceLine(line, kind, st, selectedNone) {
-  const msg = deviceMessage(kind, st, selectedNone || (kind === "audio" && st.noEngine));
+function paintDeviceLine(line, kind, st, selectedNone, note = "") {
+  const msg = note || deviceMessage(kind, st, selectedNone || (kind === "audio" && st.noEngine));
   line.line.hidden = !msg;
   line.line.classList.toggle("sm-dev-bad", Boolean(st.reason));
   if (line.text.textContent !== msg) line.text.textContent = msg;
-  const key = actionKey(st);
+  const key = note ? null : actionKey(st);
   line.act.hidden = !key || !msg;
   if (key) line.act.textContent = t(key);
 }
@@ -1863,14 +2140,19 @@ function paintDevices() {
   fillDeviceSelect(side.vsrc, "video", lists.video, settings.videoDeviceId);
   fillDeviceSelect(side.asrc, "audio", lists.audio, settings.audioDeviceId);
   side.res.value = settings.resolution;
+  const offered = framesFor(settings.resolution);
+  for (const o of side.fps.options) o.disabled = !offered.includes(Number(o.value));
   side.fps.value = String(settings.fps);
+  side.fpsWhy.hidden = offered.length === 3;
   for (const [key, s2] of Object.entries(side.sw)) s2.set(settings[key]);
   side.heavy.hidden = !isHeavy(settings);
   paintDeviceLine(side.vstate, "video", c, settings.videoDeviceId === NONE);
   // One Allow is enough: it opens both. The input's line says it only when
   // the camera's does not.
   const askBoth = !c.mayAsk && !c.reason && !a.mayAsk && !a.reason && settings.videoDeviceId !== NONE;
-  paintDeviceLine(side.astate, "audio", a, settings.audioDeviceId === NONE || askBoth);
+  // No input chosen: the take still records, with the song only.
+  const noInput = settings.audioDeviceId === NONE ? t("streamer.mic.none") : "";
+  paintDeviceLine(side.astate, "audio", a, settings.audioDeviceId === NONE || askBoth, noInput);
   // Over the preview, while the Camera layer is shown and the camera is not.
   const b = ui.builder;
   const camLayer = scene.layers.some((l) => l.type === "camera" && l.visible);
@@ -1937,6 +2219,9 @@ function coverFor(jobId) {
 function muteStreamerTrack(job) {
   const id = job && streamerTrackId(job);
   if (!id || takeOpen()) return;
+  // Only into Streamer's own saved mix: never while the switch to it is
+  // still on its way (the mute would be saved into the mode left behind).
+  if (getMixMode() !== "streamer" || isMixSwitching()) return;
   const m = mixerState[id];
   if (m && !m.muted) toggleStemMute(id);
 }
@@ -1990,6 +2275,16 @@ function paintRecord() {
     ui.head.aspect.disabled = open2;
     ui.side.res.disabled = open2;
     ui.side.fps.disabled = open2;
+    ui.side.vsrc.disabled = open2;
+    ui.side.asrc.disabled = open2;
+    takeDevices = open2 ? { ...wantedDevices() } : null;
+    // A new take: the last one's export error is history.
+    if (open2) {
+      exportError = null;
+      exportNote = "";
+    }
+    paintHistory();
+    painted.devices = null;
     if (!open2 && st.hidden) flashNote(t("streamer.rec.hidden"), ui.builder.rec);
     else if (!open2 && st.stopReason === "transport") flashNote(t("streamer.rec.stopped"), ui.builder.rec);
   }
@@ -2025,11 +2320,14 @@ function paintExport(st) {
   const job = currentJobId;
   const take = job ? lastTake(job) : null;
   const busy = Boolean(exporting);
-  const sig = `${st.state}|${take}|${busy}|${exportNote}|${exportError?.code || ""}|${t("streamer.export.go")}`;
+  const elsewhere = busy && exporting.jobId !== job;
+  const shot = take ? takeInfo(take) : null;
+  const asRecorded = shot && shot.aspect !== scene.aspect ? shot.aspect : "";
+  const sig = `${st.state}|${take}|${busy}|${elsewhere}|${exportNote}|${exportError?.code || ""}|${asRecorded}|${t("streamer.export.go")}`;
   if (painted.exp === sig) return;
   painted.exp = sig;
   const show = Boolean(take) && !takeOpen();
-  s.exp.hidden = !show && !takeOpen();
+  s.exp.hidden = !show && !takeOpen() && !busy;
   if (takeOpen()) {
     s.expText.textContent = t(st.state === "stopping" ? "streamer.rec.saving" : "streamer.rec.recording");
     s.expBar.hidden = true;
@@ -2045,7 +2343,12 @@ function paintExport(st) {
   s.expBar.hidden = !busy;
   s.expReveal.hidden = !(st.state === "exported" && canRevealSaved());
   s.expRaw.hidden = exportError?.code !== "no-encoder";
-  s.expText.textContent = exportNote || (take ? t("streamer.export.ready") : "");
+  // A take recorded at another aspect than the scene's now is exported as
+  // it was recorded (never stretched), and says so.
+  const ready = asRecorded ? t("streamer.export.readyAsRecorded", { aspect: asRecorded }) : t("streamer.export.ready");
+  s.expText.textContent = elsewhere
+    ? t("streamer.export.otherSong", { note: exportNote })
+    : exportNote || (take ? ready : "");
 }
 
 async function runExport({ youtube = false } = {}) {
@@ -2057,15 +2360,19 @@ async function runExport({ youtube = false } = {}) {
   exporting = { jobId: job, takeId, abort };
   exportError = null;
   exportNote = t("streamer.export.rendering", { pct: 0 });
-  markExport("export", { takeId });
+  markExport("export", { jobId: job, takeId });
+  forgetSaved();
   painted.exp = null;
   const bar = ui.side.expBar;
   bar.value = 0;
   try {
+    // The take's own shape: the aspect, size and rate it was recorded at
+    // (the scene may have changed since); never stretched.
+    const shot = recordedShape(takeId);
     const body = renderRequest({
       trackId: streamerTrackId(job),
-      settings,
-      aspect: scene.aspect,
+      settings: { ...settings, resolution: shot.resolution, fps: shot.fps },
+      aspect: shot.aspect,
       range: trimRange(scene, totalDuration),
     });
     const res = await exportTake({
@@ -2084,7 +2391,9 @@ async function runExport({ youtube = false } = {}) {
         painted.exp = null;
       },
     });
-    markExport("done");
+    // Not saved (the save dialog was cancelled): back to ready, and Show in
+    // folder does not point at an older file.
+    markExport(res.saved ? "done" : "cancel");
     exportNote = res.saved
       ? t(youtube ? "streamer.export.savedYoutube" : "streamer.export.saved")
       : t("streamer.export.notSaved");
@@ -2093,14 +2402,54 @@ async function runExport({ youtube = false } = {}) {
     if (err?.code === "cancelled") {
       markExport("cancel");
       exportNote = t("streamer.export.cancelled");
+    } else if (err?.code === "gone") {
+      // The take was deleted (in Advanced): nothing to export any more.
+      markExport("fail");
+      forgetTake(job, takeId);
+      exportNote = t("streamer.export.takeGone");
     } else {
       markExport("fail");
       exportError = { code: err?.code || "failed" };
-      exportNote = t(err?.code === "no-encoder" ? "streamer.export.noEncoder" : "streamer.export.failed");
+      // The server's reason, when it gave one, after the sentence.
+      const reason = exportReason(err);
+      exportNote = err?.code === "no-encoder" ? t("streamer.export.noEncoder")
+        : reason ? t("streamer.export.failedWhy", { reason }) : t("streamer.export.failed");
     }
   } finally {
     exporting = null;
     painted.exp = null;
+  }
+}
+
+/** What `takeId` was recorded at, else the current scene and settings. */
+function recordedShape(takeId) {
+  return takeInfo(takeId) || { aspect: scene.aspect, resolution: settings.resolution, fps: settings.fps };
+}
+
+/** A short, readable reason from a failed export (the server's detail), or "". */
+function exportReason(err) {
+  const text = String(err?.message || "").replace(/\s+/g, " ").trim();
+  if (!text || text === "render failed" || /^(failed|none)$/i.test(text)) return "";
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+}
+
+/** The song's last take is still on the server (it can be deleted in
+ * Advanced): when not, it is not offered for export. */
+async function checkLastTake(job) {
+  const takeId = lastTake(job);
+  if (!takeId) return;
+  try {
+    const res = await fetch(`/api/jobs/${encodeURIComponent(job)}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const takes = (await res.json())?.takes;
+    if (!Array.isArray(takes)) return;
+    const ids = takes.map((tk) => tk?.id ?? tk?.take_id);
+    if (!ids.includes(takeId) && lastTake(job) === takeId && !takeOpen()) {
+      forgetTake(job, takeId);
+      painted.exp = null;
+    }
+  } catch (err) {
+    console.warn("[streamer] checking the last take failed:", err);
   }
 }
 
@@ -2116,7 +2465,9 @@ function saveRaw() {
   const takeId = job ? lastTake(job) : null;
   if (!takeId) return;
   const meta = trackMeta();
-  saveRawRecording(job, takeId, exportFileName(meta.title, meta.artist, "webm"))
+  // Named with the extension of what the browser actually recorded.
+  rawRecordingType(job, takeId)
+    .then((type) => saveRawRecording(job, takeId, exportFileName(meta.title, meta.artist, rawExtension(type))))
     .then((saved) => {
       exportNote = saved === false ? t("streamer.export.notSaved") : t("streamer.export.rawSaved");
       painted.exp = null;
@@ -2130,18 +2481,35 @@ function saveRaw() {
 
 // ── Take timeline ──
 
-/** The two lanes: the voice, then the best instrument heard against it
- * (bass, guitar, drums, piano, other), else Original. */
+/** The two lanes: the voice, then the stem chosen for the second lane (kept
+ * per song), else the best instrument heard against the voice. Only the
+ * song's audio stems: not a take's camera or Streamer track. */
 function laneStems() {
-  const present = Object.keys(trackIndex || {});
-  const voice = ["lead_vocals", "vocals"].find((n) => present.includes(n));
-  const other = ["bass", "guitar", "drums", "piano", "other", "original"].find((n) => present.includes(n));
-  return [voice, other].filter(Boolean);
+  const tracks = new Set(getTracks().map((tr) => tr.id));
+  const present = Object.keys(trackIndex || {}).filter((n) => !tracks.has(n));
+  return pickLaneStems(present, laneChoice(currentJobId));
+}
+
+// The second lane's stem per song, read from localStorage once.
+const laneChoices = new Map();
+function laneChoice(job) {
+  if (!laneChoices.has(job)) {
+    let v = "";
+    try { v = localStorage.getItem(LANE2_KEY(job)) || ""; } catch { v = ""; }
+    laneChoices.set(job, v);
+  }
+  return laneChoices.get(job);
+}
+
+/** The label column and its gap: the left edge of the song's column. */
+function labelCol() {
+  const tl = ui.builder.timeline;
+  return (tl.mask.offsetWidth || 82) + 8;
 }
 
 function timelineScale() {
   const tl = ui.builder.timeline;
-  const view = Math.max(1, tl.scroll.clientWidth - LABEL_COL);
+  const view = Math.max(1, tl.scroll.clientWidth - labelCol());
   const dur = totalDuration || 0;
   return { dur, view, pps: dur ? pixelsPerSecond(dur, view, zoom) : 0 };
 }
@@ -2215,14 +2583,18 @@ function wireRuler(ruler) {
   });
 }
 
-/** Where a trim point snaps: the song's ends and its sections' starts and ends. */
-function trimTargets(dur) {
-  const out = [0, dur];
-  for (const s of getSections()) out.push(s.start, s.end);
-  return out.filter((v) => Number.isFinite(v));
+/** Where a trim point snaps: the song's ends and its sections' starts and
+ * ends first; else its beats, while the beat grid's Snap is on. */
+function snapTrim(time, dur, reach) {
+  const inSong = (v) => Number.isFinite(v) && v >= 0 && v <= dur;
+  const marks = [0, dur];
+  for (const s of getSections()) marks.push(s.start, s.end);
+  const snapped = snapTime(time, marks.filter(inSong), reach);
+  if (snapped !== time || !getBeatGridSnap()) return snapped;
+  return snapTime(time, getBeats().filter(inSong), reach);
 }
 
-/** Drag the in or out handle; it snaps to sections (Alt: no snapping). One
+/** Drag the in or out handle; it snaps to sections, then beats (Alt: no snapping). One
  * undo step per drag; the arrows move it a tenth (Shift: a second). */
 function wireTrimHandle(handle, which) {
   let drag = null;
@@ -2231,12 +2603,14 @@ function wireTrimHandle(handle, which) {
     tip.hidden = false;
     tip.textContent = t(which === "in" ? "streamer.trimIn" : "streamer.trimOut", { time: clockTenths(time) });
     const { pps } = timelineScale();
-    tip.style.left = `${LABEL_COL + time * pps}px`;
+    tip.style.left = `${labelCol() + time * pps}px`;
   };
   handle.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    // The trim a take is filming to stays put until it ends.
+    if (takeOpen()) return;
     const { dur, pps } = timelineScale();
     if (!dur || !pps) return;
     handle.setPointerCapture(e.pointerId);
@@ -2245,12 +2619,23 @@ function wireTrimHandle(handle, which) {
     const point = trimRange(scene, dur)[which];
     drag = { base: scene, dur, pps, offset: (e.clientX - audio.left) / pps - point };
     showTip(point);
+    const pointerId = e.pointerId;
+    liveDrag = {
+      cancel: () => {
+        if (!drag) return;
+        scene = drag.base;
+        drag = null;
+        painted.tlTrim = null;
+        ui.builder.timeline.tip.hidden = true;
+        try { handle.releasePointerCapture(pointerId); } catch { /* already released */ }
+      },
+    };
   });
   handle.addEventListener("pointermove", (e) => {
     if (!drag) return;
     const audio = ui.builder.timeline.audio.getBoundingClientRect();
     let time = (e.clientX - audio.left) / drag.pps - drag.offset;
-    if (!e.altKey) time = snapTime(time, trimTargets(drag.dur), 8 / drag.pps);
+    if (!e.altKey) time = snapTrim(time, drag.dur, 8 / drag.pps);
     scene = withTrimPoint(drag.base, which, time, drag.dur);
     painted.tlTrim = null;
     showTip(trimRange(scene, drag.dur)[which]);
@@ -2259,6 +2644,7 @@ function wireTrimHandle(handle, which) {
     if (!drag) return;
     const d = drag;
     drag = null;
+    liveDrag = null;
     ui.builder.timeline.tip.hidden = true;
     if (scene !== d.base) {
       const result = scene;
@@ -2272,6 +2658,7 @@ function wireTrimHandle(handle, which) {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
     e.stopPropagation();
+    if (takeOpen()) return;
     const dur = totalDuration || 0;
     const step = (e.shiftKey ? 1 : 0.1) * (e.key === "ArrowLeft" ? -1 : 1);
     commit(withTrimPoint(scene, which, trimRange(scene, dur)[which] + step, dur));
@@ -2349,7 +2736,8 @@ function paintTimeline(tNow) {
       const name = sectionDisplayName(s, sections);
       const at = clockTenths(s.start).slice(0, 5);
       const b = button("sm-marker");
-      b.style.left = `${x(s.start)}px`;
+      // A marker at 0:00 keeps its whole pin right of the label column.
+      b.style.left = `${Math.max(7, x(s.start))}px`;
       b.style.setProperty("--sm-sec", s.color || "#4a7fff");
       b.setAttribute("aria-label", t("streamer.jumpTo", { name, time: at }));
       const label = el("span", "sm-marker-text");
@@ -2362,6 +2750,7 @@ function paintTimeline(tNow) {
       return [b, stem];
     }));
     for (const b of tl.markers.querySelectorAll(".sm-marker")) tl.edges.push({ el: b, left: parseFloat(b.style.left) - 7 });
+    tl.noSections.hidden = !dur || sections.length > 0;
     painted.tlEdges = null;
   }
   // A ruler label or section marker that would sit partly under the label
@@ -2395,15 +2784,32 @@ function paintTimeline(tNow) {
   // Stem lanes: only the part in view is drawn (a whole song at full zoom
   // would be wider than a canvas may be).
   const src = overviewPeaks();
-  const stems = laneStems();
+  const { lanes: stems, choices } = laneStems();
   const left = tl.scroll.scrollLeft;
   const h = tl.audio.clientHeight;
-  const laneSig = `${stems.join(",")}|${view}x${h}|${left}|${pps}`;
+  const laneSig = `${stems.join(",")}|${choices.join(",")}|${view}x${h}|${left}|${pps}`;
   if (painted.lanes !== laneSig || painted.lanesSrc !== src) {
     painted.lanes = laneSig;
     painted.lanesSrc = src;
+    fillLaneChoice(tl.lanes[1].sel, choices, stems[1] || "");
     tl.lanes.forEach((lane, i) => drawLane(lane, stems[i] || null, src, left, view, pps, dur));
+    tl.noStems.hidden = !dur || stems.length > 0;
   }
+}
+
+/** The second lane's stem choices, and the one shown. */
+function fillLaneChoice(sel, choices, value) {
+  const sig = `${choices.join(",")}|${t("streamer.lane2Aria")}`;
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.replaceChildren(...choices.map((n) => {
+      const o = el("option", null, laneLabel(n));
+      o.value = n;
+      return o;
+    }));
+  }
+  if (sel.value !== value) sel.value = value;
+  sel.disabled = choices.length < 2;
 }
 
 function drawLane(lane, stem, src, left, view, pps, dur) {
@@ -2454,27 +2860,40 @@ function streamerHasFocus(e) {
 
 function onKey(e) {
   if (!open || e.defaultPrevented) return;
-  if (menu?.box.contains(e.target) || props?.box.contains(e.target)) return;
-  if (e.target instanceof Element && e.target.closest("[role=dialog]:not(.sm-props), .settings-overlay, .mode-menu")) return;
   const mod = e.ctrlKey || e.metaKey;
   const typing = isTyping(e.target);
-  const ours = streamerHasFocus(e);
-
-  // Delete and Backspace: a layer's, never the song's. The studio trashes the
-  // open song on Delete (catalog.js); while Streamer has the keys it never
-  // gets them.
-  if ((e.key === "Delete" || e.key === "Backspace") && !typing && !mod && ours) {
+  // Delete and Backspace never reach the studio's "trash the open song"
+  // (catalog.js) while Streamer is open, wherever focus is (the rail, the
+  // library, a dialog), except where they edit text. In Streamer itself
+  // they delete the selected layer.
+  if ((e.key === "Delete" || e.key === "Backspace") && !typing) {
     e.preventDefault();
     e.stopPropagation();
-    if (selected && tab === "builder") deleteOf(selected);
+    cancelLiveDrag();
+    const elsewhere = menu?.box.contains(e.target) || props?.box.contains(e.target)
+      || (e.target instanceof Element && e.target.closest("[role=dialog]:not(.sm-props), .settings-overlay, .mode-menu"));
+    if (!mod && !elsewhere && streamerHasFocus(e) && selected && tab === "builder") deleteOf(selected);
     return;
   }
+  if (menu?.box.contains(e.target) || props?.box.contains(e.target)) return;
+  if (e.target instanceof Element && e.target.closest("[role=dialog]:not(.sm-props), .settings-overlay, .mode-menu")) return;
+  const ours = streamerHasFocus(e);
+
   // Undo and redo of the scene.
   if (mod && !e.altKey && !typing && ours && (e.code === "KeyZ" || e.code === "KeyY")) {
     e.preventDefault();
     e.stopPropagation();
+    cancelLiveDrag();
     if (e.code === "KeyY" || e.shiftKey) doRedo();
     else doUndo();
+    return;
+  }
+  // Escape closes the Output drawer, from any control in it (a select too).
+  if (e.key === "Escape" && !mod && root.classList.contains("sm-drawer-open")) {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleDrawer(false);
+    ui.head.output.focus({ preventScroll: true });
     return;
   }
   if (mod || e.altKey || typing) return;
@@ -2501,11 +2920,6 @@ function onKey(e) {
   if ((e.code === "Space" || e.key === "Enter") && e.target instanceof Element
       && e.target.closest("#streamer button, #streamer select, #streamer [role=switch], #streamer [role=slider], #streamer [role=button]")) {
     e.stopPropagation();
-  } else if (e.key === "Escape" && root.classList.contains("sm-drawer-open")) {
-    e.preventDefault();
-    e.stopPropagation();
-    toggleDrawer(false);
-    ui.head.output.focus({ preventScroll: true });
   }
 }
 
@@ -2534,6 +2948,8 @@ export function initStreamer() {
     painted.layers = null;
   });
   onLanguageChange(() => relabel());
+  onPictureLoaded(() => { painted.scene = null; });
+  document.addEventListener("visibilitychange", onVisibility);
   if (railBtn) {
     railBtn.title = t("streamer.rail");
     railBtn.setAttribute("aria-label", t("streamer.rail"));

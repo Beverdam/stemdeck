@@ -290,6 +290,24 @@ function isAudioBufferLike(value) {
   return value && typeof value.getChannelData === "function";
 }
 
+/**
+ * Destroy the multitrack view, and close the AudioContext it made for itself
+ * (Multitrack creates one per instance and its destroy() leaves it open: one
+ * leaked per song loaded). Never a context something else plays on: the
+ * engine's own, or the visual context.
+ */
+function destroyMultitrack() {
+  const mt = multitrack;
+  if (!mt) return;
+  const ctx = mt.audioContext;
+  mt.destroy();
+  setMultitrack(null);
+  const shared = ctx && (ctx === audioEngine?.audioContext || ctx === visualAudioContext);
+  if (ctx && !shared && typeof ctx.close === "function" && ctx.state !== "closed") {
+    ctx.close().catch((err) => console.warn("[player] closing the view's audio context failed:", err));
+  }
+}
+
 function clearOverviewWaveforms() {
   document.querySelector(".stem-waveform-layer")?.remove();
 }
@@ -993,10 +1011,7 @@ export function destroyPlayer() {
     audioEngine.destroy();
     setAudioEngine(null);
   }
-  if (multitrack) {
-    multitrack.destroy();
-    setMultitrack(null);
-  }
+  destroyMultitrack();
   if (visualAudioContext) {
     visualAudioContext.close().catch(() => {});
     visualAudioContext = null;
@@ -1280,10 +1295,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   setWaveformLoading(true);
   stopVuLoop();
   stopStemVuLoop();
-  if (multitrack) {
-    multitrack.destroy();
-    setMultitrack(null);
-  }
+  destroyMultitrack();
   playBtn.classList.remove("playing");
   stopBtn.classList.remove("stopped");
   resetPitch();
@@ -2044,10 +2056,13 @@ function _triggerDownload(url, filename, onTransferStart) {
     // Two commands: the dialog, then the transfer. A cancelled dialog resolves
     // to null and never starts a transfer, so no busy state is entered and
     // there is none to unwind.
+    // Resolves the save's token once the file is written: truthy for the
+    // callers that only ask "saved?", and what Streamer's Show in folder
+    // hands back to reveal that file and no other.
     return invoke("pick_export_destination", { filename }).then((token) => {
       if (!token) return false;
       onTransferStart?.();
-      return invoke("download_to_path", { token, url: fullUrl });
+      return invoke("download_to_path", { token, url: fullUrl }).then(() => token);
     });
   }
   // A browser <a download> is fire-and-forget: the fetch is owned by the

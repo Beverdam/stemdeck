@@ -88,22 +88,25 @@ const DEFAULT_FRAMES = {
   "9:16": {
     background: FULL,
     camera: FULL,
-    title: px(16, 76, 371, 108, 403, 716),
-    albumArt: px(26, 86, 88, 88, 403, 716),
-    waveform: px(126, 142, 160, 28, 403, 716),
-    lyrics: px(16, 470, 371, 150, 403, 716),
-    lowerThird: px(16, 640, 160, 40, 403, 716),
-    text: px(40, 323, 323, 70, 403, 716),
-    image: px(121, 196, 161, 120, 403, 716),
+    // Portrait text and padding are drawn 1.3 times larger (sceneRenderer's
+    // aspectScale), so the cards are that much larger too.
+    title: px(16, 76, 371, 140, 403, 716),
+    albumArt: px(29, 89, 114, 114, 403, 716),
+    waveform: px(159, 162, 215, 36, 403, 716),
+    lyrics: px(16, 430, 371, 195, 403, 716),
+    lowerThird: px(16, 650, 208, 52, 403, 716),
+    text: px(40, 340, 323, 88, 403, 716),
+    image: px(121, 220, 161, 118, 403, 716),
   },
   "1:1": {
     background: FULL,
     camera: FULL,
-    title: px(237, 8, 238, 108, 483, 483),
-    albumArt: px(247, 18, 88, 88, 483, 483),
-    waveform: px(347, 74, 118, 28, 483, 483),
-    lyrics: px(259, 335, 216, 134, 483, 483),
-    lowerThird: px(12, 431, 120, 40, 483, 483),
+    // Square: 1.15 times larger (sceneRenderer's aspectScale).
+    title: px(197, 8, 280, 124, 483, 483),
+    albumArt: px(209, 19, 101, 101, 483, 483),
+    waveform: px(324, 84, 142, 32, 483, 483),
+    lyrics: px(229, 318, 248, 154, 483, 483),
+    lowerThird: px(12, 425, 138, 46, 483, 483),
     text: px(92, 207, 300, 70, 483, 483),
     image: px(30, 290, 150, 130, 483, 483),
   },
@@ -124,7 +127,8 @@ const DEFAULT_LAYERS = [
 ];
 
 const DEFAULT_PROPS = {
-  background: () => ({}),
+  // An image the person chose (sceneImages.js keeps it; the scene holds its key).
+  background: () => ({ imageKey: "" }),
   camera: () => ({ mirror: false }),
   title: () => ({ showArtist: true }),
   albumArt: () => ({}),
@@ -133,8 +137,7 @@ const DEFAULT_PROPS = {
   // Empty text shows the placeholder (an i18n string the page passes in).
   lowerThird: () => ({ handle: "", subtitle: "" }),
   text: () => ({ text: "", size: 1, color: "white" }),
-  // TODO(phase 5): the picked file. No file is stored yet.
-  image: () => ({}),
+  image: () => ({ imageKey: "" }),
 };
 
 export function defaultFrame(type, aspect = DEFAULT_ASPECT) {
@@ -259,6 +262,8 @@ function cleanProps(type, props) {
     p.subtitle = typeof p.subtitle === "string" ? p.subtitle.slice(0, 60) : "";
   } else if (type === "camera") {
     p.mirror = p.mirror === true;
+  } else if (type === "image" || type === "background") {
+    p.imageKey = typeof p.imageKey === "string" && /^[a-z0-9:_-]{0,80}$/i.test(p.imageKey) ? p.imageKey : "";
   } else if (type === "title") {
     p.showArtist = p.showArtist !== false;
   }
@@ -675,4 +680,56 @@ export function ticksEvery(duration, step) {
     out.push({ t, label: `${Math.floor(t / 60)}:${pad(Math.floor(t % 60))}` });
   }
   return out;
+}
+
+// ── Pictures (Image and Background Image layers) ──
+
+export const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+export const IMAGE_TYPES = Object.freeze(["image/png", "image/jpeg", "image/webp"]);
+
+/** The size a picture is stored at: no wider than `maxW` (the output's
+ * width), the aspect kept, never enlarged. */
+export function downscaleSize(w, h, maxW) {
+  const width = Math.max(1, Math.round(Number(w) || 1));
+  const height = Math.max(1, Math.round(Number(h) || 1));
+  const max = Math.max(1, Math.round(Number(maxW) || width));
+  if (width <= max) return { width, height };
+  return { width: max, height: Math.max(1, Math.round((height * max) / width)) };
+}
+
+/**
+ * Where a `iw` x `ih` picture lands in a `bw` x `bh` box: "cover" fills it
+ * (cut at the sides or top and bottom), "contain" fits inside it (bars
+ * left as they are). { x, y, w, h } relative to the box.
+ */
+export function fitRect(iw, ih, bw, bh, mode = "contain") {
+  if (!(iw > 0 && ih > 0 && bw > 0 && bh > 0)) return { x: 0, y: 0, w: 0, h: 0 };
+  const s = mode === "cover" ? Math.max(bw / iw, bh / ih) : Math.min(bw / iw, bh / ih);
+  const w = iw * s;
+  const h = ih * s;
+  return { x: (bw - w) / 2, y: (bh - h) / 2, w, h };
+}
+
+/** The store key of a song's layer picture; `stamp` makes each chosen
+ * picture its own key, so undo brings the one before back. */
+export const imageKey = (jobId, layerId, stamp = "") => [jobId, layerId, stamp].filter(Boolean).join(":").slice(0, 80);
+
+// ── The take timeline's two stem lanes ──
+
+const VOICE_STEMS = ["lead_vocals", "vocals"];
+const LANE_ORDER = ["bass", "guitar", "drums", "piano", "other", "original"];
+
+/**
+ * The two lanes of the take timeline: the voice (else the first stem), then
+ * `choice` when it is one of the song's other stems, else the best instrument
+ * heard against the voice. `choices` is what the second lane can show.
+ */
+export function pickLaneStems(present, choice = "") {
+  const names = Array.isArray(present) ? present.filter((n) => typeof n === "string" && n) : [];
+  const first = VOICE_STEMS.find((n) => names.includes(n))
+    || LANE_ORDER.find((n) => names.includes(n)) || names[0] || null;
+  const choices = names.filter((n) => n !== first);
+  const second = (choice && choices.includes(choice) ? choice : null)
+    || LANE_ORDER.find((n) => choices.includes(n)) || choices[0] || null;
+  return { lanes: [first, second].filter(Boolean), choices };
 }

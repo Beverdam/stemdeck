@@ -12,7 +12,7 @@ import { MODES, AVAILABLE, getMode, setMode, onModeChange } from "./mode.js";
 import { isRecording, closeRecordPanel } from "./capture/recordUi.js";
 import { armedTracks, setArmed } from "./capture/takeLanes.js";
 import { openKaraoke, closeKaraoke, isKaraokeOpen, onKaraokeChange } from "./karaoke/karaoke.js";
-import { openStreamer, closeStreamer, isStreamerOpen, onStreamerChange } from "./streamer/streamer.js";
+import { openStreamer, closeStreamer, isStreamerOpen, onStreamerChange, isStreamerTakeOpen } from "./streamer/streamer.js";
 
 // Karaoke and Streamer are not modes of mode.js: they are views over Practice
 // or Advanced, opened and closed on their own, one at a time. The menu offers
@@ -97,6 +97,13 @@ function choose(m) {
     if (isStreamerOpen() || openStreamer()) { close(); return; }
     // Refused: a take is recording.
     note.textContent = t("streamer.stopRecordingFirst");
+    note.hidden = false;
+    return;
+  }
+  // A Streamer take is open: leaving Streamer would stop it with nothing on
+  // screen to say so. Refused, as Karaoke is while a take records.
+  if (isStreamerOpen() && isStreamerTakeOpen()) {
+    note.textContent = t("streamer.rec.stopFirst");
     note.hidden = false;
     return;
   }

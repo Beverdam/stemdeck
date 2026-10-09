@@ -28,6 +28,7 @@ def jobs_dir():
 
     cover_mod._fetch_locks.clear()
     cover_mod._fetch_waiters.clear()
+    cover_mod._failed_at.clear()
     yield config.JOBS_DIR
     _jobs.pop(JOB, None)
 
@@ -149,7 +150,8 @@ def _serve(monkeypatch, body: bytes, read=None):
         def open(self, request, timeout=None):
             r = _Response(body)
             if read is not None:
-                r.read = read
+                # The fetch reads with read1 (what has arrived so far).
+                r.read = r.read1 = read
             return r
 
     monkeypatch.setattr(cover_mod.urllib.request, "build_opener", lambda *h: Opener())

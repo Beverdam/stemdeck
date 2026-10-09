@@ -30,6 +30,8 @@ import { nextRecordState, isTakeOpen, startPoint, outputPixels, videoBitrate } f
 
 const TRACK_KEY = (jobId) => `stemdeck:streamer:track:${jobId}`;
 const LAST_TAKE_KEY = (jobId) => `stemdeck:streamer:take:${jobId}`;
+// What a take was recorded at (aspect, resolution, fps): its export uses it.
+const TAKE_INFO_KEY = (takeId) => `stemdeck:streamer:takeinfo:${takeId}`;
 
 const rec = {
   state: "idle",
@@ -48,8 +50,28 @@ const rec = {
   recorder: null, // the take's recorder on the capture
   startedAtMs: 0,
   hiddenWhileRecording: false,
+  aborted: false, // closed while "starting": the take must not begin
+  recordedAt: null, // { aspect, resolution, fps } of the open take
 };
 const listeners = new Set();
+
+// The few keys this module keeps in localStorage, read once each: the view
+// asks for the last take and the Streamer track every frame.
+const kept = new Map();
+function readKept(key) {
+  if (kept.has(key)) return kept.get(key);
+  let v = null;
+  try { v = localStorage.getItem(key); } catch { v = null; }
+  kept.set(key, v);
+  return v;
+}
+function writeKept(key, value) {
+  kept.set(key, value ?? null);
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch { /* kept for this visit */ }
+}
 
 function set(event, extra = {}) {
   rec.state = nextRecordState(rec.state, event);
@@ -88,11 +110,11 @@ export function outputCanvas() {
 /** The last take recorded for `jobId` (a reload keeps it), or null. */
 export function lastTake(jobId) {
   if (rec.jobId === jobId && rec.takeId && (rec.state === "saved" || rec.state.startsWith("export"))) return rec.takeId;
-  try { return localStorage.getItem(LAST_TAKE_KEY(jobId)) || null; } catch { return null; }
+  return readKept(LAST_TAKE_KEY(jobId)) || null;
 }
 
 export function streamerTrackId(jobId) {
-  try { return localStorage.getItem(TRACK_KEY(jobId)) || null; } catch { return null; }
+  return readKept(TRACK_KEY(jobId)) || null;
 }
 
 /** Why recording cannot start now, or null: the studio's own rules
@@ -118,11 +140,11 @@ async function ensureTrack(jobId, name) {
   const found = (kept && tracks.find((tr) => tr.id === kept))
     || tracks.filter((tr) => tr.kind === "video" && tr.name === name).pop();
   if (found) {
-    try { localStorage.setItem(TRACK_KEY(jobId), found.id); } catch { /* found again next time */ }
+    writeKept(TRACK_KEY(jobId), found.id);
     return found.id;
   }
   const track = await createTrack(jobId, { name, kind: "video" });
-  try { localStorage.setItem(TRACK_KEY(jobId), track.id); } catch { /* the next take makes another */ }
+  writeKept(TRACK_KEY(jobId), track.id);
   return track.id;
 }
 
@@ -137,15 +159,22 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
   const block = recordBlock();
   if (block) return { ok: false, reason: block };
   const engine = audioEngine;
-  set("start", { reason: null, jobId, takeId: null, session: null, hiddenWhileRecording: false });
+  set("start", { reason: null, jobId, takeId: null, session: null, hiddenWhileRecording: false, aborted: false });
+  rec.recordedAt = { aspect, resolution: String(settings.resolution), fps: Number(settings.fps) || 30 };
+  // Closed while starting (stopRecording before a session exists): stop here.
+  const goOn = () => {
+    if (rec.aborted) throw Object.assign(new Error("aborted"), { code: "aborted" });
+  };
   try {
     const trackId = await ensureTrack(jobId, trackName);
+    goOn();
     if (audioEngine !== engine) throw Object.assign(new Error("the song changed"), { code: "engine" });
     let cap = capture && capture.ctx === engine.audioContext && !capture.closed ? capture : null;
     if (!cap) {
       const res = await openSilentCapture(engine);
+      if (res.capture) rec.silent = res.capture;
+      goOn();
       if (!res.capture) throw Object.assign(new Error("no capture"), { code: res.reason || "unknown" });
-      rec.silent = res.capture;
       cap = res.capture;
     }
     rec.recorder = cap.createRecorder(cap.channels >= 2 ? [0, 1] : [0]);
@@ -193,8 +222,13 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
     watch(rec.session);
     return { ok: true };
   } catch (err) {
-    console.warn("[streamer] recording did not start:", err);
     cleanup();
+    if (err?.code === "aborted") {
+      rec.aborted = false;
+      set("abort", { reason: null });
+      return { ok: false, reason: "aborted" };
+    }
+    console.warn("[streamer] recording did not start:", err);
     set("fail", { reason: err?.code || "failed" });
     return { ok: false, reason: rec.reason };
   }
@@ -202,6 +236,11 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
 
 /** Stop the take (it is kept: a Streamer take is exported, not reviewed). */
 export async function stopRecording() {
+  // Still starting (no session yet): the start stops at its next step.
+  if (rec.state === "starting" && !rec.session) {
+    rec.aborted = true;
+    return;
+  }
   if (!rec.session || !isTakeOpen(rec.state)) return;
   rec.stopReason = rec.stopReason || "user";
   set("stop");
@@ -248,7 +287,9 @@ async function watch(session) {
   if (session.state === "review") {
     await session.keep();
     const takeId = session.takeId;
-    try { localStorage.setItem(LAST_TAKE_KEY(rec.jobId), takeId); } catch { /* kept for this visit */ }
+    writeKept(LAST_TAKE_KEY(rec.jobId), takeId);
+    writeKept(TAKE_INFO_KEY(takeId), JSON.stringify(rec.recordedAt));
+    takeInfos.set(takeId, rec.recordedAt);
     cleanup();
     set("saved", { takeId });
     // The studio shows the new take on its track (as after Record).
@@ -260,13 +301,45 @@ async function watch(session) {
   }
 }
 
+const takeInfos = new Map();
+
+/**
+ * What take `takeId` was recorded at: { aspect, resolution, fps }, or null
+ * when this browser does not know (a take recorded elsewhere).
+ */
+export function takeInfo(takeId) {
+  if (!takeId) return null;
+  if (takeInfos.has(takeId)) return takeInfos.get(takeId);
+  let v = null;
+  try { v = JSON.parse(readKept(TAKE_INFO_KEY(takeId)) || "null"); } catch { v = null; }
+  const ok = v && typeof v === "object" && ["16:9", "9:16", "1:1"].includes(v.aspect)
+    && ["720", "1080", "2160"].includes(String(v.resolution)) && [24, 30, 60].includes(Number(v.fps));
+  const info = ok ? { aspect: v.aspect, resolution: String(v.resolution), fps: Number(v.fps) } : null;
+  takeInfos.set(takeId, info);
+  return info;
+}
+
 /** Export started, finished or failed (streamerExport.js drives the render). */
 export function markExport(event, extra = {}) {
-  if (event === "export" && rec.state === "idle" && extra.takeId) {
-    // A take recorded on an earlier visit: export it from "saved".
-    rec.state = "saved";
+  if (event === "export" && extra.takeId && !isTakeOpen(rec.state)) {
+    // The take being exported is this song's (`jobId`), never the one
+    // recorded last on another song: from "saved" (an earlier visit's take
+    // is exported the same way).
+    if (rec.jobId !== extra.jobId || rec.takeId !== extra.takeId || rec.state === "idle" || rec.state === "failed") {
+      rec.state = "saved";
+    }
+    rec.jobId = extra.jobId ?? rec.jobId;
   }
   set(event, extra);
+}
+
+/** The take `takeId` of `jobId` is gone from the server (deleted in
+ * Advanced): it is not offered for export any more. */
+export function forgetTake(jobId, takeId) {
+  if (readKept(LAST_TAKE_KEY(jobId)) === takeId) writeKept(LAST_TAKE_KEY(jobId), null);
+  writeKept(TAKE_INFO_KEY(takeId), null);
+  takeInfos.delete(takeId);
+  if (rec.jobId === jobId && rec.takeId === takeId && !isTakeOpen(rec.state)) set("reset", { takeId: null });
 }
 
 // The camera part: started when the take's frame 0 is stamped ("armed"),

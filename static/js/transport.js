@@ -157,9 +157,36 @@ export function buildRuler(durationSec) {
 }
 
 let _laneLayer = null;
+let _laneLine = null;
+
+/**
+ * The playhead line over the lanes: an element of its own in the lane layer
+ * (waves.css .lane-playhead-line). It used to be the layer's ::before placed
+ * by a custom property on the layer, and setting that every frame made the
+ * browser restyle every element under the layer (1800 to 2700 with takes:
+ * about 10 ms a frame); moving one element restyles one.
+ */
+function laneLine(layer) {
+  if (_laneLine?.isConnected && _laneLine.parentElement === layer) return _laneLine;
+  _laneLine = layer.querySelector(":scope > .lane-playhead-line");
+  if (!_laneLine) {
+    _laneLine = document.createElement("div");
+    _laneLine.className = "lane-playhead-line";
+    _laneLine.setAttribute("aria-hidden", "true");
+    layer.appendChild(_laneLine);
+  }
+  return _laneLine;
+}
+
+// The lanes are covered by Streamer or Karaoke: nothing to move under them
+// (the view's close moves the line to where the song is).
+const lanesCovered = () => {
+  const c = document.documentElement.classList;
+  return c.contains("streamer-open") || c.contains("karaoke-open");
+};
 
 export function updatePlayheadMarker(currentSec) {
-  if (!playheadMarker || !totalDuration) return;
+  if (!playheadMarker || !totalDuration || lanesCovered()) return;
   const m = rulerTime.querySelector(".playhead-marker");
   if (m) {
     // Position relative to the ruler itself (the marker is a ruler
@@ -172,11 +199,15 @@ export function updatePlayheadMarker(currentSec) {
     // The same line over the lanes (waves.css), above a video track's frames.
     if (!_laneLayer?.isConnected) _laneLayer = document.querySelector(".stem-waveform-layer");
     if (_laneLayer) {
-      _laneLayer.style.setProperty("--lane-playhead", `${pct}%`);
+      const line = laneLine(_laneLayer);
       // Ends at the last lane: the + track row under it is not a lane.
+      // Measured before anything is written this frame, so the read finds
+      // the layout clean and costs nothing to bring up to date.
       const rows = _laneLayer.querySelectorAll(":scope > .stem-waveform-row");
       const last = rows[rows.length - 1];
-      _laneLayer.style.setProperty("--lane-playhead-h", last ? `${last.offsetTop + last.offsetHeight}px` : "0px");
+      const height = last ? `${last.offsetTop + last.offsetHeight}px` : "0px";
+      line.style.left = `${pct}%`;
+      if (line.style.height !== height) line.style.height = height;
       // The ruler's own line (waves.css .playhead-marker::after) shows through
       // where no lane covers it: end it at the last lane too. Rects are in
       // screen pixels and the app may be CSS-zoomed; the ruler's height in
@@ -1752,4 +1783,16 @@ function wireMetronomeControl() {
 
   metroBarCustomEl?.addEventListener("change", _applyCustomBeatsPerBar);
   metroGroupEl?.addEventListener("change", _applyGrouping);
+}
+
+// Closing Streamer or Karaoke uncovers the lanes: the playhead line moves to
+// where the song is now (it is not moved while they cover the lanes).
+for (const name of ["stemdeck:streamer-changed", "stemdeck:karaoke-changed"]) {
+  document.addEventListener(name, (e) => {
+    if (e.detail?.open) return;
+    requestAnimationFrame(() => {
+      const now = transport()?.getCurrentTime?.();
+      if (Number.isFinite(now)) updatePlayheadMarker(now);
+    });
+  });
 }

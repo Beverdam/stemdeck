@@ -534,3 +534,179 @@ test.describe("Streamer Mode: recording and export", () => {
     await expect.poll(() => recording(page)).toBe(false);
   });
 });
+
+// Phase 5: narrow layouts, empty and error states, pictures, the second lane.
+test.describe("Streamer Mode polish", () => {
+  // A small PNG, made by the browser itself.
+  const pngOf = async (page) => Buffer.from(await ev(page, () => {
+    const c = document.createElement("canvas");
+    c.width = 64;
+    c.height = 36;
+    c.getContext("2d").fillRect(0, 0, 64, 36);
+    return c.toDataURL("image/png").split(",")[1];
+  }), "base64");
+
+  test("under 1000 px: Output opens a drawer, focus moves in, Escape closes it", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openStudio(page);
+    await openStreamer(page);
+    const out = sm(page, ".sm-output-btn");
+    await expect(out).toBeVisible();
+    await out.click();
+    await expect(out).toHaveAttribute("aria-expanded", "true");
+    expect(await ev(page, () => document.querySelector("#streamer .sm-side").contains(document.activeElement))).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(out).toHaveAttribute("aria-expanded", "false");
+    await expect(out).toBeFocused();
+  });
+
+  test("under 1000 px: the label column is 56 px and the preview never under 480 px", async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 700 });
+    await openStudio(page);
+    await openStreamer(page);
+    const label = await sm(page, ".sm-tl-label-video").boundingBox();
+    const preview = await sm(page, ".sm-preview").boundingBox();
+    expect(Math.round(label.width)).toBe(56);
+    expect(preview.width).toBeGreaterThanOrEqual(479);
+    expect(await ev(page, () => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+  });
+
+  test("no song open: the view says so and nothing under it is reachable", async ({ page }) => {
+    await page.goto("/");
+    await openStreamer(page);
+    await expect(sm(page, ".sm-no-track")).toBeVisible();
+    expect(await ev(page, () => document.querySelector("#streamer .sm-center").inert)).toBe(true);
+  });
+
+  test("a background picture is chosen, kept, shown in the row and undone", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    const row = sm(page, '.sm-layer[data-layer="background"]');
+    await row.locator(".sm-layer-kebab").click();
+    await page.locator('.sm-menu-item[data-item="edit"]').click();
+    await page.setInputFiles(".sm-props input[type=file]", { name: "p.png", mimeType: "image/png", buffer: await pngOf(page) });
+    await expect(page.locator(".sm-props-picture-msg")).toContainText("KB");
+    await expect(page.locator(".sm-props-remove")).toBeVisible();
+    await page.locator(".sm-props-done").click();
+    await expect(row.locator(".sm-layer-sub")).toHaveText("Your image");
+    expect((await savedScene(page))?.layers?.find((l) => l.id === "background")?.props?.imageKey).toMatch(new RegExp(`^${JOB_ID}:background:`));
+    await sm(page, ".sm-undo").click();
+    await expect(row.locator(".sm-layer-sub")).not.toHaveText("Your image");
+  });
+
+  test("a file that is not a picture is refused with a message", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    await sm(page, '.sm-layer[data-layer="background"] .sm-layer-kebab').click();
+    await page.locator('.sm-menu-item[data-item="edit"]').click();
+    await page.setInputFiles(".sm-props input[type=file]", { name: "n.txt", mimeType: "text/plain", buffer: Buffer.from("x") });
+    await expect(page.locator(".sm-props-picture-msg")).toContainText("PNG, JPEG or WebP");
+  });
+
+  test("the second lane's stem is chosen and kept per song", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    const sel = sm(page, ".sm-tl-lane-sel");
+    const values = await sel.locator("option").evaluateAll((os) => os.map((o) => o.value));
+    test.skip(values.length < 2, "the test song has one other stem");
+    await sel.selectOption(values[values.length - 1]);
+    expect(await ev(page, (id) => localStorage.getItem(`stemdeck.streamer.lane2.${id}`), JOB_ID)).toBe(values[values.length - 1]);
+  });
+
+  test("an export failure says why and offers Retry", async ({ page }) => {
+    await openStudio(page);
+    await ev(page, (id) => localStorage.setItem(`stemdeck:streamer:take:${id}`, "fake-take"), JOB_ID);
+    await page.route("**/takes/fake-take/render", (r) => r.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "ffmpeg exited with code 1" }) }));
+    // Streamer checks that the last take is still on the server: the job lists it.
+    await page.route(`**/api/jobs/${JOB_ID}`, async (r) => {
+      if (r.request().method() !== "GET") return r.continue();
+      const res = await r.fetch();
+      const job = await res.json();
+      return r.fulfill({ response: res, json: { ...job, takes: [...(job.takes || []), { id: "fake-take" }] } });
+    });
+    await openStreamer(page);
+    await sm(page, ".sm-export-go").click();
+    await expect(sm(page, ".sm-export-text")).toContainText("ffmpeg exited with code 1");
+    await expect(sm(page, ".sm-export-go")).toHaveText("Try again");
+  });
+
+  test("no audio input: the line says the take records the song only", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    await page.selectOption("#streamerAudioSrc", "none");
+    await expect(sm(page, ".sm-dev-state").nth(1)).toContainText("song only");
+  });
+});
+
+// The fix pass: the song is never trashed while Streamer is open, focus, a
+// take's protections, the export at the recorded shape, no 4K at 60 fps.
+test.describe("Streamer Mode fix pass", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+  });
+
+  test("Delete and Backspace never trash the song while Streamer is open, wherever focus is", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    // Focus moved into the view on open.
+    expect(await ev(page, () => document.getElementById("streamer").contains(document.activeElement))).toBe(true);
+    for (const target of ["#streamerBtn", `#catalogList .cat-item[data-id="${JOB_ID}"]`]) {
+      await page.locator(target).first().focus();
+      await page.keyboard.press("Delete");
+      await page.keyboard.press("Backspace");
+    }
+    await page.waitForTimeout(400);
+    await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
+    await closeStreamer(page);
+    // Focus is back on what opened it.
+    await expect(page.locator("#streamerBtn")).toBeFocused();
+  });
+
+  test("4K offers no 60 fps: it falls back to 30 and says why", async ({ page }) => {
+    await openStudio(page);
+    await openStreamer(page);
+    await page.locator("#streamerFps").selectOption("60");
+    await page.locator("#streamerRes").selectOption("2160");
+    await expect(page.locator("#streamerFps")).toHaveValue("30");
+    await expect(page.locator('#streamerFps option[value="60"]')).toBeDisabled();
+    await expect(sm(page, ".sm-fps-why")).toBeVisible();
+    await expect(page.locator("#streamerNote")).toContainText("30");
+    await page.locator("#streamerRes").selectOption("1080");
+    await expect(page.locator('#streamerFps option[value="60"]')).toBeEnabled();
+  });
+
+  test("viewing a song's scene saves nothing", async ({ page }) => {
+    await openStudio(page);
+    await ev(page, (id) => localStorage.removeItem(`stemdeck:streamer:scene:${id}`), JOB_ID);
+    await openStreamer(page);
+    await page.waitForTimeout(1000);
+    expect(await savedScene(page)).toBe(null);
+  });
+
+  test("a take is protected while it records, and exports at its recorded aspect", async ({ page }) => {
+    await openStudio(page);
+    await ev(page, async (id) => {
+      const m = await import("/js/streamer/streamerModel.js");
+      const { storeSet } = await import("/js/utils.js");
+      await storeSet(`stemdeck:streamer:scene:${id}`, m.serializeScene({ ...m.defaultScene("16:9"), trim: { in: 1, out: 4 } }));
+    }, JOB_ID);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
+    await openStreamer(page);
+    await sm(page, ".sm-rec").click();
+    await expect(sm(page, ".sm-rec")).toHaveClass(/recording/, { timeout: 15000 });
+    await expect(sm(page, ".sm-undo")).toBeDisabled();
+    await expect(page.locator("#streamerAudioSrc")).toBeDisabled();
+    // Karaoke and the rail are refused while it records.
+    await page.locator("#karaokeBtn").click();
+    await expect(page.locator("#karaokeNote")).toContainText("Stop recording first");
+    await page.locator("#streamerBtn").click();
+    await expect(page.locator("html")).toHaveClass(/streamer-open/);
+    await expect(sm(page, ".sm-rec")).toHaveClass(/recording/);
+    // It stops at the trim's end; the scene then goes 9:16; the export says
+    // it stays 16:9.
+    await expect(sm(page, ".sm-export-go")).toBeEnabled({ timeout: 30000 });
+    await sm(page, ".sm-aspect select").selectOption("9:16");
+    await expect(sm(page, ".sm-export-text")).toContainText("16:9");
+  });
+});

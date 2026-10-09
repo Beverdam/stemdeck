@@ -344,7 +344,8 @@ html.streamer-open .daw-footer { display: none !important; }
   padding: 12px 10px 10px;
   background: var(--sm-panel);
 }
-.sm-layers-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 4px; }
+/* A long title and button (French, German) wrap to two lines, never cut. */
+.sm-layers-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 8px; padding-left: 4px; }
 .sm-layers-title { font-size: 16px; font-weight: 600; white-space: nowrap; }
 .sm-primary {
   height: 34px;
@@ -463,6 +464,8 @@ html.streamer-open .daw-footer { display: none !important; }
    and the song's column, as wide as the zoom makes it (--sm-tl-w, set by
    streamer.js). Everything in the song's column is placed from one scale. */
 .sm-tl {
+  /* The label column (56 px in a narrow workspace). */
+  --sm-label-w: 82px;
   flex: 1;
   min-height: 0;
   position: relative;
@@ -474,7 +477,8 @@ html.streamer-open .daw-footer { display: none !important; }
   flex: 1;
   min-width: 0;
   overflow-x: auto;
-  overflow-y: hidden;
+  /* A short timeline scrolls down to the second stem lane. */
+  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #2a333e transparent;
 }
@@ -483,10 +487,11 @@ html.streamer-open .daw-footer { display: none !important; }
   height: 100%;
   min-width: max-content;
   display: grid;
-  grid-template-columns: 82px var(--sm-tl-w, 100%);
+  grid-template-columns: var(--sm-label-w) var(--sm-tl-w, 100%);
   /* zoom row, markers, ruler, gap, video, gap, stems */
-  /* The stem lanes take what height is left, up to twice the design's. */
-  grid-template-rows: minmax(0, 24px) minmax(34px, 46px) 24px 5px 34px 4px minmax(40px, 136px);
+  /* The stem lanes take what height is left, up to twice the design's, and
+     never less than two readable lanes (the rest scrolls). */
+  grid-template-rows: minmax(0, 24px) minmax(34px, 46px) 24px 5px 34px 4px minmax(64px, 136px);
   column-gap: 8px;
   align-content: start;
 }
@@ -563,7 +568,7 @@ html.streamer-open .daw-footer { display: none !important; }
   left: 0;
   z-index: 3;
   box-sizing: border-box;
-  width: 82px;
+  width: var(--sm-label-w);
   display: flex;
   align-items: center;
   gap: 7px;
@@ -632,6 +637,27 @@ html.streamer-open .daw-footer { display: none !important; }
   min-height: 0;
   overflow: hidden;
 }
+/* The second lane's stem: a select that reads as the label's text. */
+.sm-tl-lane-sel {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 2px 0 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+/* Only one stem to show: it reads as plain text, no arrow. */
+.sm-tl-lane-sel:disabled { cursor: default; opacity: 1; appearance: none; }
+.sm-tl-lane-sel option { background: var(--panel); color: var(--fg); }
+/* A song without stems or sections: said in the row, no layout change. */
+.sm-tl-note { margin: 0; font-size: 12px; color: var(--sm-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.sm-tl-note[hidden] { display: none; }
+.sm-tl-no-stems { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 2; }
+.sm-tl-no-sections { grid-column: 2; grid-row: 2; align-self: center; padding-left: 4px; position: sticky; left: calc(var(--sm-label-w) + 8px); width: max-content; max-width: 100%; }
 .sm-tl-lane { position: absolute; left: 16px; height: calc(50% - 6px); display: block; pointer-events: none; }
 .sm-tl-lane-0 { top: 4px; }
 .sm-tl-lane-1 { bottom: 4px; }
@@ -789,6 +815,12 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-props-field { display: flex; flex-direction: column; gap: 5px; }
 .sm-props-hint { margin: 0; font-size: 12px; color: var(--sm-muted); line-height: 1.4; }
 .sm-props-done { align-self: flex-end; height: 32px; }
+.sm-props-picture { display: flex; flex-direction: column; gap: 8px; }
+.sm-props-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.sm-props-choose { height: 32px; }
+.sm-props-choose:disabled { opacity: .55; cursor: progress; }
+.sm-props-remove { width: auto; height: 32px; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
+.sm-props-remove[hidden] { display: none; }
 .sm-range { width: 100%; accent-color: var(--sm-yellow); }
 .sm-props-colors { display: flex; gap: 8px; }
 .sm-swatch { width: 24px; height: 24px; padding: 0; border: 2px solid var(--sm-edge); border-radius: 50%; cursor: pointer; }
@@ -851,6 +883,8 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-dev-act[hidden] { display: none; }
 .sm-heavy { margin: -2px 0 0; font-size: 12px; color: #e9c23a; }
 .sm-heavy[hidden] { display: none; }
+.sm-fps-why { margin: -2px 0 0; font-size: 12px; color: var(--sm-muted); }
+.sm-fps-why[hidden] { display: none; }
 
 /* Over the preview while the camera is not showing. */
 .sm-cam-state {
@@ -963,7 +997,7 @@ html.streamer-open .daw-footer { display: none !important; }
   /* Below the mode header, so Output stays in reach to close it. */
   .sm-side {
     position: absolute;
-    top: 114px;
+    top: var(--sm-drawer-top, 114px);
     right: 0;
     bottom: 0;
     z-index: 6;
@@ -976,16 +1010,31 @@ html.streamer-open .daw-footer { display: none !important; }
     display: none;
   }
   .sm-drawer-open .sm-side { display: flex; }
-  .sm-drawer-open .sm-scrim { display: block; position: absolute; inset: 114px 0 0; z-index: 5; background: rgba(0, 0, 0, .35); }
+  .sm-drawer-open .sm-scrim { display: block; position: absolute; inset: var(--sm-drawer-top, 114px) 0 0; z-index: 5; background: rgba(0, 0, 0, .35); }
 }
 /* Under 1000: the layers go under the preview, and the column scrolls. */
 @container streamer (max-width: 999px) {
-  .sm-center { overflow-y: auto; }
+  /* The column scrolls. The header, the layers and the timeline fit any
+     width (they wrap or scroll themselves); only the preview keeps its
+     480 px, so a workspace narrower than that scrolls sideways under the
+     header, never squeezing the preview or hiding a control. */
+  .sm-center { overflow: auto; }
+  .sm-head, .sm-tl, .sm-layers { min-width: 0; }
   .sm-builder { flex: none; }
   .sm-row { flex-direction: column; }
   .sm-preview-col { width: clamp(480px, min(var(--sm-center-w), 716px), 716px); }
-  .sm-layers { flex: none; max-width: none; contain: none; max-height: 440px; }
-  .sm-tl { flex: none; height: 217px; }
+  /* Five rows in view, the rest scroll. */
+  .sm-layers { flex: none; max-width: none; contain: none; }
+  .sm-layer-list { flex: none; max-height: calc(5 * 62px + 4 * 5px); }
+  .sm-tl { flex: none; height: 217px; --sm-label-w: 56px; }
+  .sm-tl-label { gap: 4px; padding-left: 6px; font-size: 11.5px; }
+  .sm-tl-label > svg { display: none; }
+  /* The header wraps instead of cutting Safe Zones, settings and Output. */
+  .sm-head { height: auto; gap: 8px; }
+  .sm-head-row { height: auto; min-height: 36px; flex-wrap: wrap; row-gap: 8px; }
+  .sm-head-sep, .sm-head-sub { display: none; }
+  .sm-tabs-row { flex-wrap: wrap; row-gap: 8px; }
+  .sm-tab { padding: 0 14px; white-space: nowrap; }
   .sm-aspect { width: 160px; }
 }
 
@@ -1011,3 +1060,4 @@ html.streamer-open .daw-footer { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .sm-rec.recording .sm-rec-dot { animation: none; }
 }
+.streamer:focus { outline: none; }

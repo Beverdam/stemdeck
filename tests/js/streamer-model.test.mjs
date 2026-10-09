@@ -9,6 +9,7 @@ import {
   setLayerProps, setLayerFrame, nudgeLayer, moveFrame, resizeFrame, nearestLine, layerAt,
   emptyHistory, pushHistory, undoHistory, redoHistory, HISTORY_CAP,
   TRIM_MIN, trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery, ZOOM_MAX_PPS,
+  IMAGE_MAX_BYTES, IMAGE_TYPES, downscaleSize, fitRect, imageKey, pickLaneStems,
 } from "../../static/js/streamer/streamerModel.js";
 
 let failed = 0;
@@ -276,6 +277,29 @@ check("ticks every step", eq(ticksEvery(65, 30).map((x) => x.label), ["0:00", "0
 // Waveform bars over a stretch
 const pk = { v: [[0, 1], [0, 0.5], [0, 0.25], [0, 0.125]] };
 check("bars of a stretch, against the whole song", eq(peakBars(pk, ["v"], 2, 0.5, 1), [0.25, 0.125]) && eq(peakBars(pk, ["v"], 2), [1, 0.25]));
+
+// Pictures (phase 5)
+check("a picture is stored no wider than the output", eq(downscaleSize(4000, 3000, 1920), { width: 1920, height: 1440 }) && eq(downscaleSize(800, 600, 1920), { width: 800, height: 600 }));
+check("a portrait picture keeps its aspect", eq(downscaleSize(3000, 6000, 1080), { width: 1080, height: 2160 }));
+check("bad sizes never give zero", eq(downscaleSize(0, NaN, 0), { width: 1, height: 1 }));
+check("cover fills the box (cut at the sides)", eq(fitRect(200, 100, 100, 100, "cover"), { x: -50, y: 0, w: 200, h: 100 }));
+check("contain fits inside the box (bars above and below)", eq(fitRect(200, 100, 100, 100, "contain"), { x: 0, y: 25, w: 100, h: 50 }));
+check("an empty picture or box draws nothing", eq(fitRect(0, 100, 100, 100), { x: 0, y: 0, w: 0, h: 0 }));
+check("pictures are capped at 2 MB, PNG, JPEG or WebP", IMAGE_MAX_BYTES === 2097152 && eq([...IMAGE_TYPES], ["image/png", "image/jpeg", "image/webp"]));
+const ik = imageKey("ff5490ec654a", "image-2", "lq3x9");
+check("a picture's key is per song, layer and choice", ik === "ff5490ec654a:image-2:lq3x9" && imageKey("a", "b") === "a:b");
+const withPic = setLayerProps(addLayer(defaultScene(), "image"), "image", { imageKey: ik });
+check("the picture's key survives save and load", parseScene(serializeScene(withPic)).layers.find((l) => l.id === "image").props.imageKey === ik);
+check("a bad picture key is dropped", parseScene(serializeScene(setLayerProps(withPic, "image", { imageKey: "../../x y" }))).layers.find((l) => l.id === "image").props.imageKey === "");
+check("the background takes a picture too", defaultScene().layers.find((l) => l.type === "background").props.imageKey === "");
+
+// The take timeline's lanes (phase 5)
+check("lanes: the voice, then the best instrument", eq(pickLaneStems(["drums", "vocals", "bass", "other"]).lanes, ["vocals", "bass"]));
+check("lanes: the second is the chosen stem when present", eq(pickLaneStems(["drums", "vocals", "bass"], "drums").lanes, ["vocals", "drums"]));
+check("lanes: a chosen stem the song lacks falls back", eq(pickLaneStems(["vocals", "guitar"], "bass").lanes, ["vocals", "guitar"]));
+check("lanes: the choices are every stem but the first lane's", eq(pickLaneStems(["lead_vocals", "backing_vocals", "piano"]).choices, ["backing_vocals", "piano"]));
+check("lanes: no voice, the first lane is an instrument", eq(pickLaneStems(["drums", "bass"]).lanes, ["bass", "drums"]));
+check("lanes: one stem is one lane, none is none", eq(pickLaneStems(["original"]).lanes, ["original"]) && eq(pickLaneStems([]).lanes, []) && eq(pickLaneStems(null).lanes, []));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

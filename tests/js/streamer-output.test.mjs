@@ -2,7 +2,7 @@
 import {
   SETTINGS_KEY, NONE, RESOLUTIONS, FRAME_RATES,
   defaultRecordingSettings, parseRecordingSettings, serializeRecordingSettings, resolveDeviceId,
-  isHeavy, cameraConstraints,
+  isHeavy, cameraConstraints, applySettings, framesFor,
   METER_SEGMENTS, METER_FLOOR_DB, METER_HOLD_MS, METER_DECAY_DB_PER_SEC,
   meterFraction, levelDb, segmentZone, litSegments, holdPeak, newPeakState,
 } from "../../static/js/streamer/outputSettings.js";
@@ -23,7 +23,7 @@ check("defaults: default devices, 1080p, 30 fps, mixed audio on, click off, auto
 check("the settings key", SETTINGS_KEY === "stemdeck:streamer:recording");
 check("choices", eq(RESOLUTIONS, ["720", "1080", "2160"]) && eq(FRAME_RATES, [24, 30, 60]));
 check("garbage gives the defaults", eq(parseRecordingSettings(null), d) && eq(parseRecordingSettings("{nope"), d) && eq(parseRecordingSettings(7), d));
-const mine = { videoDeviceId: "cam1", audioDeviceId: NONE, resolution: "2160", fps: 60, recordMixedAudio: false, includeClick: true, autoStopAtEnd: false };
+const mine = { videoDeviceId: "cam1", audioDeviceId: NONE, resolution: "2160", fps: 24, recordMixedAudio: false, includeClick: true, autoStopAtEnd: false };
 check("round trip", eq(parseRecordingSettings(JSON.stringify(serializeRecordingSettings(mine))), mine));
 check("a wrong value takes its default, the rest is kept", eq(parseRecordingSettings({ ...mine, resolution: "8K", fps: 25, includeClick: "yes" }), { ...mine, resolution: "1080", fps: 30, includeClick: false }));
 check("numbers as strings are read", parseRecordingSettings({ resolution: 720, fps: "24" }).resolution === "720" && parseRecordingSettings({ fps: "24" }).fps === 24);
@@ -68,6 +68,16 @@ holdPeak(st, 0, 1000 + METER_HOLD_MS + 60000);
 check("and reaches silence", st.value < 1e-6);
 const same = newPeakState();
 check("updated in place (no allocation per frame)", holdPeak(same, 0.5, 1) === same);
+
+// 4K at 60 fps is not offered (fix pass E).
+check("4K offers 24 and 30 fps, the others all three", eq(framesFor("2160"), [24, 30]) && eq(framesFor("1080"), [24, 30, 60]) && eq(framesFor("720"), [24, 30, 60]));
+check("a saved 4K at 60 reads as 4K at 30", eq(parseRecordingSettings({ resolution: "2160", fps: 60 }).fps, 30) && parseRecordingSettings({ resolution: "1080", fps: 60 }).fps === 60);
+const fb = applySettings({ ...d, fps: 60 }, { resolution: "2160" });
+check("choosing 4K while at 60 falls back to 30, and says so", fb.settings.resolution === "2160" && fb.settings.fps === 30 && fb.fellBack === true);
+const fb2 = applySettings({ ...d, resolution: "2160" }, { fps: 60 });
+check("asking 60 at 4K is refused the same way", fb2.settings.fps === 30 && fb2.fellBack === true);
+check("other changes are not a fallback", applySettings(d, { fps: 60 }).fellBack === false && applySettings(d, { resolution: "720" }).fellBack === false);
+check("4K at 30 and 1080p at 60 still warn", isHeavy({ resolution: "2160", fps: 30 }) && isHeavy({ resolution: "1080", fps: 60 }));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

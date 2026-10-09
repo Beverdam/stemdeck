@@ -28,6 +28,7 @@ from typing import NamedTuple
 import soundfile as sf
 
 from app.core.config import (
+    CANVAS_SHORT_SIDES,
     EXPORT_LIMIT_DBFS,
     EXPORT_LIMIT_LOSSY_DBTP,
     TIMEOUT_FFMPEG,
@@ -253,25 +254,31 @@ _encoders_lock = threading.Lock()
 
 
 def _encoders() -> str:
-    """`ffmpeg -encoders`, probed once per process (the binary cannot change
-    mid-run). Any probe failure reads as an empty list, so the render says
-    the encoder is missing rather than starting and failing later."""
+    """`ffmpeg -encoders`, probed once per process when it succeeds (the
+    binary cannot change mid-run). A failed or timed-out probe reads as an
+    empty list for this call only, so the render says the encoder is missing
+    rather than starting and failing later, and the next call probes again
+    (a slow first start must not disable video render for the session)."""
     global _encoders_cached
     with _encoders_lock:
         if _encoders_cached is None:
             try:
                 probe = subprocess.run(  # noqa: S603 -- fixed args, trusted ffmpeg
-                    [ffmpeg_executable(), "-hide_banner", "-encoders"],
+                    [ffmpeg_executable(), "-nostdin", "-hide_banner", "-encoders"],
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=10,
                 )
-                _encoders_cached = probe.stdout
             except (OSError, subprocess.SubprocessError):
                 logger.debug(
                     "encoder probe failed; treating video render as unavailable", exc_info=True
                 )
-                _encoders_cached = ""
+                return ""
+            if probe.returncode != 0 or not probe.stdout.strip():
+                logger.debug("encoder probe exit %s; not cached", probe.returncode)
+                return ""
+            _encoders_cached = probe.stdout
         return _encoders_cached
 
 
@@ -296,7 +303,7 @@ class AudioLane(NamedTuple):
 CANVAS_SIZES = {"16:9": (1920, 1080), "9:16": (1080, 1920)}
 VIDEO_FPS = 30
 # Streamer Mode's outputs: the canvas's short side, and the frame rates.
-CANVAS_SHORT_SIDES = {"720": 720, "1080": 1080, "2160": 2160}
+# The short side per size: app/core/config.py (one place for the server's numbers).
 VIDEO_FPS_CHOICES = (24, 30, 60)
 
 
@@ -463,6 +470,20 @@ def build_video_render_cmd(
 
 class RenderCancelled(Exception):
     pass
+
+
+def sweep_render_temps(jobs_dir: Path) -> int:
+    """Remove render temp files (".render.mp4.<hex>.tmp.mp4") under every
+    take of every job: called at startup, before anything renders. Returns
+    how many went."""
+    gone = 0
+    for path in jobs_dir.glob("*/takes/*/.render.mp4.*.tmp.mp4"):
+        try:
+            path.unlink()
+            gone += 1
+        except OSError:
+            logger.warning("stale render file not removed: %s", path.name)
+    return gone
 
 
 def run_video_render(

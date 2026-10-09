@@ -1,7 +1,7 @@
 // Streamer Mode's recording and export arithmetic (static/js/streamer/recordModel.js).
 import {
   RECORD_STATES, nextRecordState, isTakeOpen, startPoint, shouldAutoStop,
-  outputPixels, videoBitrate, exportFileName, buildRenderRequest, isNoEncoder,
+  outputPixels, videoBitrate, exportFileName, buildRenderRequest, isNoEncoder, BITRATE_MAX, CAMERA_CAP_BPS, rawExtension,
 } from "../../static/js/streamer/recordModel.js";
 
 let failed = 0;
@@ -38,8 +38,8 @@ check("16:9 sizes", eq(outputPixels("16:9", "720"), { width: 1280, height: 720 }
 check("9:16 sizes", eq(outputPixels("9:16", "720"), { width: 720, height: 1280 }) && eq(outputPixels("9:16", "2160"), { width: 2160, height: 3840 }));
 check("1:1 sizes", eq(outputPixels("1:1", "1080"), { width: 1080, height: 1080 }));
 check("an unknown resolution is 1080p", eq(outputPixels("16:9", "480"), { width: 1920, height: 1080 }));
-check("bit rate grows with size and rate, held to 2.5..40 Mbps", videoBitrate({ width: 1920, height: 1080 }, 30) === 6220800
-  && videoBitrate({ width: 640, height: 360 }, 24) === 2_500_000 && videoBitrate({ width: 3840, height: 2160 }, 60) === 40_000_000);
+check("bit rate grows with size and rate, held to 2.5..14 Mbps", videoBitrate({ width: 1920, height: 1080 }, 30) === 6220800
+  && videoBitrate({ width: 640, height: 360 }, 24) === 2_500_000 && videoBitrate({ width: 3840, height: 2160 }, 30) === 14_000_000);
 
 // The file name
 check("title, artist, suffix", exportFileName("Come as You Are", "Nirvana") === "Come as You Are - Nirvana (Streamer).mp4");
@@ -71,6 +71,32 @@ check("defaults: 16:9, 1080p, 30 fps, click off", (() => {
   return b.canvas === "16:9" && b.size === "1080" && b.fps === 30 && b.click === false;
 })());
 check("the no-encoder refusal is recognised", isNoEncoder(422, "this ffmpeg build cannot encode H.264 video (no libx264)") && isNoEncoder(422, "cannot encode H.264 video (no AAC encoder)") && !isNoEncoder(422, "gain out of range") && !isNoEncoder(500, "libx264"));
+
+// The recorder never asks more than the server keeps (fix pass E): every
+// offered size and rate stays under 70% of 20 Mbit/s.
+{
+  const offered = [];
+  for (const aspect of ["16:9", "9:16", "1:1"]) {
+    for (const res of ["720", "1080", "2160"]) {
+      for (const fps of res === "2160" ? [24, 30] : [24, 30, 60]) offered.push([aspect, res, fps, videoBitrate(outputPixels(aspect, res), fps)]);
+    }
+  }
+  const over = offered.filter(([, , , bps]) => bps > CAMERA_CAP_BPS * 0.7);
+  check("every offered size and rate asks under the server's cap with a 30% margin", offered.length === 24 && over.length === 0 && BITRATE_MAX <= CAMERA_CAP_BPS * 0.7, JSON.stringify(over));
+}
+check("closed while starting: the take goes back to idle, nothing recorded", nextRecordState("starting", "abort") === "idle" && nextRecordState("recording", "abort") === "recording");
+
+// Names cut by code points (fix pass 10): an emoji at the cut stays whole,
+// and the name can always be put in a URL.
+{
+  const emoji = String.fromCodePoint(0x1f3b8);
+  const long = "a".repeat(119) + emoji + "tail";
+  const name = exportFileName(long, "");
+  let encodes = true;
+  try { encodeURIComponent(name); } catch { encodes = false; }
+  check("a name cut at an emoji keeps it whole and encodes", encodes && name.includes(emoji) && !name.includes("tail"), name);
+}
+check("the raw recording is named after what was recorded", rawExtension("video/mp4") === "mp4" && rawExtension("video/webm;codecs=vp9") === "webm" && rawExtension("") === "webm" && rawExtension("video/x-matroska") === "mkv");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

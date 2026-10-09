@@ -204,6 +204,24 @@ async def test_streamer_render_refusals(jobs_dir, client, tmp_path, monkeypatch)
         assert r.status_code == 422 and "libx264" in r.json()["detail"]
 
 
+async def test_streamer_render_refuses_4k_at_60(jobs_dir, client, tmp_path, monkeypatch):
+    """4K at 60 fps is blocked (maintainer decision): a crafted request gets a
+    422 that says so; 4K at 30 and 1080p at 60 are still accepted."""
+    skip_without_ffmpeg()
+    _make_job(jobs_dir)
+    monkeypatch.setattr(takes_mod, "libx264_available", lambda: True)
+    monkeypatch.setattr(takes_mod, "aac_available", lambda: True)
+    async with client as c:
+        tid = await _take_with_camera(c, tmp_path)
+        base = f"/api/jobs/{JOB}/takes/{tid}/render"
+        r = await c.post(base, json={"canvas": "16:9", "fit": "fill", "size": "2160", "fps": 60})
+        assert r.status_code == 422
+        assert "4K at 60 fps is not supported" in r.json()["detail"]
+    body = takes_mod.RenderBody(size="2160", fps=30)
+    assert body.size == "2160" and body.fps == 30
+    assert takes_mod.RenderBody(size="1080", fps=60).fps == 60
+
+
 def _json(payload: dict) -> bytes:
     import json
 
@@ -319,7 +337,7 @@ async def test_cancel_stops_a_streamer_render(jobs_dir, client, tmp_path):
     _make_job(jobs_dir)
     async with client as c:
         tid = await _take_with_camera(c, tmp_path)
-        body = {"canvas": "16:9", "fit": "fill", "size": "2160", "fps": 60, "span": "song"}
+        body = {"canvas": "16:9", "fit": "fill", "size": "2160", "fps": 30, "span": "song"}
         r = await c.post(f"/api/jobs/{JOB}/takes/{tid}/render", json=body)
         assert r.status_code == 202
         await c.post(f"/api/jobs/{JOB}/takes/{tid}/render/cancel")

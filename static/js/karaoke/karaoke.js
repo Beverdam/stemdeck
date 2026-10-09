@@ -27,6 +27,7 @@ import { karaokeLyrics, vocalEnvelopeFor } from "../lyrics.js";
 import { getCurrentTrackInfo, openTrackInStudio } from "../catalog.js";
 import { loadQueue, getQueue, shiftQueue, removeFromQueue, onQueueChange, mountQueue } from "./karaokeQueue.js";
 import { isRecording } from "../capture/recordUi.js";
+import { takeOpen as streamerTakeOpen } from "../streamer/streamerRecord.js";
 import {
   transposedKey, semitoneLabel, clockShort, clockLong,
   sungLines, lyricFrame, timedWords, sungCount, karaokeStems, karaokeMutedByDefault, karaokeAlwaysOn,
@@ -476,7 +477,8 @@ function relabelFullscreen() {
  * the vocals, which would change what is being recorded against. */
 export function openKaraoke() {
   if (open) return true;
-  if (isRecording()) {
+  // A studio take or a Streamer take: Karaoke would mute the vocals under it.
+  if (isRecording() || streamerTakeOpen()) {
     flashNote(t("karaoke.stopRecordingFirst"));
     return false;
   }
