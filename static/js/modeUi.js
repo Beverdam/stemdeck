@@ -1,8 +1,8 @@
 // The Mode control in the sidebar rail, above Favorites: a brain and the word
 // Mode. It opens a small menu of the modes (mode.js): Practice and Advanced to
-// choose from, Karaoke (karaoke/karaoke.js, the same view as the rail's
-// Karaoke button, over whichever of the two is in force), and Streaming shown
-// as coming.
+// choose from, Karaoke and Streamer (karaoke/karaoke.js, streamer/streamer.js:
+// the same views as the rail's Karaoke and Streamer buttons, over whichever of
+// the two is in force), and Streaming shown as coming.
 //
 // Keyboard: Enter or Space opens the menu with the current mode focused,
 // Up and Down move, Enter or Space chooses, Escape closes and returns focus.
@@ -12,12 +12,13 @@ import { MODES, AVAILABLE, getMode, setMode, onModeChange } from "./mode.js";
 import { isRecording, closeRecordPanel } from "./capture/recordUi.js";
 import { armedTracks, setArmed } from "./capture/takeLanes.js";
 import { openKaraoke, closeKaraoke, isKaraokeOpen, onKaraokeChange } from "./karaoke/karaoke.js";
+import { openStreamer, closeStreamer, isStreamerOpen, onStreamerChange, isStreamerTakeOpen } from "./streamer/streamer.js";
 
-// Karaoke is not a mode of mode.js: it is a view over Practice or Advanced,
-// opened and closed on its own. The menu offers it, and shows it as current
-// while it is open.
-const SELECTABLE = [...AVAILABLE, "karaoke"];
-const current = () => (isKaraokeOpen() ? "karaoke" : getMode());
+// Karaoke and Streamer are not modes of mode.js: they are views over Practice
+// or Advanced, opened and closed on their own, one at a time. The menu offers
+// them, and shows the open one as current.
+const SELECTABLE = [...AVAILABLE, "karaoke", "streamer"];
+const current = () => (isKaraokeOpen() ? "karaoke" : isStreamerOpen() ? "streamer" : getMode());
 
 let btn = null;
 let menu = null;
@@ -92,8 +93,23 @@ function choose(m) {
     note.hidden = false;
     return;
   }
-  // Practice or Advanced while Karaoke is open: back to the studio, in that mode.
+  if (m === "streamer") {
+    if (isStreamerOpen() || openStreamer()) { close(); return; }
+    // Refused: a take is recording.
+    note.textContent = t("streamer.stopRecordingFirst");
+    note.hidden = false;
+    return;
+  }
+  // A Streamer take is open: leaving Streamer would stop it with nothing on
+  // screen to say so. Refused, as Karaoke is while a take records.
+  if (isStreamerOpen() && isStreamerTakeOpen()) {
+    note.textContent = t("streamer.rec.stopFirst");
+    note.hidden = false;
+    return;
+  }
+  // Practice or Advanced while a view is open: back to the studio, in that mode.
   if (isKaraokeOpen()) closeKaraoke();
+  if (isStreamerOpen()) closeStreamer();
   if (m === getMode()) { close(); return; }
   // Practice has no Record button: leaving DAW while a take records would
   // leave nothing on screen to stop it with.
@@ -172,5 +188,6 @@ export function initModeUi() {
   });
   onLanguageChange(paint);
   onKaraokeChange(paint);
+  onStreamerChange(paint);
   paint();
 }

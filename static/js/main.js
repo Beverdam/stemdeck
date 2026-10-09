@@ -28,6 +28,7 @@ import { initVideoTake } from "./video/videoTake.js";
 import { initMasterPanel } from "./masterPanel.js";
 import { initModeUi } from "./modeUi.js";
 import { initKaraoke } from "./karaoke/karaoke.js";
+import { initStreamer } from "./streamer/streamer.js";
 import { initMixMode } from "./mixMode.js";
 
 // ─── Stem choice toggles on the import page ───
@@ -506,6 +507,7 @@ initMasterPanel();
 initModeUi();
 initMixMode();
 initKaraoke();
+initStreamer();
 // Re-measure after a language switch. Measured across en/fr/de/pl the strip
 // came out the same width in all four, because the group labels are 10px
 // uppercase and narrower than the controls under them, so this is not the

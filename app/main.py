@@ -223,6 +223,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await asyncio.to_thread(sweep_orphaned_section_workspaces, JOBS_DIR)
     except Exception:
         _log.exception("could not sweep orphaned section workspaces")
+    # A take render the last process was killed in the middle of left its
+    # temp file beside the take (take_render.run_video_render): nothing is
+    # rendering yet, so any such file is an orphan.
+    try:
+        from app.pipeline.take_render import sweep_render_temps
+
+        await asyncio.to_thread(sweep_render_temps, JOBS_DIR)
+    except Exception:
+        _log.exception("could not sweep stale render files")
 
     resumed = take_pending_resume()
     if resumed:
@@ -256,6 +265,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # blocked in asyncio.to_thread, which cannot be cancelled, so it dies with
     # the process exactly as it did before the queue existed.
     jobqueue.request_stop()
+    # Running take renders (ffmpeg processes) stop with the server.
+    from app.api.takes import cancel_all_renders
+
+    cancel_all_renders()
     # Tear down the persistent demucs worker (#309) so a clean shutdown never
     # leaves it as an orphaned process -- it has no parent-death watchdog of
     # its own, unlike the desktop backend itself.

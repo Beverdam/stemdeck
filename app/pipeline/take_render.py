@@ -28,6 +28,7 @@ from typing import NamedTuple
 import soundfile as sf
 
 from app.core.config import (
+    CANVAS_SHORT_SIDES,
     EXPORT_LIMIT_DBFS,
     EXPORT_LIMIT_LOSSY_DBTP,
     TIMEOUT_FFMPEG,
@@ -253,25 +254,31 @@ _encoders_lock = threading.Lock()
 
 
 def _encoders() -> str:
-    """`ffmpeg -encoders`, probed once per process (the binary cannot change
-    mid-run). Any probe failure reads as an empty list, so the render says
-    the encoder is missing rather than starting and failing later."""
+    """`ffmpeg -encoders`, probed once per process when it succeeds (the
+    binary cannot change mid-run). A failed or timed-out probe reads as an
+    empty list for this call only, so the render says the encoder is missing
+    rather than starting and failing later, and the next call probes again
+    (a slow first start must not disable video render for the session)."""
     global _encoders_cached
     with _encoders_lock:
         if _encoders_cached is None:
             try:
                 probe = subprocess.run(  # noqa: S603 -- fixed args, trusted ffmpeg
-                    [ffmpeg_executable(), "-hide_banner", "-encoders"],
+                    [ffmpeg_executable(), "-nostdin", "-hide_banner", "-encoders"],
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=10,
                 )
-                _encoders_cached = probe.stdout
             except (OSError, subprocess.SubprocessError):
                 logger.debug(
                     "encoder probe failed; treating video render as unavailable", exc_info=True
                 )
-                _encoders_cached = ""
+                return ""
+            if probe.returncode != 0 or not probe.stdout.strip():
+                logger.debug("encoder probe exit %s; not cached", probe.returncode)
+                return ""
+            _encoders_cached = probe.stdout
         return _encoders_cached
 
 
@@ -295,6 +302,19 @@ class AudioLane(NamedTuple):
 
 CANVAS_SIZES = {"16:9": (1920, 1080), "9:16": (1080, 1920)}
 VIDEO_FPS = 30
+# Streamer Mode's outputs: the canvas's short side, and the frame rates.
+# The short side per size: app/core/config.py (one place for the server's numbers).
+VIDEO_FPS_CHOICES = (24, 30, 60)
+
+
+def canvas_size(canvas: str, size: str = "1080") -> tuple[int, int]:
+    """(width, height) of a 16:9, 9:16 or 1:1 canvas whose short side is
+    `size` (720, 1080 or 2160). 16:9 and 9:16 at 1080 are CANVAS_SIZES."""
+    short = CANVAS_SHORT_SIDES[size]
+    if canvas == "1:1":
+        return short, short
+    long = short * 16 // 9
+    return (long, short) if canvas == "16:9" else (short, long)
 
 
 def camera_filter(
@@ -318,6 +338,10 @@ def camera_filter(
     if fit == "contain":
         chain.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
         chain.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+    elif fit == "fill":
+        # A picture already composed at the canvas's shape (Streamer Mode's
+        # scene): only its size changes, nothing is cut or padded.
+        chain.append(f"scale={width}:{height}")
     else:
         chain.append(f"scale={width}:{height}:force_original_aspect_ratio=increase")
         chain.append(f"crop={width}:{height}")
@@ -344,6 +368,8 @@ def build_video_render_cmd(
     master_chain: str = "",
     trim_db: float = 0.0,
     alt_aac: bool = False,
+    size: str = "1080",
+    fps: int = VIDEO_FPS,
 ) -> list[str]:
     """One ffmpeg command: backing mix + take audio + one camera tile -> MP4.
 
@@ -364,8 +390,14 @@ def build_video_render_cmd(
     `master_chain` is the master (app/pipeline/mastering.py: compressor, gain,
     true-peak limiter), which replaces the lossy export limiter; `trim_db` and
     `alt_aac` are the retry of a master whose AAC decoded over its ceiling
-    (stems._render_master_verified)."""
-    width, height = CANVAS_SIZES[canvas]
+    (stems._render_master_verified).
+
+    `size` (720, 1080, 2160: the canvas's short side) and `fps` (24, 30, 60)
+    are Streamer Mode's output choices; the defaults are the camera take's
+    1080p at 30 fps."""
+    width, height = canvas_size(canvas, size)
+    if fps not in VIDEO_FPS_CHOICES:
+        raise ValueError(f"unsupported frame rate {fps}")
     start_sample = max(0, int(round(start_sec * TAKE_RATE)))
     start_sec = start_sample / TAKE_RATE
     # In seconds, not samples, so a lane at another rate is cut at the same
@@ -394,15 +426,13 @@ def build_video_render_cmd(
     else:
         filters.append(f"[a0]{master_fx}{end}[aout]")
 
-    filters.append(f"color=c=black:s={width}x{height}:r={VIDEO_FPS}:d={duration_sec:.6f}[bg]")
+    filters.append(f"color=c=black:s={width}x{height}:r={fps}:d={duration_sec:.6f}[bg]")
     filters.append(
         camera_filter(camera_start_sec - start_sec, width, height, fit, mirror, f"[{cam_idx}:v]")
     )
     # eof_action=pass: once the camera ends the black canvas carries on, so
     # the video always has its full length and never freezes on a last frame.
-    filters.append(
-        f"[bg][cam]overlay=eof_action=pass:shortest=0,fps={VIDEO_FPS},format=yuv420p[vout]"
-    )
+    filters.append(f"[bg][cam]overlay=eof_action=pass:shortest=0,fps={fps},format=yuv420p[vout]")
     cmd += [
         "-filter_complex",
         ";".join(filters),
@@ -412,12 +442,18 @@ def build_video_render_cmd(
         "[aout]",
         "-c:v",
         "libx264",
+        # 4K (Streamer Mode's 2160 output) has four times the pixels of 1080p:
+        # at x264's default preset ("medium") a song-length render takes many
+        # minutes and holds the pipeline lock all that time. "veryfast" cuts
+        # that several times over for a slightly larger file at the same crf.
+        # 720p and 1080p keep the default, as before.
+        *(["-preset", "veryfast"] if min(width, height) >= 2160 else []),
         "-crf",
         "20",
         "-pix_fmt",
         "yuv420p",
         "-r",
-        str(VIDEO_FPS),
+        str(fps),
         *(AAC_ENCODE_ARGS_ALT if alt_aac else AAC_ENCODE_ARGS),
         "-ar",
         str(audio_rate),
@@ -434,6 +470,20 @@ def build_video_render_cmd(
 
 class RenderCancelled(Exception):
     pass
+
+
+def sweep_render_temps(jobs_dir: Path) -> int:
+    """Remove render temp files (".render.mp4.<hex>.tmp.mp4") under every
+    take of every job: called at startup, before anything renders. Returns
+    how many went."""
+    gone = 0
+    for path in jobs_dir.glob("*/takes/*/.render.mp4.*.tmp.mp4"):
+        try:
+            path.unlink()
+            gone += 1
+        except OSError:
+            logger.warning("stale render file not removed: %s", path.name)
+    return gone
 
 
 def run_video_render(
