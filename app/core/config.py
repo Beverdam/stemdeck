@@ -393,6 +393,9 @@ COVER_MAX_BYTES = 5 * 1024 * 1024
 COVER_DEADLINE_SEC = 15.0
 COVER_HOSTS = ("ytimg.com", "ggpht.com", "googleusercontent.com", "sndcdn.com")
 COVER_RETRY_AFTER_SEC = 60.0
+# A backing track without one stem (app/pipeline/backing.py): a sum of five
+# WAVs, seconds for a song; the ceiling only guards a stuck disk.
+TIMEOUT_BACKING = _env_int("STEMDECK_TIMEOUT_BACKING", 120)
 # Video render of a take (libx264 + AAC). Slower than any audio export: a
 # 5-minute 1080p30 encode runs about 1x to 3x realtime on a desktop CPU.
 TIMEOUT_VIDEO_RENDER = _env_int("STEMDECK_TIMEOUT_VIDEO_RENDER", 3600)

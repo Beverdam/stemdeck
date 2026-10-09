@@ -154,13 +154,14 @@ async function ensureTrack(jobId, name) {
  * `draw(ctx, width, height)` paints one output frame. Resolves
  * { ok: true } or { ok: false, reason }.
  */
-export async function startRecording({ jobId, capture, settings, aspect, range, trackName, draw }) {
+export async function startRecording({ jobId, capture, settings, aspect, range, trackName, draw, remove = "" }) {
   if (isTakeOpen(rec.state) || rec.state === "exporting") return { ok: false, reason: "busy" };
   const block = recordBlock();
   if (block) return { ok: false, reason: block };
   const engine = audioEngine;
   set("start", { reason: null, jobId, takeId: null, session: null, hiddenWhileRecording: false, aborted: false });
-  rec.recordedAt = { aspect, resolution: String(settings.resolution), fps: Number(settings.fps) || 30 };
+  // What the take is recorded at, and the part left out of what it hears.
+  rec.recordedAt = { aspect, resolution: String(settings.resolution), fps: Number(settings.fps) || 30, remove: remove || "" };
   // Closed while starting (stopRecording before a session exists): stop here.
   const goOn = () => {
     if (rec.aborted) throw Object.assign(new Error("aborted"), { code: "aborted" });
@@ -314,7 +315,10 @@ export function takeInfo(takeId) {
   try { v = JSON.parse(readKept(TAKE_INFO_KEY(takeId)) || "null"); } catch { v = null; }
   const ok = v && typeof v === "object" && ["16:9", "9:16", "1:1"].includes(v.aspect)
     && ["720", "1080", "2160"].includes(String(v.resolution)) && [24, 30, 60].includes(Number(v.fps));
-  const info = ok ? { aspect: v.aspect, resolution: String(v.resolution), fps: Number(v.fps) } : null;
+  // `remove`: the part left out ("" the whole song; null for a take recorded
+  // before Streamer had the choice).
+  const removed = typeof v?.remove === "string" && ["", "drums", "bass", "guitar", "piano", "vocals"].includes(v.remove) ? v.remove : null;
+  const info = ok ? { aspect: v.aspect, resolution: String(v.resolution), fps: Number(v.fps), remove: removed } : null;
   takeInfos.set(takeId, info);
   return info;
 }

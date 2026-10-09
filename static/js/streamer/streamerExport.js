@@ -26,7 +26,7 @@ async function detailOf(res) {
 }
 
 /** The render request for this take (recordModel.buildRenderRequest). */
-export function renderRequest({ trackId, settings, aspect, range }) {
+export function renderRequest({ trackId, settings, aspect, range, remove = "" }) {
   const mix = currentMixLanes();
   const names = (mix.names || []).filter((n) => n !== trackId);
   return buildRenderRequest({
@@ -40,6 +40,7 @@ export function renderRequest({ trackId, settings, aspect, range }) {
     range,
     fx: settings.recordMixedAudio ? exportFxParam(trackId ? [...names, trackId] : names) : "",
     master: exportMasterParam(),
+    remove,
   });
 }
 

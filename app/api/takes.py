@@ -1295,6 +1295,9 @@ class RenderBody(BaseModel):
     # The click as one more lane (the export's default click: the song's grid,
     # every beat, accents by the detected bars).
     click: StrictBool = False
+    # Streamer Mode's "I play": the stem the musician played, left out of the
+    # backing exactly as it was left out of what they heard. None: the whole song.
+    remove_stem: Literal["vocals", "drums", "bass", "guitar", "piano", "other"] | None = None
     # The studio EQ, the export's fx= value (app/pipeline/fx_filters.py). The
     # take gets its track's EQ; "" means no EQ.
     fx: str = Field(default="", max_length=stems_api.FX_PARAM_MAX_CHARS)
@@ -1346,6 +1349,16 @@ def _render_lanes(
     return _RenderAudio(out, render_fx.lanes[-1], render_fx.master, names[:-1])
 
 
+def removed_stems(remove: str | None) -> frozenset[str]:
+    """The lanes and components a removed stem takes out: Voice is the
+    vocals stem and, after a lead/backing split, both of its halves."""
+    if not remove:
+        return frozenset()
+    if remove == "vocals":
+        return frozenset({"vocals", "lead_vocals", "backing_vocals"})
+    return frozenset({remove})
+
+
 def _backing_lanes(job_id: str, take_id: str, body: RenderBody) -> list[tuple[AudioLane, str]]:
     """The backing lanes with their mixer lane names."""
     if len(body.gains) != len(body.stems):
@@ -1369,7 +1382,9 @@ def _backing_lanes(job_id: str, take_id: str, body: RenderBody) -> list[tuple[Au
         raise HTTPException(
             status_code=422, detail="this ffmpeg build cannot transpose (no rubberband filter)"
         )
-    lanes, _unpitched = stems_api._expand_render_lanes(job_id, names, gains, pitches)
+    lanes, _unpitched = stems_api._expand_render_lanes(
+        job_id, names, gains, pitches, removed_stems(body.remove_stem)
+    )
     return [
         (AudioLane(lane.path, lane.gain, stems_api._pitch_filter(lane.pitch)), lane.name)
         for lane in lanes
@@ -1576,6 +1591,8 @@ async def _prepare_render(
             [
                 *stems_api._take_versions(job_id, audio.names),
                 f"{take_id}@{st.st_size}:{st.st_mtime_ns}",
+                # A backing without a stem is another mix to measure.
+                *([f"without:{body.remove_stem}"] if body.remove_stem else []),
             ],
         )
         master_chain = stems_api.plan_chain(plan, rate_in)

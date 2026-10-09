@@ -603,14 +603,20 @@ test.describe("Streamer Mode polish", () => {
     await expect(page.locator(".sm-props-picture-msg")).toContainText("PNG, JPEG or WebP");
   });
 
-  test("the second lane's stem is chosen and kept per song", async ({ page }) => {
+  test("I play leaves the part out of what Streamer plays, for Streamer only", async ({ page }) => {
     await openStudio(page);
     await openStreamer(page);
-    const sel = sm(page, ".sm-tl-lane-sel");
+    const sel = page.locator("#streamerPart");
     const values = await sel.locator("option").evaluateAll((os) => os.map((o) => o.value));
-    test.skip(values.length < 2, "the test song has one other stem");
-    await sel.selectOption(values[values.length - 1]);
-    expect(await ev(page, (id) => localStorage.getItem(`stemdeck.streamer.lane2.${id}`), JOB_ID)).toBe(values[values.length - 1]);
+    expect(values[0]).toBe("");
+    test.skip(!values.includes("drums"), "the test song has no drums stem");
+    await sel.selectOption("drums");
+    await expect.poll(() => ev(page, async () => [...(await import("/js/player.js")).playbackExclusion().names])).toContain("drums");
+    await expect(sm(page, ".sm-tl-label-stem").first()).toHaveText("Backing track");
+    expect(await ev(page, (id) => JSON.parse(localStorage.getItem(`stemdeck:stems:${id}:streamer`)).remove, JOB_ID)).toBe("drums");
+    expect(await ev(page, (id) => localStorage.getItem(`stemdeck:stems:${id}:practice`), JOB_ID)).toBe(null);
+    await closeStreamer(page);
+    await expect.poll(() => ev(page, async () => (await import("/js/player.js")).playbackExclusion().names.size)).toBe(0);
   });
 
   test("an export failure says why and offers Retry", async ({ page }) => {

@@ -713,23 +713,3 @@ export function fitRect(iw, ih, bw, bh, mode = "contain") {
 /** The store key of a song's layer picture; `stamp` makes each chosen
  * picture its own key, so undo brings the one before back. */
 export const imageKey = (jobId, layerId, stamp = "") => [jobId, layerId, stamp].filter(Boolean).join(":").slice(0, 80);
-
-// ── The take timeline's two stem lanes ──
-
-const VOICE_STEMS = ["lead_vocals", "vocals"];
-const LANE_ORDER = ["bass", "guitar", "drums", "piano", "other", "original"];
-
-/**
- * The two lanes of the take timeline: the voice (else the first stem), then
- * `choice` when it is one of the song's other stems, else the best instrument
- * heard against the voice. `choices` is what the second lane can show.
- */
-export function pickLaneStems(present, choice = "") {
-  const names = Array.isArray(present) ? present.filter((n) => typeof n === "string" && n) : [];
-  const first = VOICE_STEMS.find((n) => names.includes(n))
-    || LANE_ORDER.find((n) => names.includes(n)) || names[0] || null;
-  const choices = names.filter((n) => n !== first);
-  const second = (choice && choices.includes(choice) ? choice : null)
-    || LANE_ORDER.find((n) => choices.includes(n)) || choices[0] || null;
-  return { lanes: [first, second].filter(Boolean), choices };
-}

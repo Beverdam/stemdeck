@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.backing import router as backing_router
 from app.api.config import router as config_router
 from app.api.cover import router as cover_router
 from app.api.discogs import router as discogs_router
@@ -20,6 +21,7 @@ router.include_router(config_router, tags=["config"])
 router.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 router.include_router(takes_router, prefix="/jobs", tags=["takes"])
 router.include_router(cover_router, prefix="/jobs", tags=["jobs"])
+router.include_router(backing_router, prefix="/jobs", tags=["jobs"])
 router.include_router(events_router, tags=["events"])
 router.include_router(stems_router, tags=["stems"])
 router.include_router(suggest_router, tags=["suggest"])
