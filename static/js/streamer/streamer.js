@@ -2549,7 +2549,7 @@ function laneSpecs() {
   else out.push(null);
   // The take lane: the musician's part (or their take over the whole song),
   // never the stem file's wave: empty, forming live, then the take's own.
-  const label = played ? t("streamer.lane.yourPart", { name: laneLabel(played) }) : t("streamer.lane.yourTake");
+  const label = played ? t("streamer.lane.yourPart", { name: partName(played) }) : t("streamer.lane.yourTake");
   const color = (played && STEM_COLORS[played]) || ui.accent;
   const lane = takeLane();
   if (lane.state === "live" || (lane.state === "saved" && !lane.peaksReady && live.take === lane.take && live.take)) {
@@ -2727,6 +2727,15 @@ function finishPartReload() {
   setPlayheadTime(t0);
 }
 
+/** A part the musician plays, as "I play" names it: Keys and Voice, the
+ * instrument families, not the piano and vocals stem names the rest of the
+ * app shows. */
+function partName(stem) {
+  if (stem === "piano") return t("streamer.part.keys");
+  if (stem === "vocals") return t("streamer.part.voice");
+  return laneLabel(stem);
+}
+
 function paintPart() {
   const sel = ui.builder.timeline.partSel;
   const offered = part.job === currentJobId ? offeredChoices(part.present) : [""];
@@ -2734,7 +2743,7 @@ function paintPart() {
   if (painted.part === sig) return;
   painted.part = sig;
   sel.replaceChildren(...offered.map((c) => {
-    const o = el("option", null, c ? laneLabel(c) : t("streamer.part.none"));
+    const o = el("option", null, c ? partName(c) : t("streamer.part.none"));
     o.value = c;
     return o;
   }));
