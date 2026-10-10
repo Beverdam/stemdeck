@@ -27,6 +27,7 @@ import { startCameraRecording, recorderSupported } from "../video/cameraRecorder
 import { audioEngine, playbackSpeed } from "../state.js";
 import { transport, togglePlayPause, setPlayheadTime } from "../transport.js";
 import { nextRecordState, isTakeOpen, startPoint, outputPixels, videoBitrate } from "./recordModel.js";
+import { resolutionOf } from "./outputSettings.js";
 
 const TRACK_KEY = (jobId) => `stemdeck:streamer:track:${jobId}`;
 const LAST_TAKE_KEY = (jobId) => `stemdeck:streamer:take:${jobId}`;
@@ -324,11 +325,13 @@ export function takeInfo(takeId) {
   try { v = JSON.parse(readKept(TAKE_INFO_KEY(takeId)) || "null"); } catch { v = null; }
   const ok = v && typeof v === "object" && ["16:9", "9:16", "1:1"].includes(v.aspect)
     && ["720", "1080", "2160"].includes(String(v.resolution)) && [24, 30, 60].includes(Number(v.fps));
+  // A take recorded at 4K (offered before 0.21.0 dropped it) exports at
+  // 1080p, the same aspect: the server renders 720 and 1080 only.
   // `remove`: the part left out ("" the whole song; null for a take recorded
   // before Streamer had the choice).
   const removed = typeof v?.remove === "string" && ["", "drums", "bass", "guitar", "piano", "vocals"].includes(v.remove) ? v.remove : null;
   const span = (k) => (Number.isFinite(v?.[k]) && v[k] >= 0 ? v[k] : null);
-  const info = ok ? { aspect: v.aspect, resolution: String(v.resolution), fps: Number(v.fps), remove: removed, from: span("from"), to: span("to") } : null;
+  const info = ok ? { aspect: v.aspect, resolution: resolutionOf(v.resolution), fps: Number(v.fps), remove: removed, from: span("from"), to: span("to") } : null;
   takeInfos.set(takeId, info);
   return info;
 }

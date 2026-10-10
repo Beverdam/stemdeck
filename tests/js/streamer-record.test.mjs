@@ -34,8 +34,9 @@ check("auto-stop at the out point", shouldAutoStop({ t: 39.99, range, duration: 
 check("auto-stop is held to the song's length", shouldAutoStop({ t: 119.99, range: { in: 0, out: 400 }, duration: 120, autoStop: true }));
 
 // Output
-check("16:9 sizes", eq(outputPixels("16:9", "720"), { width: 1280, height: 720 }) && eq(outputPixels("16:9", "1080"), { width: 1920, height: 1080 }) && eq(outputPixels("16:9", "2160"), { width: 3840, height: 2160 }));
-check("9:16 sizes", eq(outputPixels("9:16", "720"), { width: 720, height: 1280 }) && eq(outputPixels("9:16", "2160"), { width: 2160, height: 3840 }));
+check("16:9 sizes", eq(outputPixels("16:9", "720"), { width: 1280, height: 720 }) && eq(outputPixels("16:9", "1080"), { width: 1920, height: 1080 }));
+check("9:16 sizes", eq(outputPixels("9:16", "720"), { width: 720, height: 1280 }) && eq(outputPixels("9:16", "1080"), { width: 1080, height: 1920 }));
+check("a take recorded at 4K is 1080p at the same aspect", eq(outputPixels("16:9", "2160"), { width: 1920, height: 1080 }) && eq(outputPixels("9:16", "2160"), { width: 1080, height: 1920 }) && eq(outputPixels("1:1", "2160"), { width: 1080, height: 1080 }));
 check("1:1 sizes", eq(outputPixels("1:1", "1080"), { width: 1080, height: 1080 }));
 check("an unknown resolution is 1080p", eq(outputPixels("16:9", "480"), { width: 1920, height: 1080 }));
 check("bit rate grows with size and rate, held to 2.5..14 Mbps", videoBitrate({ width: 1920, height: 1080 }, 30) === 6220800
@@ -61,6 +62,7 @@ check("canvas, size, rate, fit fill, no mirror", body.canvas === "9:16" && body.
 check("the trim as span range", body.span === "range" && body.range_in === 30 && body.range_out === 40);
 check("click and take gain", body.click === true && body.take_gain === 1);
 check("no pitches when nothing is transposed", !("pitches" in body));
+check("a take recorded at 4K asks the server for 1080", buildRenderRequest({ mix, range, aspect: "9:16", resolution: "2160", fps: 30 }).size === "1080" && buildRenderRequest({ mix, range, resolution: "720" }).size === "720");
 check("pitches when a lane is", eq(buildRenderRequest({ mix: { names: ["a", "b"], gains: [1, 1], pitches: [0, 2] }, range }).pitches, [0, 2]));
 const micOnly = buildRenderRequest({ mix, mixedAudio: false, range });
 check("mixed audio off: no backing lanes (the take alone)", eq(micOnly.stems, []) && eq(micOnly.gains, []));
@@ -77,12 +79,12 @@ check("the no-encoder refusal is recognised", isNoEncoder(422, "this ffmpeg buil
 {
   const offered = [];
   for (const aspect of ["16:9", "9:16", "1:1"]) {
-    for (const res of ["720", "1080", "2160"]) {
-      for (const fps of res === "2160" ? [24, 30] : [24, 30, 60]) offered.push([aspect, res, fps, videoBitrate(outputPixels(aspect, res), fps)]);
+    for (const res of ["720", "1080"]) {
+      for (const fps of [24, 30, 60]) offered.push([aspect, res, fps, videoBitrate(outputPixels(aspect, res), fps)]);
     }
   }
   const over = offered.filter(([, , , bps]) => bps > CAMERA_CAP_BPS * 0.7);
-  check("every offered size and rate asks under the server's cap with a 30% margin", offered.length === 24 && over.length === 0 && BITRATE_MAX <= CAMERA_CAP_BPS * 0.7, JSON.stringify(over));
+  check("every offered size and rate asks under the server's cap with a 30% margin", offered.length === 18 && over.length === 0 && BITRATE_MAX <= CAMERA_CAP_BPS * 0.7, JSON.stringify(over));
 }
 check("closed while starting: the take goes back to idle, nothing recorded", nextRecordState("starting", "abort") === "idle" && nextRecordState("recording", "abort") === "recording");
 

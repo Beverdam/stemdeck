@@ -382,7 +382,9 @@ TAKE_CAMERA_MAX_BYTES_PER_SEC = 20_000_000 // 8  # 20 Mbit/s, 2.5x the 8 Mbit/s 
 # Streamer Mode's recorder asks for at most 70% of that (recordModel.js
 # BITRATE_MAX), so a busy scene's overshoot still fits.
 # A take render's output: the canvas's short side for each size it offers.
-CANVAS_SHORT_SIDES = {"720": 720, "1080": 1080, "2160": 2160}
+# No 4K (the maintainer's decision): a 1080p camera only gets bigger, at a
+# large cost in encode time and memory.
+CANVAS_SHORT_SIDES = {"720": 720, "1080": 1080}
 # The click's level in a take render: the export's default (stems.py).
 RENDER_CLICK_GAIN = 0.6
 # A song's cover fetched for Streamer Mode (app/api/cover.py): its size cap,

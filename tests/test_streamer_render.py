@@ -14,6 +14,7 @@ import httpx
 import numpy as np
 import pytest
 import soundfile as sf
+from pydantic import ValidationError
 
 from app.api import cover as cover_mod
 from app.api import stems as stems_mod
@@ -70,13 +71,10 @@ def client(jobs_dir):
     [
         ("16:9", "720", (1280, 720)),
         ("16:9", "1080", (1920, 1080)),
-        ("16:9", "2160", (3840, 2160)),
         ("9:16", "720", (720, 1280)),
         ("9:16", "1080", (1080, 1920)),
-        ("9:16", "2160", (2160, 3840)),
         ("1:1", "720", (720, 720)),
         ("1:1", "1080", (1080, 1080)),
-        ("1:1", "2160", (2160, 2160)),
     ],
 )
 def test_canvas_sizes(canvas, size, expected):
@@ -204,9 +202,10 @@ async def test_streamer_render_refusals(jobs_dir, client, tmp_path, monkeypatch)
         assert r.status_code == 422 and "libx264" in r.json()["detail"]
 
 
-async def test_streamer_render_refuses_4k_at_60(jobs_dir, client, tmp_path, monkeypatch):
-    """4K at 60 fps is blocked (maintainer decision): a crafted request gets a
-    422 that says so; 4K at 30 and 1080p at 60 are still accepted."""
+async def test_streamer_render_refuses_4k(jobs_dir, client, tmp_path, monkeypatch):
+    """4K is not offered (maintainer decision: a 1080p camera only gets
+    bigger): a crafted 2160 request gets a 422 that names the sizes; 720 and
+    1080, at 60 fps too, are accepted."""
     skip_without_ffmpeg()
     _make_job(jobs_dir)
     monkeypatch.setattr(takes_mod, "libx264_available", lambda: True)
@@ -214,12 +213,19 @@ async def test_streamer_render_refuses_4k_at_60(jobs_dir, client, tmp_path, monk
     async with client as c:
         tid = await _take_with_camera(c, tmp_path)
         base = f"/api/jobs/{JOB}/takes/{tid}/render"
-        r = await c.post(base, json={"canvas": "16:9", "fit": "fill", "size": "2160", "fps": 60})
-        assert r.status_code == 422
-        assert "4K at 60 fps is not supported" in r.json()["detail"]
-    body = takes_mod.RenderBody(size="2160", fps=30)
-    assert body.size == "2160" and body.fps == 30
+        for fps in (30, 60):
+            r = await c.post(
+                base, json={"canvas": "16:9", "fit": "fill", "size": "2160", "fps": fps}
+            )
+            assert r.status_code == 422
+            detail = r.json()["detail"]
+            assert detail.startswith("size:") and "'720' or '1080'" in detail, detail
+    with pytest.raises(ValidationError):
+        takes_mod.RenderBody(size="2160", fps=30)
     assert takes_mod.RenderBody(size="1080", fps=60).fps == 60
+    assert takes_mod.RenderBody(size="720", fps=60).size == "720"
+    with pytest.raises(KeyError):
+        canvas_size("16:9", "2160")
 
 
 def _json(payload: dict) -> bytes:
@@ -337,7 +343,7 @@ async def test_cancel_stops_a_streamer_render(jobs_dir, client, tmp_path):
     _make_job(jobs_dir)
     async with client as c:
         tid = await _take_with_camera(c, tmp_path)
-        body = {"canvas": "16:9", "fit": "fill", "size": "2160", "fps": 30, "span": "song"}
+        body = {"canvas": "16:9", "fit": "fill", "size": "1080", "fps": 60, "span": "song"}
         r = await c.post(f"/api/jobs/{JOB}/takes/{tid}/render", json=body)
         assert r.status_code == 202
         await c.post(f"/api/jobs/{JOB}/takes/{tid}/render/cancel")
@@ -475,7 +481,7 @@ def test_requested_name_drops_format_and_control_characters(asked, served):
     assert takes_mod._requested_name(asked) == served
 
 
-def test_4k_uses_a_faster_preset(tmp_path):
+def test_no_size_sets_a_preset(tmp_path):
     def cmd(size):
         return build_video_render_cmd(
             [],
@@ -491,8 +497,6 @@ def test_4k_uses_a_faster_preset(tmp_path):
             size=size,
         )
 
-    big = cmd("2160")
-    assert big[big.index("-preset") + 1] == "veryfast"
     for size in ("720", "1080"):
         assert "-preset" not in cmd(size)
 

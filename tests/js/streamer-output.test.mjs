@@ -2,7 +2,7 @@
 import {
   SETTINGS_KEY, NONE, RESOLUTIONS, FRAME_RATES,
   defaultRecordingSettings, parseRecordingSettings, serializeRecordingSettings, resolveDeviceId,
-  isHeavy, cameraConstraints, applySettings, framesFor,
+  isHeavy, cameraConstraints, applySettings, resolutionOf,
   METER_SEGMENTS, METER_FLOOR_DB, METER_HOLD_MS, METER_DECAY_DB_PER_SEC,
   meterFraction, levelDb, segmentZone, litSegments, holdPeak, newPeakState,
 } from "../../static/js/streamer/outputSettings.js";
@@ -21,9 +21,9 @@ check("defaults: default devices, 1080p, 30 fps, mixed audio on, click off, auto
   videoDeviceId: "", audioDeviceId: "", audioChannels: null, resolution: "1080", fps: 30, recordMixedAudio: true, includeClick: false, autoStopAtEnd: true,
 }));
 check("the settings key", SETTINGS_KEY === "stemdeck:streamer:recording");
-check("choices", eq(RESOLUTIONS, ["720", "1080", "2160"]) && eq(FRAME_RATES, [24, 30, 60]));
+check("choices: 720p and 1080p only, no 4K", eq(RESOLUTIONS, ["720", "1080"]) && eq(FRAME_RATES, [24, 30, 60]));
 check("garbage gives the defaults", eq(parseRecordingSettings(null), d) && eq(parseRecordingSettings("{nope"), d) && eq(parseRecordingSettings(7), d));
-const mine = { videoDeviceId: "cam1", audioDeviceId: NONE, audioChannels: [1], resolution: "2160", fps: 24, recordMixedAudio: false, includeClick: true, autoStopAtEnd: false };
+const mine = { videoDeviceId: "cam1", audioDeviceId: NONE, audioChannels: [1], resolution: "720", fps: 24, recordMixedAudio: false, includeClick: true, autoStopAtEnd: false };
 check("round trip", eq(parseRecordingSettings(JSON.stringify(serializeRecordingSettings(mine))), mine));
 check("a wrong value takes its default, the rest is kept", eq(parseRecordingSettings({ ...mine, resolution: "8K", fps: 25, includeClick: "yes" }), { ...mine, resolution: "1080", fps: 30, includeClick: false }));
 check("numbers as strings are read", parseRecordingSettings({ resolution: 720, fps: "24" }).resolution === "720" && parseRecordingSettings({ fps: "24" }).fps === 24);
@@ -37,14 +37,13 @@ check("none stays none, default stays default", resolveDeviceId(NONE, devices) =
 check("no list yet (no permission): the saved one is tried", resolveDeviceId("cam9", []) === "cam9" && resolveDeviceId("cam9", [{ deviceId: "" }]) === "cam9");
 
 // Heavy warning
-check("4K is heavy", isHeavy({ resolution: "2160", fps: 30 }));
 check("60 fps is heavy", isHeavy({ resolution: "720", fps: 60 }));
 check("1080p30 and 720p24 are not", !isHeavy(d) && !isHeavy({ resolution: "720", fps: 24 }));
 
 // Camera constraints
 check("1080p30 asks for 1920 x 1080 at 30, ideal", eq(cameraConstraints(d), { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }));
-check("720p60 and 4K24", eq(cameraConstraints({ resolution: "720", fps: 60 }), { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } })
-  && eq(cameraConstraints({ resolution: "2160", fps: 24 }), { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 24 } }));
+check("720p60", eq(cameraConstraints({ resolution: "720", fps: 60 }), { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } }));
+check("a 4K setting asks 1080p", eq(cameraConstraints({ resolution: "2160", fps: 24 }), { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 24 } }));
 check("a chosen camera is asked for exactly", eq(cameraConstraints(d, "cam1").deviceId, { exact: "cam1" }));
 check("the default or none asks for no device", !("deviceId" in cameraConstraints(d, "")) && !("deviceId" in cameraConstraints(d, NONE)));
 check("unknown settings ask 1080p30", eq(cameraConstraints({ resolution: "x", fps: 7 }), cameraConstraints(d)));
@@ -69,15 +68,19 @@ check("and reaches silence", st.value < 1e-6);
 const same = newPeakState();
 check("updated in place (no allocation per frame)", holdPeak(same, 0.5, 1) === same);
 
-// 4K at 60 fps is not offered (fix pass E).
-check("4K offers 24 and 30 fps, the others all three", eq(framesFor("2160"), [24, 30]) && eq(framesFor("1080"), [24, 30, 60]) && eq(framesFor("720"), [24, 30, 60]));
-check("a saved 4K at 60 reads as 4K at 30", eq(parseRecordingSettings({ resolution: "2160", fps: 60 }).fps, 30) && parseRecordingSettings({ resolution: "1080", fps: 60 }).fps === 60);
-const fb = applySettings({ ...d, fps: 60 }, { resolution: "2160" });
-check("choosing 4K while at 60 falls back to 30, and says so", fb.settings.resolution === "2160" && fb.settings.fps === 30 && fb.fellBack === true);
-const fb2 = applySettings({ ...d, resolution: "2160" }, { fps: 60 });
-check("asking 60 at 4K is refused the same way", fb2.settings.fps === 30 && fb2.fellBack === true);
-check("other changes are not a fallback", applySettings(d, { fps: 60 }).fellBack === false && applySettings(d, { resolution: "720" }).fellBack === false);
-check("4K at 30 and 1080p at 60 still warn", isHeavy({ resolution: "2160", fps: 30 }) && isHeavy({ resolution: "1080", fps: 60 }));
+// 4K is no longer offered (0.21.0): settings saved at 4K read as 1080p,
+// every other field kept, without an error.
+{
+  const old4k = { ...mine, resolution: "2160", fps: 30 };
+  let threw = false;
+  let got = null;
+  try { got = parseRecordingSettings(JSON.stringify(old4k)); } catch { threw = true; }
+  check("saved settings at 4K load as 1080p, the rest kept, no error", !threw && eq(got, { ...old4k, resolution: "1080" }));
+  check("a saved 4K at 60 reads as 1080p at 60", eq(parseRecordingSettings({ resolution: "2160", fps: 60 }), { ...d, resolution: "1080", fps: 60 }));
+  check("resolutionOf: 2160 and unknown are 1080", resolutionOf("2160") === "1080" && resolutionOf(2160) === "1080" && resolutionOf("720") === "720" && resolutionOf(undefined) === "1080");
+}
+check("applySettings applies a patch, kept to what is offered", eq(applySettings(d, { fps: 60 }), { ...d, fps: 60 }) && applySettings(d, { resolution: "2160" }).resolution === "1080");
+check("1080p at 60 and 720p at 60 still warn, 1080p30 does not", isHeavy({ resolution: "1080", fps: 60 }) && isHeavy({ resolution: "720", fps: 60 }) && !isHeavy({ resolution: "1080", fps: 30 }));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

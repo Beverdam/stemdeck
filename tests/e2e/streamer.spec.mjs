@@ -434,19 +434,21 @@ test.describe("Streamer Mode: devices and meter", () => {
     await expect.poll(async () => (await media(page)).camera).toBe(false);
   });
 
-  test("output settings are kept per user, 4K and 60 fps warn", async ({ page }) => {
+  test("output settings are kept per user, 60 fps warns", async ({ page }) => {
     await expect(sm(page, ".sm-heavy")).toBeHidden();
-    await page.locator("#streamerRes").selectOption("2160");
+    await page.locator("#streamerFps").selectOption("60");
     await expect(sm(page, ".sm-heavy")).toBeVisible();
+    await page.locator("#streamerRes").selectOption("720");
     await page.locator("#streamerFps").selectOption("24");
+    await expect(sm(page, ".sm-heavy")).toBeHidden();
     await sm(page, '[data-setting="autoStopAtEnd"]').click();
-    await expect.poll(async () => (await savedSettings(page))?.resolution).toBe("2160");
+    await expect.poll(async () => (await savedSettings(page))?.resolution).toBe("720");
     expect((await savedSettings(page)).fps).toBe(24);
     expect((await savedSettings(page)).autoStopAtEnd).toBe(false);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
     await openStreamer(page);
-    await expect(page.locator("#streamerRes")).toHaveValue("2160");
+    await expect(page.locator("#streamerRes")).toHaveValue("720");
     await expect(page.locator("#streamerFps")).toHaveValue("24");
     await expect(sm(page, '[data-setting="autoStopAtEnd"]')).toHaveAttribute("aria-checked", "false");
   });
@@ -650,7 +652,7 @@ test.describe("Streamer Mode polish", () => {
 });
 
 // The fix pass: the song is never trashed while Streamer is open, focus, a
-// take's protections, the export at the recorded shape, no 4K at 60 fps.
+// take's protections, the export at the recorded shape, no 4K.
 test.describe("Streamer Mode fix pass", () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1800, height: 1020 });
@@ -673,17 +675,27 @@ test.describe("Streamer Mode fix pass", () => {
     await expect(page.locator("#streamerBtn")).toBeFocused();
   });
 
-  test("4K offers no 60 fps: it falls back to 30 and says why", async ({ page }) => {
+  test("no 4K: 720p and 1080p only, and settings saved at 4K open as 1080p", async ({ page }) => {
     await openStudio(page);
+    await ev(page, async () => {
+      const { storeSet } = await import("/js/utils.js");
+      const { SETTINGS_KEY, defaultRecordingSettings } = await import("/js/streamer/outputSettings.js");
+      await storeSet(SETTINGS_KEY, { ...defaultRecordingSettings(), resolution: "2160", fps: 30 });
+    });
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
     await openStreamer(page);
-    await page.locator("#streamerFps").selectOption("60");
-    await page.locator("#streamerRes").selectOption("2160");
+    await expect(page.locator("#streamerRes option")).toHaveCount(2);
+    expect(await page.locator("#streamerRes option").evaluateAll((os) => os.map((o) => o.value).sort())).toEqual(["1080", "720"]);
+    await expect(page.locator("#streamerRes")).toHaveValue("1080");
     await expect(page.locator("#streamerFps")).toHaveValue("30");
-    await expect(page.locator('#streamerFps option[value="60"]')).toBeDisabled();
-    await expect(sm(page, ".sm-fps-why")).toBeVisible();
-    await expect(page.locator("#streamerNote")).toContainText("30");
-    await page.locator("#streamerRes").selectOption("1080");
     await expect(page.locator('#streamerFps option[value="60"]')).toBeEnabled();
+    await expect(sm(page, ".sm-heavy")).toBeHidden();
+    await page.locator("#streamerFps").selectOption("60");
+    await expect(sm(page, ".sm-heavy")).toBeVisible();
+    expect(errors).toEqual([]);
   });
 
   test("viewing a song's scene saves nothing", async ({ page }) => {
