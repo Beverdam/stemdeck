@@ -23,10 +23,11 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 
 from app.api.router import router
-from app.core import tls_listener
+from app.core import csrf, tls_listener
 from app.core.compression import COMPRESS_LEVEL, MINIMUM_SIZE, TextGZipMiddleware
 from app.core.config import (
     ACOUSTID_CHECK_KEY,
+    ALLOWED_HOSTS,
     DEMUCS_MODEL,
     DISCOGS_CHECK_TOKEN,
     FFMPEG_BIN,
@@ -1037,6 +1038,37 @@ async def limit_json_body_size(request: Request, call_next):
                 )
         elif declared.isdigit() and int(declared) > _JSON_BODY_LIMIT:
             return JSONResponse({"detail": "request body too large"}, status_code=413)
+    return await call_next(request)
+
+
+# Cross-site guard (app/core/csrf.py has the reasoning and every rule). Inside
+# the network and secure-origin gates, so a device those gates refuse gets
+# their explanation rather than this one; outside the headers middleware, so a
+# refusal still carries the CSP. Network access is read per request because
+# the Settings toggle changes it live.
+_HOST_REFUSED_MESSAGE = """StemDeck does not answer to this address.
+
+Open it at http://localhost or the machine's own IP address instead. Behind a
+reverse proxy or under another name, add that name to STEMDECK_ALLOWED_HOSTS
+(a comma-separated list) and restart."""
+
+
+@app.middleware("http")
+async def cross_site_guard(request: Request, call_next):
+    refusal = csrf.check_request(
+        request.method,
+        request.url.path,
+        request.headers,
+        allow_network=get_allow_network(),
+        desktop=_is_desktop_shell(),
+        extra_hosts=ALLOWED_HOSTS,
+        local_ips=_local_ips(),
+    )
+    if refusal is not None:
+        _log.info("refused %s %s: %s", request.method, request.url.path, refusal.reason)
+        if refusal.detail == csrf.REFUSED_HOST:
+            return PlainTextResponse(_HOST_REFUSED_MESSAGE, status_code=refusal.status)
+        return JSONResponse({"detail": refusal.detail}, status_code=refusal.status)
     return await call_next(request)
 
 

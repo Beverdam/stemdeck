@@ -153,6 +153,22 @@ def _relax_secure_origin_gate(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _test_hosts_are_own_names(monkeypatch):
+    """The cross-site guard refuses a Host it does not know while network access
+    is off, and the test clients address the app as "testserver", "test" or "t".
+    Treated here as the machine's own names, so the gate tests that switch
+    network access off fail for their own reason. tests/test_csrf_guard.py
+    checks the real rule."""
+    from app.core import csrf as _csrf
+
+    real = _csrf.own_hostnames()
+    monkeypatch.setattr(
+        _csrf, "own_hostnames", lambda: real | frozenset({"testserver", "test", "t"})
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_network_settings(tmp_path, monkeypatch):
     """Isolate the runtime network gate for every test. Without this, a stray
     settings.json in the repo (written by a local dev server) could flip the

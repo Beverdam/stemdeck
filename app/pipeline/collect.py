@@ -13,13 +13,16 @@ from pathlib import Path
 from app.core.config import (
     DEMUCS_MODEL,
     FAILED_TTL_SECONDS,
+    JOB_ID_RE,
     JOB_TTL_SECONDS,
     STEM_NAMES,
+    TAKES_DIRNAME,
     TIMEOUT_FFMPEG,
     ffmpeg_executable,
 )
 from app.core.models import FINISHED_STATUSES, Job
 from app.core.registry import all_jobs as registry_all
+from app.core.registry import deleted_ids as registry_deleted_ids
 from app.core.registry import persist as registry_persist
 from app.core.registry import remove as registry_remove
 from app.core.registry import set_proc
@@ -425,22 +428,86 @@ def presence_for_split(
     }
 
 
-def sweep_old_jobs(jobs_dir: Path, ttl_seconds: int | None = None) -> None:
-    """Delete job directories older than `ttl_seconds` (JOB_TTL_SECONDS when
-    not given) and remove them from the in-memory registry. Called hourly from
-    the background sweep loop started at app startup, and only when the user
-    has asked for automatic deletion -- deciding *whether* to sweep is the
-    caller's job, this one only decides what is old.
+def _has_takes_on_disk(job_dir: Path) -> bool:
+    """True when the job folder holds a recording, finished or not. A take in
+    progress is on disk before it is in job.takes, so the record alone is not
+    enough to know."""
+    takes = job_dir / TAKES_DIRNAME
+    try:
+        return takes.is_dir() and any(takes.iterdir())
+    except OSError:
+        return True  # cannot tell, so assume there is something to keep
 
-    Prefers Job.created_at over directory mtime (which can be touched by
-    unrelated filesystem events), and never deletes the directory of an
-    active (non-terminal) registered job even if its timestamp looks old.
-    Falls back to mtime for orphan directories left over from a previous
-    server run, since the registry is in-memory only."""
+
+def _has_stems_on_disk(job_dir: Path) -> bool:
+    stems = job_dir / "stems"
+    try:
+        return stems.is_dir() and any(p.suffix.lower() == ".wav" for p in stems.iterdir())
+    except OSError:
+        return True
+
+
+def _keep_reason(job: Job | None, job_dir: Path, cutoff: float, deleted: set[str]) -> str | None:
+    """Why the TTL sweep must leave `job_dir` alone, or None to remove it.
+
+    The sweep is the user's own "delete finished jobs after N days" setting,
+    and it only ever means plain finished separations. It used to judge by age
+    alone, so it also deleted the user's favourites, their recorded takes, and
+    any folder at all in the library directory that was old enough, job or not.
+    Every rule below keeps something the user would not count as "a finished
+    job I no longer need"; when in doubt, keep."""
+    if not JOB_ID_RE.match(job_dir.name):
+        # Not a job folder: something of the user's, or of another program,
+        # that happens to live in the library directory.
+        return "not a job folder"
+    if job is not None:
+        if job.status not in _TERMINAL:
+            return "job is still active"
+        if job.created_at >= cutoff:
+            return "job is newer than the cutoff"
+        if job.favorite:
+            return "favourite"
+        if job.takes or job.tracks or _has_takes_on_disk(job_dir):
+            return "holds recorded takes"
+        # A job in the Trash follows the same rule as any other finished job:
+        # the Trash has no purge of its own, and this sweep never had a
+        # separate rule for it.
+        return None
+    # Unregistered. restore() adopts every job folder that has stems, so one
+    # that is still unregistered is either a delete whose files outlived it
+    # (tombstoned, the user asked for it gone) or an import that never got as
+    # far as stems. Anything else is kept.
+    try:
+        if job_dir.stat().st_mtime >= cutoff:
+            return "unregistered folder is newer than the cutoff"
+    except OSError:
+        return "unregistered folder cannot be read"
+    if job_dir.name in deleted:
+        return None
+    if _has_takes_on_disk(job_dir):
+        return "unregistered folder holds recorded takes"
+    if _has_stems_on_disk(job_dir):
+        return "unregistered folder holds stems"
+    return None
+
+
+def sweep_old_jobs(jobs_dir: Path, ttl_seconds: int | None = None) -> None:
+    """Delete finished jobs older than `ttl_seconds` (JOB_TTL_SECONDS when not
+    given) and remove them from the in-memory registry. Called hourly from the
+    background sweep loop started at app startup, and only when the user has
+    asked for automatic deletion -- deciding *whether* to sweep is the caller's
+    job, this one only decides what is old and what may go.
+
+    Judged by Job.created_at, not directory mtime (which unrelated filesystem
+    events touch). Never removes an active job, a favourite, a job with
+    recorded takes or tracks, or a folder whose name is not a job id; an
+    unregistered job folder goes only when it is old and abandoned. See
+    _keep_reason for each rule. Every removal is logged with its reason."""
     cutoff = time.time() - (JOB_TTL_SECONDS if ttl_seconds is None else ttl_seconds)
     if not jobs_dir.is_dir():
         return
     jobs = registry_all()
+    deleted = registry_deleted_ids()
     removed = False
     for d in jobs_dir.iterdir():
         if not d.is_dir():
@@ -448,13 +515,14 @@ def sweep_old_jobs(jobs_dir: Path, ttl_seconds: int | None = None) -> None:
         if d.name == "failed":
             continue  # the failure quarantine has its own TTL (sweep_failed_jobs)
         job = jobs.get(d.name)
-        if job is not None:
-            if job.status not in _TERMINAL:
-                continue  # never delete an active job's working dir
-            if job.created_at >= cutoff:
-                continue
-        elif d.stat().st_mtime >= cutoff:
+        reason = _keep_reason(job, d, cutoff, deleted)
+        if reason is not None:
+            logger.debug("auto-delete kept %s: %s", d.name, reason)
             continue
+        if job is not None:
+            logger.info("auto-delete removed job %s: finished and older than the cutoff", d.name)
+        else:
+            logger.info("auto-delete removed unregistered job folder %s: old and abandoned", d.name)
         _rmtree(d)
         registry_remove(d.name)
         removed = True

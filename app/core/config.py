@@ -206,6 +206,19 @@ SSL_KEYFILE = _env_path_opt("STEMDECK_SSL_KEY")
 # listener alongside the first; when it is not, there is only ever one server
 # and TLS (if configured at all) belongs to whoever launched uvicorn.
 HTTPS_PORT = _env_int("STEMDECK_HTTPS_PORT", 0) or None
+
+
+def _env_csv(name: str) -> tuple[str, ...]:
+    """A comma-separated list setting, lowercased, blanks dropped."""
+    raw = os.environ.get(name, "")
+    return tuple(part.strip().lower() for part in raw.split(",") if part.strip())
+
+
+# Extra names this server answers to, for the cross-site guard in
+# app/core/csrf.py: the public name of a reverse proxy, a Docker service name, a
+# Tailscale name. Host names only, a port is ignored; "*" accepts any Host.
+# When set, the Host check is strict even with network access on (see csrf.py).
+ALLOWED_HOSTS = _env_csv("STEMDECK_ALLOWED_HOSTS")
 FFMPEG_BIN = _env_path(
     "STEMDECK_FFMPEG",
     FFMPEG_DIR / ("ffmpeg.exe" if sys.platform.startswith("win") else "ffmpeg"),

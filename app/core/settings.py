@@ -128,18 +128,30 @@ def _atomic_write_json(path: Path, data: dict) -> bool:
     return True
 
 
-def _quarantine_corrupt(path: Path) -> None:
-    """Move an unusable settings file aside rather than leaving it to be
-    overwritten by the next save.
+def quarantine_corrupt(path: Path, what: str = "settings") -> Path | None:
+    """Move an unusable file aside rather than leaving it to be overwritten by
+    the next save. Returns where it went, or None if it could not be moved.
 
     Renaming keeps the bytes for diagnosis. Deleting or writing over them
-    destroys the only remaining evidence of what the user had configured."""
+    destroys the only remaining evidence of what the user had configured.
+    Shared with the registry (app/core/registry.py), whose file has the same
+    problem; `what` only names the file in the log."""
     try:
-        target = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+        stamp = int(time.time())
+        target = path.with_name(f"{path.name}.corrupt-{stamp}")
+        n = 1
+        while target.exists():  # a second quarantine within the same second
+            target = path.with_name(f"{path.name}.corrupt-{stamp}-{n}")
+            n += 1
         path.replace(target)
-        _log.warning("settings at %s were unreadable; moved aside to %s", path, target)
+        _log.warning("%s at %s were unreadable; moved aside to %s", what, path, target)
+        return target
     except OSError:
-        _log.warning("could not move unreadable settings at %s aside", path, exc_info=True)
+        _log.warning("could not move unreadable %s at %s aside", what, path, exc_info=True)
+        return None
+
+
+_quarantine_corrupt = quarantine_corrupt
 
 
 def _load() -> dict:
