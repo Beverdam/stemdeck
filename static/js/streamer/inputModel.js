@@ -138,3 +138,59 @@ export function takeLaneState({ recording, lastTake, takePart, part }) {
   if (lastTake && (takePart ?? "") === (part ?? "")) return "saved";
   return "empty";
 }
+
+/**
+ * What the Video lane shows for the take lane's state (`lane`, from
+ * takeLaneState) and the server's record of the take (`take`: { has_camera,
+ * camera_start_sec }, or null while the song's takes have not loaded it):
+ *   "none"      no take to show (the lane is empty)
+ *   "recording" a take is recording (the growing block)
+ *   "pending"   the take is saved but the server's record is not here yet
+ *   "noVideo"   the take has no video part
+ *   "loading"   its frames are on their way
+ *   "film"      its frames are drawn
+ *   "failed"    its frames could not be built or loaded
+ * `film` is the filmstrip's load state for this take: "loading", "ok",
+ * "failed" or null (not asked yet).
+ */
+export function videoLaneState({ lane, take, film }) {
+  if (lane === "live") return "recording";
+  if (lane !== "saved") return "none";
+  if (!take) return "pending";
+  if (!take.has_camera || !Number.isFinite(take.camera_start_sec)) return "noVideo";
+  if (film === "ok") return "film";
+  if (film === "failed") return "failed";
+  return "loading";
+}
+
+/** The note the Video lane writes over the take for `state` and how the
+ * take was filmed (`camera`: "on", "off" (Video Source: No camera),
+ * "hidden" (the Camera layer hidden), or null when unknown): an i18n key,
+ * or "" for none. */
+export function videoLaneNote(state, camera) {
+  if (state === "noVideo") return "streamer.lane.noVideo";
+  if (state === "failed") return "streamer.lane.filmFailed";
+  if (state === "film" && camera === "off") return "streamer.lane.cameraOff";
+  if (state === "film" && camera === "hidden") return "streamer.lane.cameraHidden";
+  return "";
+}
+
+/** How a take films the scene: "hidden" (no visible Camera layer), "off"
+ * (no camera open: Video Source "No camera", or it failed) or "on". */
+export function cameraUse({ layerVisible, live }) {
+  if (!layerVisible) return "hidden";
+  return live ? "on" : "off";
+}
+
+/** Where the take's frames sit in the song: from the camera's first frame
+ * (`startSec`, the server's camera_start_sec) for `durationSec` of camera,
+ * clipped to the song (`songSec`). { from, to } in song seconds, or null. */
+export function filmSpan(startSec, durationSec, songSec) {
+  const start = startSec == null ? NaN : Number(startSec);
+  const len = Number(durationSec);
+  const song = Number(songSec);
+  if (!Number.isFinite(start) || !(len > 0) || !(song > 0)) return null;
+  const from = Math.max(0, start);
+  const to = Math.min(song, start + len);
+  return to > from ? { from, to } : null;
+}

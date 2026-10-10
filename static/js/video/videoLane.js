@@ -29,6 +29,12 @@ export function videoTakeOf(laneName) {
   return take;
 }
 
+/** The take's filmstrip ({ meta, image }), built by the server on first ask
+ * (GET .../filmstrip, then its image): the entry, or the promise of it. */
+export function loadFilmstrip(take) {
+  return load(take);
+}
+
 function load(take) {
   const key = take.camera_url;
   const hit = cache.get(key);
@@ -57,6 +63,10 @@ function load(take) {
  * Tiles across the canvas, each the frame at the camera time under its
  * middle. `from` and `length` are the camera seconds the canvas covers.
  */
+export function drawFilmstrip(canvas, loaded, from, length) {
+  draw(canvas, loaded, from, length);
+}
+
 function draw(canvas, { meta, image }, from, length) {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
