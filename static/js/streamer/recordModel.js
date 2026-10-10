@@ -37,6 +37,41 @@ export function isTakeOpen(state) {
   return state === "starting" || state === "recording" || state === "stopping";
 }
 
+// ── The last take while a new one records ──
+//
+// The Performance track's take plays with the backing like any lane, so the
+// musician can review it. Only while a NEW take records is it held silent
+// (mixer.holdLaneSilent: heard as muted, never saved), so the headphones do
+// not carry the last take; the hold is let go when the take ends, and the
+// lane's own mute is never touched by it.
+
+/**
+ * One step of the hold: `held` is the lane held now (or null), `open` whether
+ * a take is open, `trackId` the Performance track of the song (or null).
+ * Returns { held, hold, release }: the lane held after the step, the lane to
+ * hold now and the lane to let go now (null when none).
+ */
+export function takeHoldStep(held, { open, trackId }) {
+  const want = open && trackId ? trackId : null;
+  if (want === held) return { held, hold: null, release: null };
+  return { held: want, hold: want, release: held };
+}
+
+/**
+ * A new take was just saved: unmute its track once, so Play plays it with
+ * the backing. Due when the song's lanes have reloaded with the new take
+ * (`peaksReady`), the take track is a lane (`loaded`), the open mix record is
+ * Performance's own (`mode`, not while `switching`) and no take is open.
+ * Returns "wait", "unmute" (it is muted: unmute it), "done" (audible
+ * already) or "drop" (another song is open now: forget it).
+ */
+export function reviewStep({ pending, job, mode, switching, open, loaded, peaksReady, muted }) {
+  if (!pending) return "done";
+  if (pending.job !== job) return "drop";
+  if (open || switching || mode !== "streamer" || !loaded || !peaksReady) return "wait";
+  return muted ? "unmute" : "done";
+}
+
 // ── Where a take starts and when it stops ──
 
 /**

@@ -255,6 +255,25 @@ export function setLaneKeysAvailable(available) {
   }
 }
 
+// Lanes held silent for a moment without touching their mute: Performance
+// mode holds its own take track while a new take records, so the musician
+// does not hear the last take in their headphones. Heard as muted, never in
+// mixerState, so never saved into any mode's record.
+const _heldSilent = new Set();
+
+/** Hold lane `name` silent (on) or let it go (off). */
+export function holdLaneSilent(name, on) {
+  if (!name) return;
+  const had = _heldSilent.has(name);
+  if (on) _heldSilent.add(name);
+  else _heldSilent.delete(name);
+  if (had !== Boolean(on)) applyMix();
+}
+
+export function isLaneHeldSilent(name) {
+  return _heldSilent.has(name);
+}
+
 export function applyMix() {
   if (!multitrack) return;
   const anySolo = allTrackNames().some((name) => trackIndex[name] !== undefined && mixerState[name]?.soloed);
@@ -262,7 +281,7 @@ export function applyMix() {
     const s = mixerState[name];
     if (!s) continue;
     let effective = s.volume;
-    if (s.muted) effective = 0;
+    if (s.muted || _heldSilent.has(name)) effective = 0;
     else if (anySolo && !s.soloed) effective = 0;
     const idx = trackIndex[name];
     if (idx === undefined) continue;

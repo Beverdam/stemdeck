@@ -155,7 +155,7 @@ async function ensureTrack(jobId, name) {
  * `draw(ctx, width, height)` paints one output frame. Resolves
  * { ok: true } or { ok: false, reason }.
  */
-export async function startRecording({ jobId, capture, settings, aspect, range, trackName, draw, remove = "", channels = null }) {
+export async function startRecording({ jobId, capture, settings, aspect, range, trackName, draw, remove = "", channels = null, camera = null }) {
   if (isTakeOpen(rec.state) || rec.state === "exporting") return { ok: false, reason: "busy" };
   const block = recordBlock();
   if (block) return { ok: false, reason: block };
@@ -163,6 +163,9 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
   set("start", { reason: null, jobId, takeId: null, session: null, hiddenWhileRecording: false, aborted: false });
   // What the take is recorded at, and the part left out of what it hears.
   rec.recordedAt = { aspect, resolution: String(settings.resolution), fps: Number(settings.fps) || 30, remove: remove || "" };
+  // How the scene was filmed: "on", "off" (Video Source: No camera) or
+  // "hidden" (the Camera layer hidden). The Video lane says so.
+  if (["on", "off", "hidden"].includes(camera)) rec.recordedAt.camera = camera;
   // Closed while starting (stopRecording before a session exists): stop here.
   const goOn = () => {
     if (rec.aborted) throw Object.assign(new Error("aborted"), { code: "aborted" });
@@ -331,7 +334,8 @@ export function takeInfo(takeId) {
   // before Streamer had the choice).
   const removed = typeof v?.remove === "string" && ["", "drums", "bass", "guitar", "piano", "vocals"].includes(v.remove) ? v.remove : null;
   const span = (k) => (Number.isFinite(v?.[k]) && v[k] >= 0 ? v[k] : null);
-  const info = ok ? { aspect: v.aspect, resolution: resolutionOf(v.resolution), fps: Number(v.fps), remove: removed, from: span("from"), to: span("to") } : null;
+  const camera = ["on", "off", "hidden"].includes(v?.camera) ? v.camera : null;
+  const info = ok ? { aspect: v.aspect, resolution: resolutionOf(v.resolution), fps: Number(v.fps), remove: removed, from: span("from"), to: span("to"), camera } : null;
   takeInfos.set(takeId, info);
   return info;
 }

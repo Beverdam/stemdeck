@@ -62,10 +62,12 @@ import { reasonMessage } from "../capture/capturePermission.js";
 import { friendlyName, normaliseDevices, defaultInputDevice, fillInputSelect, channelText } from "../capture/trackInputs.js";
 import {
   resolveInput, inputValue, autoPickStep, createLivePeaks, resetLivePeaks, addLivePeak, fillLiveBars, takeLaneState,
+  videoLaneState, videoLaneNote, filmSpan, cameraUse,
 } from "./inputModel.js";
+import { loadFilmstrip, drawFilmstrip } from "../video/videoLane.js";
 import { openRecordingSettings } from "../capture/recordingSettings.js";
 import { storeGet, storeSet } from "../utils.js";
-import { toggleStemMute, getMixMode } from "../mixer.js";
+import { toggleStemMute, getMixMode, holdLaneSilent } from "../mixer.js";
 import { isMixSwitching } from "../mixMode.js";
 import {
   startRecording, stopRecording, drawOutput, recordState, takeOpen, onRecordChange, recordBlock,
@@ -73,7 +75,7 @@ import {
 } from "./streamerRecord.js";
 import { encoderNote } from "../videoEncoderNote.js";
 import { renderRequest, exportTake, cancelExport, saveRawRecording, rawRecordingType, canRevealSaved, revealSaved, forgetSaved } from "./streamerExport.js";
-import { shouldAutoStop, exportFileName, rawExtension } from "./recordModel.js";
+import { shouldAutoStop, exportFileName, rawExtension, takeHoldStep, reviewStep } from "./recordModel.js";
 import { renderScene } from "./sceneRenderer.js";
 
 const SAFE_KEY = "stemdeck.streamer.safeZones";
@@ -220,6 +222,7 @@ const ICONS = {
   play: [["path", { d: "M7 4.5v15l12-7.5z", fill: "currentColor", stroke: "none" }]],
   pause: [["rect", { x: 6, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }], ["rect", { x: 14, y: 5, width: 4, height: 14, rx: 1, fill: "currentColor", stroke: "none" }]],
   stop: [["rect", { x: 6, y: 6, width: 12, height: 12, rx: 1.5, fill: "currentColor", stroke: "none" }]],
+  speaker: [["path", { d: "M4 9h4l5-4v14l-5-4H4z", fill: "currentColor" }], "M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"],
 };
 const LAYER_ICON = { camera: "camera", lyrics: "text", waveform: "wave", lowerThird: "lower", background: "image", text: "text", image: "image" };
 
@@ -548,6 +551,17 @@ function buildTimeline() {
     audio.append(c);
     lanes.push({ label, name, canvas: c, key: null });
   }
+  // The take lane's mute (the take track's own, in Performance's mix).
+  const takeMute = button("sm-tl-mute");
+  takeMute.append(icon(ICONS.speaker, { size: 13, width: 2 }));
+  tx(takeMute, "streamer.lane.muteTake", "label");
+  takeMute.setAttribute("aria-pressed", "false");
+  takeMute.hidden = true;
+  takeMute.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleTakeMute();
+  });
+  lanes[1].label.append(takeMute);
   // "I play": the part left out of the backing track (top left of the card).
   const partBox = el("div", "sm-part");
   const partSel = selectBox("sm-part-select");
@@ -565,7 +579,14 @@ function buildTimeline() {
   // the take's frames (its filmstrip) where it sits in the song.
   const takeBlock = el("div", "sm-tl-take");
   takeBlock.hidden = true;
-  video.append(takeBlock);
+  const film = el("canvas", "sm-tl-film");
+  film.setAttribute("aria-hidden", "true");
+  takeBlock.append(film);
+  // What the lane cannot show, said in words (no video part, frames that
+  // failed, a take filmed without the camera).
+  const videoNote = el("p", "sm-tl-video-note");
+  videoNote.hidden = true;
+  video.append(takeBlock, videoNote);
   // A song without stems, and one without sections, say so in their rows.
   const noStems = tx(el("p", "sm-tl-note sm-tl-no-stems"), "streamer.noStems");
   noStems.hidden = true;
@@ -611,7 +632,7 @@ function buildTimeline() {
   card.append(partBox, zoomBox, scroll);
   return {
     partSel: partSel.sel,
-    takeHint, takeBlock,
+    takeHint, takeBlock, film, videoNote, takeMute,
     card, zoomBox, zTrack, zFill, zThumb, zOut, zIn, scroll, grid, mask, markers, ruler, video, audio, lanes,
     range, trimIn, trimOut, dimL, dimR, tip, head, headTime, noStems, noSections,
   };
@@ -1212,7 +1233,8 @@ function frame() {
   paintTransport(hasTrack);
   paintDevices();
   paintMeter();
-  muteStreamerTrack(job);
+  syncTakeHold(job);
+  reviewTake(job);
   const lyrics = lyricWindow(lyr.lines, tNow, 7);
   const data = frameData(tNow, meta, lyrics);
   takeTick(tNow, data);
@@ -2255,16 +2277,69 @@ function coverFor(jobId) {
   return c.ok ? c.img : null;
 }
 
-/** The Streamer track's own take plays in Streamer's mix muted: a new take
- * must not hear the last one. (Practice and Advanced keep their own mix.) */
-function muteStreamerTrack(job) {
+// The Performance track's take plays with the backing, so the musician can
+// review it (recordModel.takeHoldStep). While a NEW take records, the last
+// one is held silent (mixer.holdLaneSilent: never a mute, never saved into
+// any mode's record) and let go when the take ends.
+let heldTake = null;
+
+/** Hold or let go of the last take for the take now open (or not). From the
+ * frame loop and from every recorder state change (the view may be closed). */
+function syncTakeHold(job) {
+  const open2 = takeOpen();
+  const id = open2 ? streamerTrackId(recordState().jobId || job) : null;
+  const step = takeHoldStep(heldTake, { open: open2, trackId: id });
+  if (step.release) holdLaneSilent(step.release, false);
+  if (step.hold) holdLaneSilent(step.hold, true);
+  heldTake = step.held;
+}
+
+// A take just saved: { job, take }, until its track plays unmuted in
+// Performance's mix (reviewStep). A mix saved muted by an earlier version,
+// which muted this track every frame, is unmuted the same way.
+let reviewPending = null;
+
+function reviewTake(job) {
+  const p = reviewPending;
+  if (!p) return;
+  const id = streamerTrackId(p.job);
+  // The song reloads after the take with a new engine: done once that engine
+  // is ready (its start put the playhead at 0). Twenty seconds without a new
+  // engine count as done (nothing reloaded).
+  const eng = audioEngine;
+  if (eng && eng !== p.engine && p.waiting !== eng) {
+    p.waiting = eng;
+    Promise.resolve(eng.ready).then(() => { if (reviewPending === p && p.waiting === eng) p.readyEngine = eng; }, () => {});
+  }
+  const reloaded = (p.readyEngine && p.readyEngine === audioEngine) || performance.now() - p.at > 20000;
+  const step = reviewStep({
+    pending: p,
+    job,
+    mode: getMixMode(),
+    switching: isMixSwitching(),
+    open: takeOpen(),
+    loaded: Boolean(id && trackIndex[id] !== undefined && mixerState[id]),
+    peaksReady: Boolean(reloaded && overviewPeaks()?.data?.[p.take]),
+    muted: Boolean(id && mixerState[id]?.muted),
+  });
+  if (step === "wait") return;
+  const from = p.from;
+  reviewPending = null;
+  if (step === "unmute") toggleStemMute(id);
+  painted.takeMute = null;
+  // The song's reload after the take put the playhead at 0: back to where
+  // the take began, so Play plays it with the backing at once.
+  if (Number.isFinite(from) && step !== "drop" && job && !transport()?.isPlaying?.()) setPlayheadTime(from);
+}
+
+/** The take lane's mute: the take track's own mute in Performance's mix. */
+function toggleTakeMute() {
+  const job = currentJobId;
   const id = job && streamerTrackId(job);
-  if (!id || takeOpen()) return;
-  // Only into Streamer's own saved mix: never while the switch to it is
-  // still on its way (the mute would be saved into the mode left behind).
+  if (!id || takeOpen() || !mixerState[id] || trackIndex[id] === undefined) return;
   if (getMixMode() !== "streamer" || isMixSwitching()) return;
-  const m = mixerState[id];
-  if (m && !m.muted) toggleStemMute(id);
+  toggleStemMute(id);
+  painted.takeMute = null;
 }
 
 const BLOCK_KEY = {
@@ -2291,7 +2366,10 @@ async function toggleRecording() {
     return;
   }
   const media = streamerMedia();
+  // The last take is held silent from the "start" state change on
+  // (syncTakeHold); a track the start finds on the server, from the next frame.
   const res = await startRecording({
+    camera: cameraUse({ layerVisible: scene.layers.some((l) => l.type === "camera" && l.visible), live: cameraState().live }),
     remove: part.job === job ? part.remove : "",
     jobId: job,
     capture: inputState().live ? media.capture : null,
@@ -3052,32 +3130,108 @@ function paintTimeline(tNow) {
   const noStems = !dur || !part.loaded || Boolean(specs[0]);
   if (tl.noStems.hidden !== noStems) tl.noStems.hidden = noStems;
   paintTakeBlock(x, dur);
+  paintTakeMute();
 }
 
-/** The take on the video lane: growing while it records, then its frames. */
+/** The take lane's mute button: shown with a saved take on a loaded track,
+ * pressed when the take track is muted, off while a take records. */
+function paintTakeMute() {
+  const btn = ui.builder.timeline.takeMute;
+  const job = currentJobId;
+  const id = job && streamerTrackId(job);
+  const show = Boolean(id && takeLane().state === "saved" && mixerState[id] && trackIndex[id] !== undefined);
+  const muted = Boolean(show && mixerState[id].muted);
+  const sig = `${show}|${muted}|${takeOpen()}`;
+  if (painted.takeMute === sig) return;
+  painted.takeMute = sig;
+  btn.hidden = !show;
+  btn.disabled = takeOpen();
+  btn.classList.toggle("off", muted);
+  btn.setAttribute("aria-pressed", String(muted));
+}
+
+// Each take's filmstrip, asked once ("loading", "ok" with `loaded`, or
+// "failed"); a failure is asked once more a few seconds later (the server
+// may still be writing the camera part).
+const films = new Map();
+const FILM_RETRY_MS = 4000;
+
+function filmFor(take) {
+  const key = take?.camera_url;
+  if (!key) return null;
+  let f = films.get(key);
+  if (f && f.status === "failed" && f.tries < 2 && performance.now() - f.at > FILM_RETRY_MS) f = null;
+  if (f) return f;
+  const tries = (films.get(key)?.tries || 0) + 1;
+  f = { status: "loading", loaded: null, tries, at: performance.now() };
+  films.set(key, f);
+  const entry = loadFilmstrip(take);
+  const done = (loaded) => {
+    f.status = "ok";
+    f.loaded = loaded;
+    painted.takeBlock = null;
+  };
+  if (entry instanceof Promise) {
+    entry.then(done).catch((err) => {
+      console.warn("[streamer] the take's frames failed:", err);
+      f.status = "failed";
+      f.at = performance.now();
+      painted.takeBlock = null;
+    });
+  } else done(entry);
+  return f;
+}
+
+/** The server's record of the take lane's take (the Performance track's
+ * active take, as the song's lanes loaded it), or null. */
+function serverTake(take) {
+  const id = currentJobId && streamerTrackId(currentJobId);
+  if (!id || !take) return null;
+  const active = getTracks().find((tr) => tr.id === id)?.active;
+  return active && (active.id ?? active.take_id) === take ? active : null;
+}
+
+/** The take on the video lane: growing while it records, then its frames
+ * from the camera part's first frame, or a note saying what is missing. */
 function paintTakeBlock(x, dur) {
-  const block = ui.builder.timeline.takeBlock;
+  const tl = ui.builder.timeline;
+  const block = tl.takeBlock;
   const lane = takeLane();
-  let from = null;
-  let to = null;
-  let film = "";
-  if (lane.state === "live" && recordState().state === "recording" && livePeaks.from >= 0) {
-    from = (livePeaks.from / livePeaks.peaks.length) * dur;
-    to = now();
-  } else if (lane.state === "saved" && Number.isFinite(lane.info?.from) && Number.isFinite(lane.info?.to)) {
-    from = lane.info.from;
-    to = lane.info.to;
-    film = `/api/jobs/${encodeURIComponent(currentJobId)}/takes/${encodeURIComponent(lane.take)}/filmstrip.jpg`;
+  const take = lane.state === "saved" ? serverTake(lane.take) : null;
+  const f = take?.has_camera ? filmFor(take) : null;
+  const state = videoLaneState({ lane: lane.state, take, film: f?.status ?? null });
+  let span = null;
+  if (state === "recording") {
+    if (recordState().state === "recording" && livePeaks.from >= 0) span = { from: (livePeaks.from / livePeaks.peaks.length) * dur, to: now() };
+  } else if (state === "film") {
+    span = filmSpan(take.camera_start_sec, f.loaded.meta.duration, dur);
+  } else if (state === "loading" || state === "failed" || state === "pending") {
+    // Where the take sits, from the server's record, else this browser's.
+    const meta = f?.loaded?.meta;
+    if (take?.has_camera && meta) span = filmSpan(take.camera_start_sec, meta.duration, dur);
+    else if (Number.isFinite(lane.info?.from) && Number.isFinite(lane.info?.to)) span = { from: lane.info.from, to: lane.info.to };
   }
-  const sig = from === null ? "none" : `${Math.round(x(from))}|${Math.round(x(to))}|${film}|${lane.state}`;
+  const noteKey = videoLaneNote(state, lane.info?.camera ?? null);
+  const sig = `${state}|${span ? `${Math.round(x(span.from))}|${Math.round(x(span.to))}` : "-"}|${lane.take}|${noteKey}|${t(noteKey || "streamer.trackVideo")}`;
   if (painted.takeBlock === sig) return;
   painted.takeBlock = sig;
-  block.hidden = from === null;
-  if (from === null) return;
-  block.classList.toggle("live", lane.state === "live");
-  block.style.left = `${x(from)}px`;
-  block.style.width = `${Math.max(2, x(to) - x(from))}px`;
-  block.style.backgroundImage = film ? `url("${film}")` : "";
+  tl.video.dataset.state = state;
+  tl.videoNote.hidden = !noteKey;
+  tl.videoNote.textContent = noteKey ? t(noteKey) : "";
+  block.hidden = !span;
+  if (!span) return;
+  block.classList.toggle("live", state === "recording");
+  block.classList.toggle("failed", state === "failed");
+  const left = x(span.from);
+  // At least a few pixels: a half-second take still shows where it is.
+  const width = Math.max(6, x(span.to) - left);
+  block.style.left = `${left}px`;
+  block.style.width = `${width}px`;
+  tl.film.hidden = state !== "film";
+  if (state === "film") {
+    const from = Math.max(0, span.from - take.camera_start_sec);
+    drawFilmstrip(tl.film, f.loaded, from, span.to - span.from);
+  }
 }
 
 /** One lane: `spec` { names, label, color } (the peaks of `names`), or null. */
@@ -3229,6 +3383,11 @@ export function initStreamer() {
   onRecordChange((state) => {
     painted.rec = null;
     painted.exp = null;
+    syncTakeHold(currentJobId);
+    if (state === "saved") {
+      const st = recordState();
+      if (st.jobId && st.takeId) reviewPending = { job: st.jobId, take: st.takeId, from: takeInfo(st.takeId)?.from ?? null, engine: audioEngine, at: performance.now() };
+    }
     if (state === "failed") flashNote(t("streamer.rec.failed"), ui?.builder.rec);
   });
   onDevicesChange(() => {
