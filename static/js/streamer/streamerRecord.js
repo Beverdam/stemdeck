@@ -375,7 +375,7 @@ onTakeEvent((ev) => {
         perfMsAtFrame0: ev.perfMsAtFrame0,
         ctxTimeAtFrame0: ev.ctxTimeAtFrame0,
         bitsPerSecond: videoBitrate(rec.size, rec.fps),
-        deviceLabel: "Streamer scene",
+        deviceLabel: "Performance scene",
         mirrorPreview: false,
         previewVideo: null,
         upload: (seq, blob) => uploadPart(jobId, takeId, "camera", seq, blob),

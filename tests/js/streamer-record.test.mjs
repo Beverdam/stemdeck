@@ -43,16 +43,16 @@ check("bit rate grows with size and rate, held to 2.5..14 Mbps", videoBitrate({ 
   && videoBitrate({ width: 640, height: 360 }, 24) === 2_500_000 && videoBitrate({ width: 3840, height: 2160 }, 30) === 14_000_000);
 
 // The file name
-check("title, artist, suffix", exportFileName("Come as You Are", "Nirvana") === "Come as You Are - Nirvana (Streamer).mp4");
-check("no artist", exportFileName("Happy", "") === "Happy (Streamer).mp4");
-check("no title", exportFileName("", "Nirvana") === "Streamer.mp4" && exportFileName(null, null) === "Streamer.mp4");
-check("forbidden characters become spaces", exportFileName('AC/DC: "Back" <in> Black?', "a|b*c") === "AC DC Back in Black - a b c (Streamer).mp4");
+check("title, artist, suffix", exportFileName("Come as You Are", "Nirvana") === "Come as You Are - Nirvana (Performance).mp4");
+check("no artist", exportFileName("Happy", "") === "Happy (Performance).mp4");
+check("no title", exportFileName("", "Nirvana") === "Performance.mp4" && exportFileName(null, null) === "Performance.mp4");
+check("forbidden characters become spaces", exportFileName('AC/DC: "Back" <in> Black?', "a|b*c") === "AC DC Back in Black - a b c (Performance).mp4");
 check("path tricks do not survive", !exportFileName("../../etc/passwd", "x").includes("/") && !exportFileName("..\\..\\win", "x").includes("\\"));
-check("control characters go", exportFileName("A\u0000B\u001fC", "") === "A B C (Streamer).mp4");
-check("no dots or spaces at the ends", exportFileName("  ..Song..  ", "") === "Song (Streamer).mp4");
-check("long names are cut", exportFileName("x".repeat(300), "").length <= 120 + " (Streamer).mp4".length);
-check("Windows device names are not a file name", exportFileName("CON", "") === "CON song (Streamer).mp4");
-check("another extension for the raw recording", exportFileName("Song", "A", "webm") === "Song - A (Streamer).webm");
+check("control characters go", exportFileName("A\u0000B\u001fC", "") === "A B C (Performance).mp4");
+check("no dots or spaces at the ends", exportFileName("  ..Song..  ", "") === "Song (Performance).mp4");
+check("long names are cut", exportFileName("x".repeat(300), "").length <= 120 + " (Performance).mp4".length);
+check("Windows device names are not a file name", exportFileName("CON", "") === "CON song (Performance).mp4");
+check("another extension for the raw recording", exportFileName("Song", "A", "webm") === "Song - A (Performance).webm");
 
 // The render request
 const mix = { names: ["vocals", "drums", "trk1"], gains: [1, 0.5, 1], pitches: [0, 0, 0] };

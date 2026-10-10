@@ -350,13 +350,13 @@
               </svg>
               <span data-i18n="karaoke.rail">Karaoke</span>
             </button>
-            <!-- Streamer Mode (static/js/streamer/streamer.js): a view over the
+            <!-- Performance Mode (id "streamer", static/js/streamer/streamer.js): a view over the
                  workspace, like Karaoke; lit while it is open. -->
-            <button class="rail-btn rail-streamer" id="streamerBtn" type="button" title="Streamer" aria-label="Streamer" aria-pressed="false">
+            <button class="rail-btn rail-streamer" id="streamerBtn" type="button" title="Performance" aria-label="Performance" aria-pressed="false">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
                 <path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/>
               </svg>
-              <span data-i18n="streamer.rail">Streamer</span>
+              <span data-i18n="streamer.rail">Performance</span>
             </button>
             <button class="rail-btn rail-queue hidden" type="button" title="Import queue" aria-label="Import queue" aria-pressed="false" data-i18n-title="nav.importQueue" data-i18n-aria-label="nav.importQueue">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -875,10 +875,10 @@
            lanes and the master drawer while open, built on first open. -->
       <section class="karaoke" id="karaoke" hidden aria-label="Karaoke Mode"></section>
 
-      <!-- Streamer Mode (static/js/streamer/streamer.js): a fixed layer over
+      <!-- Performance Mode (id "streamer", static/js/streamer/streamer.js): a fixed layer over
            the lanes and the master drawer while open, down to the top of the
            footer (which stays visible), built on first open. -->
-      <section class="streamer" id="streamer" hidden aria-label="Streamer Mode"></section>
+      <section class="streamer" id="streamer" hidden aria-label="Performance Mode"></section>
 
       <!-- ══ FOOTER — sibling of #lanes inside .daw-main-col, not clipped ══ -->
       <footer class="daw-footer">

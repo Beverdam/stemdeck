@@ -21,7 +21,8 @@ test.describe("studio modes", () => {
     }
 
     await page.locator("#modeBtn").click();
-    await expect(page.locator('.mode-item[data-mode="streaming"]')).toHaveAttribute("aria-disabled", "true");
+    await expect(page.locator(".mode-item")).toHaveCount(4);
+    await expect(page.locator('.mode-item[data-mode="streaming"]')).toHaveCount(0);
     await page.locator('.mode-item[data-mode="daw"]').click();
     await expect(page.locator("html")).toHaveAttribute("data-mode", "daw");
     await expect(page.locator("#t-rec")).toBeVisible();

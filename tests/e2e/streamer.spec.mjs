@@ -50,7 +50,7 @@ test.describe("Streamer Mode", () => {
     await openStreamer(page);
     await expect(page.locator("html")).toHaveClass(/streamer-open/);
     await expect(page.locator("#lanes")).toHaveAttribute("inert", "");
-    await expect(sm(page, ".sm-head-title")).toHaveText("Streamer Mode");
+    await expect(sm(page, ".sm-head-title")).toHaveText("Performance Mode");
     expect(Math.abs((await now(page)) - 3)).toBeLessThan(0.3);
     await closeStreamer(page);
     await expect(page.locator("#lanes")).not.toHaveAttribute("inert", "");
@@ -142,10 +142,10 @@ test.describe("Streamer Mode", () => {
     await expect(page.locator("#lanes")).not.toHaveAttribute("inert", "");
   });
 
-  test("the Mode menu lists Streamer and shows it current while open", async ({ page }) => {
+  test("the Mode menu lists Performance (id streamer) and shows it current while open", async ({ page }) => {
     await openStudio(page);
     await page.locator("#modeBtn").click();
-    await expect(page.locator('.mode-item[data-mode="streaming"]')).toHaveAttribute("aria-disabled", "true");
+    await expect(page.locator(".mode-item .mode-item-name")).toHaveText(["Practice", "Advanced", "Karaoke", "Performance"]);
     await page.locator('.mode-item[data-mode="streamer"]').click();
     await expect(page.locator("#streamer")).toBeVisible();
     await page.locator("#modeBtn").click();
