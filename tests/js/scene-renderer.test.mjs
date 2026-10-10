@@ -1,7 +1,7 @@
 // Streamer Mode's scene renderer (static/js/streamer/sceneRenderer.js), on a
 // stub 2D context that records what is drawn: the output never carries the
 // editor's overlays, hidden layers draw nothing, text is the song's.
-import { renderScene, wrapText, fitText, aspectScale } from "../../static/js/streamer/sceneRenderer.js";
+import { renderScene, wrapText, fitText, aspectScale, trackInfoLayout, shapeOf } from "../../static/js/streamer/sceneRenderer.js";
 import { defaultScene, withLayerVisible, addLayer, setLayerProps } from "../../static/js/streamer/streamerModel.js";
 
 let failed = 0;
@@ -68,7 +68,7 @@ const dashed = (ctx) => ctx.calls.filter((c) => c.name === "setLineDash").length
 
 const scene = defaultScene();
 const out = draw(scene, null);
-const ed = draw(scene, { selection: "title", safeZones: true });
+const ed = draw(scene, { selection: "trackInfo", safeZones: true });
 
 check("draws the song's title and artist", texts(out).includes("Floorlight") && texts(out).includes("The Late Arrivals"));
 check("draws the lyric lines", texts(out).includes("Move into the light now") && texts(out).includes("Shine until the night is gone"));
@@ -82,7 +82,7 @@ check("the frame starts black and full size", out.calls[1]?.name === "fillRect" 
 
 const noLyrics = draw(withLayerVisible(scene, "lyrics", false), null);
 check("a hidden layer draws nothing", !texts(noLyrics).includes("Move into the light now"));
-const noSelection = draw(withLayerVisible(scene, "title", false), { selection: "title", safeZones: false });
+const noSelection = draw(withLayerVisible(scene, "trackInfo", false), { selection: "trackInfo", safeZones: false });
 check("a hidden selected layer has no outline", dashed(noSelection) === 0);
 const empty = draw(scene, null, { ...frame, lyrics: [] });
 check("no lyrics: the output draws no empty box text", !texts(empty).includes("No synced lyrics"));
@@ -143,8 +143,8 @@ check("an empty text layer shows its placeholder in the editor only", texts(draw
 sc2 = setLayerProps(sc2, "text", { text: "Hello stream" });
 check("a text layer draws its text in the video", texts(draw2(sc2, null)).includes("Hello stream"));
 check("an image layer is a placeholder in the editor, nothing in the video", texts(draw2(sc2, { selection: null })).includes("Image placeholder") && !texts(draw2(sc2, null)).includes("Image placeholder"));
-const noArtist = setLayerProps(scene, "title", { showArtist: false });
-check("the title layer can leave the artist out", !texts(draw2(noArtist, null)).includes("The Late Arrivals") && texts(draw2(noArtist, null)).includes("Floorlight"));
+const noArtist = setLayerProps(scene, "trackInfo", { showArtist: false });
+check("Track Info can leave the artist out", !texts(draw2(noArtist, null)).includes("The Late Arrivals") && texts(draw2(noArtist, null)).includes("Floorlight"));
 const cam = { videoWidth: 1280, videoHeight: 720, width: 1280, height: 720 };
 const mirrored = setLayerProps(scene, "camera", { mirror: true });
 const camCalls = (editor) => {
@@ -173,6 +173,82 @@ const ia = drawnPics[1]?.args;
 check("an image layer's picture fits inside its frame", ia && ia[3] <= imgFrame.w * 1920 + 0.01 && ia[4] <= imgFrame.h * 1080 + 0.01 && (Math.abs(ia[3] - imgFrame.w * 1920) < 0.01 || Math.abs(ia[4] - imgFrame.h * 1080) < 0.01));
 const notYet = picCtx(new Map());
 check("a picture not loaded yet draws nothing in the video", picDraws(notYet).length === 0 && !texts(notYet).includes("Image placeholder"));
+
+// ── Track Info: one card, its parts from its switches ──
+{
+  // Every part on: the parts land where the version 1 layers' default frames
+  // put them (the design's card), at every aspect, within a pixel at 1080p.
+  const V1 = {
+    "16:9": { W: 716, H: 403, card: [472, 8, 238, 108], art: [482, 18, 88, 88], wave: [582, 74, 118, 28], out: [1920, 1080] },
+    "9:16": { W: 403, H: 716, card: [16, 76, 371, 140], art: [29, 89, 114, 114], wave: [159, 162, 215, 36], out: [1080, 1920] },
+    "1:1": { W: 483, H: 483, card: [197, 8, 280, 124], art: [209, 19, 101, 101], wave: [324, 84, 142, 32], out: [1080, 1080] },
+  };
+  for (const [aspect, d] of Object.entries(V1)) {
+    const [OW, OH] = d.out;
+    const sx = OW / d.W, sy = OH / d.H;
+    const b = { x: d.card[0] * sx, y: d.card[1] * sy, w: d.card[2] * sx, h: d.card[3] * sy };
+    const u = (Math.min(OW, OH) / 403) * aspectScale(OW, OH);
+    const L = trackInfoLayout(b, { art: true, title: true, waveform: true }, u, shapeOf(OW, OH));
+    const close = (r, v, tol) => Math.abs(r.x - v[0] * sx) <= tol && Math.abs(r.y - v[1] * sy) <= tol && Math.abs(r.w - v[2] * sx) <= tol && Math.abs(r.h - v[3] * sy) <= tol;
+    // To a twentieth of a pixel: the layout is taken from those frames, per shape (716 x 403 is not quite 16:9).
+    const tol = 0.05;
+    // The old album art drew a square of the smaller side of its frame.
+    const side = Math.min(d.art[2] * sx, d.art[3] * sy);
+    const artOk = Math.abs(L.art.x - d.art[0] * sx) <= tol && Math.abs(L.art.y - d.art[1] * sy) <= tol && Math.abs(L.art.w - side) <= tol && L.art.w === L.art.h;
+    check(`every part on, ${aspect}: art and waveform where the old layers were`, artOk && close(L.bars, d.wave, tol) && L.card.w === b.w, JSON.stringify(L));
+  }
+  const b = { x: 100, y: 50, w: 600, h: 270 };
+  const u = 1080 / 403;
+  const lay = (p) => trackInfoLayout(b, p, u);
+  const all = lay({});
+  check("layout: a missing switch counts as on", all.art && all.text && all.bars && !all.empty);
+  const artOnly = lay({ title: false, waveform: false });
+  check("art only: the card shrinks to a square around the art", artOnly.art && !artOnly.text && !artOnly.bars && Math.abs(artOnly.card.w - b.h) < 1e-6 && artOnly.card.h === b.h);
+  const titleOnly = lay({ art: false, waveform: false });
+  check("title only: the text starts at the card's inset, centred in its height", titleOnly.text && Math.abs(titleOnly.text.left - (b.x + 10 * u)) < 1e-6 && titleOnly.text.top > b.y + 16 * u && !titleOnly.art && !titleOnly.bars && titleOnly.card.w === b.w);
+  const waveOnly = lay({ art: false, title: false });
+  check("waveform only: bars across the card, centred", waveOnly.bars && Math.abs(waveOnly.bars.x - (b.x + b.w * 10 / 238)) < 1e-6 && Math.abs(waveOnly.bars.y + waveOnly.bars.h / 2 - (b.y + b.h / 2)) < 1e-6 && waveOnly.bars.w > b.w * 0.8);
+  const artTitle = lay({ waveform: false });
+  check("art and title: text right of the art, no bars", artTitle.text.left > artTitle.art.x + artTitle.art.w && !artTitle.bars);
+  const artWave = lay({ title: false });
+  check("art and waveform: bars right of the art, centred", artWave.bars.x > artWave.art.x + artWave.art.w && Math.abs(artWave.bars.y + artWave.bars.h / 2 - (b.y + b.h / 2)) < 1e-6);
+  const titleWave = lay({ art: false });
+  check("title and waveform: both from the card's left inset", Math.abs(titleWave.text.left - (b.x + 10 * u)) < 1e-6 && Math.abs(titleWave.bars.x - (b.x + b.w * 10 / 238)) < 1e-6 && titleWave.bars.y > titleWave.text.top);
+  check("nothing on: empty", lay({ art: false, title: false, waveform: false }).empty === true);
+  const narrow = trackInfoLayout({ x: 0, y: 0, w: 40, h: 200 }, {}, 1);
+  check("a card narrower than its art: the art fits inside it", narrow.art.w <= 40 && narrow.art.x + narrow.art.w <= 40 + 1e-9);
+
+  // Drawn: each part only when its switch is on.
+  const bars = (ctx) => ctx.calls.filter((c) => c.name === "fillRect" && c.args[3] < 200 && c.args[2] < 40).length;
+  const artDrawn = (ctx) => ctx.calls.some((c) => c.name === "drawImage" && c.args[0] === artImg);
+  const artImg = { naturalWidth: 300, naturalHeight: 300, width: 300, height: 300, complete: true };
+  const only = (props) => {
+    const sc = setLayerProps(withLayerVisible(withLayerVisible(scene, "lyrics", false), "lowerThird", false), "trackInfo", props);
+    const ctx = stubContext();
+    renderScene(ctx, sc, { ...frame, art: artImg }, { width: 1920, height: 1080, font: "Inter", labels, editor: null });
+    return ctx;
+  };
+  const full = only({});
+  check("every part on: title, artist, 34 bars and the album art", texts(full).includes("Floorlight") && texts(full).includes("The Late Arrivals") && bars(full) === 34 && artDrawn(full));
+  const noTitle = only({ title: false });
+  check("title off: no title or artist, bars and art still drawn", !texts(noTitle).includes("Floorlight") && !texts(noTitle).includes("The Late Arrivals") && bars(noTitle) === 34 && artDrawn(noTitle));
+  const noWave = only({ waveform: false });
+  check("waveform off: no bars", bars(noWave) === 0 && texts(noWave).includes("Floorlight") && artDrawn(noWave));
+  const noArt = only({ art: false });
+  check("album art off: no art drawn", !artDrawn(noArt) && texts(noArt).includes("Floorlight") && bars(noArt) === 34);
+  const none = only({ art: false, title: false, waveform: false });
+  check("every part off: nothing of it in the video", !texts(none).includes("Floorlight") && bars(none) === 0 && !artDrawn(none));
+  const noneEd = stubContext();
+  renderScene(noneEd, setLayerProps(scene, "trackInfo", { art: false, title: false, waveform: false }), frame, { width: 1920, height: 1080, font: "Inter", labels, editor: { selection: null } });
+  check("every part off: the editor still shows a faint card to find it by", noneEd.calls.filter((c) => c.name === "fill").length === draw(withLayerVisible(scene, "trackInfo", false), { selection: null }).calls.filter((c) => c.name === "fill").length + 1 && !texts(noneEd).includes("Floorlight"));
+  // The square outline: art only selects the square, not the frame.
+  const sq = stubContext();
+  const sqScene = setLayerProps(scene, "trackInfo", { title: false, waveform: false });
+  renderScene(sq, sqScene, frame, { width: 1920, height: 1080, font: "Inter", labels, editor: { selection: "trackInfo" } });
+  const outline = sq.calls.find((c) => c.name === "strokeRect" && c.args[2] < 1000)?.args;
+  const tf = sqScene.layers.find((l) => l.id === "trackInfo").frame;
+  check("art only: the selection outline is the square", outline && Math.abs(outline[2] - outline[3]) < 1e-6 && Math.abs(outline[3] - (tf.h * 1080 + 6 * (1080 / 403))) < 1e-6);
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

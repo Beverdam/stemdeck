@@ -322,13 +322,13 @@ test.describe("Streamer Mode: layers and timeline", () => {
   });
 
   test("+ Add Layer adds every type; undo takes them all back", async ({ page }) => {
-    for (const type of ["text", "image", "lowerThird", "lyrics", "waveform", "albumArt", "title"]) {
+    for (const type of ["text", "image", "lowerThird", "lyrics", "trackInfo"]) {
       await sm(page, ".sm-add").click();
       await page.locator(`.sm-menu [data-item="${type}"]`).click();
     }
-    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(14);
-    for (let i = 0; i < 7; i++) await sm(page, ".sm-undo").click();
-    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(7);
+    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(10);
+    for (let i = 0; i < 5; i++) await sm(page, ".sm-undo").click();
+    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(5);
     await expect.poll(() => undoOn(page)).toBe(false);
   });
 
@@ -350,14 +350,36 @@ test.describe("Streamer Mode: layers and timeline", () => {
   });
 
   test("arrows nudge 1% and 5%; Ctrl+Z undoes", async ({ page }) => {
-    await sm(page, '.sm-layer[data-layer="waveform"] .sm-layer-pick').click();
+    await sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-pick').click();
     await sm(page, ".sm-preview").focus();
-    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowLeft");
     await page.keyboard.press("Shift+ArrowDown");
-    await expect.poll(async () => (await layerOf(page, "waveform"))?.frame.y).toBeCloseTo(74 / 403 + 0.05, 9);
-    expect((await layerOf(page, "waveform")).frame.x).toBeCloseTo(582 / 716 + 0.01, 9);
+    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.frame.y).toBeCloseTo(8 / 403 + 0.05, 9);
+    expect((await layerOf(page, "trackInfo")).frame.x).toBeCloseTo(472 / 716 - 0.01, 9);
     await page.keyboard.press("Control+z");
-    await expect.poll(async () => (await layerOf(page, "waveform")).frame.y).toBeCloseTo(74 / 403, 9);
+    await expect.poll(async () => (await layerOf(page, "trackInfo")).frame.y).toBeCloseTo(8 / 403, 9);
+  });
+
+  test("Track Info is one row; its part switches change the card and are saved", async ({ page }) => {
+    const rows = await ev(page, () => [...document.querySelectorAll("#streamer .sm-layer")].map((r) => r.dataset.type));
+    expect(rows.filter((t) => t === "trackInfo")).toHaveLength(1);
+    expect(rows.some((t) => ["title", "albumArt", "waveform"].includes(t))).toBe(false);
+    await expect(sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-name')).toHaveText("Track Info");
+    await expect(sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-sub')).toHaveText("Title, artist, art and waveform");
+    await menu(page, "trackInfo", "edit");
+    for (const part of ["art", "title", "artist", "waveform"]) await expect(page.locator(`.sm-props-switch[data-part="${part}"]`)).toHaveAttribute("aria-checked", "true");
+    await page.locator('.sm-props-switch[data-part="waveform"]').click();
+    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props.waveform).toBe(false);
+    await page.locator('.sm-props-switch[data-part="title"]').click();
+    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props.title).toBe(false);
+    // The artist line rests with the title off.
+    await expect(page.locator('.sm-props-switch[data-part="artist"]')).toBeDisabled();
+    await page.locator('.sm-props-switch[data-part="art"]').click();
+    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props.art).toBe(false);
+    await expect(sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-sub')).toHaveText("All parts switched off");
+    await page.keyboard.press("Escape");
+    for (let i = 0; i < 3; i++) await sm(page, ".sm-undo").click();
+    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props).toEqual({ art: true, title: true, waveform: true, showArtist: true, bars: 34 });
   });
 
   test("zoom, Fit and the ruler", async ({ page }) => {
@@ -799,5 +821,40 @@ test.describe("Streamer Mode input and take lane", () => {
       return false;
     });
     expect(ink).toBe(false);
+  });
+});
+
+test.describe("Streamer Mode: a version 1 scene", () => {
+  test("its Song Title, Album Art and Waveform become one Track Info, saved on the next edit only", async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+    await openStudio(page);
+    const px = (x, y, w, h) => ({ x: x / 716, y: y / 403, w: w / 716, h: h / 403 });
+    const old = {
+      v: 1, aspect: "16:9", trim: null,
+      layers: [
+        { id: "background", type: "background", visible: false, frame: { x: 0, y: 0, w: 1, h: 1 }, props: { imageKey: "" } },
+        { id: "camera", type: "camera", visible: true, frame: { x: 0, y: 0, w: 1, h: 1 }, props: { mirror: false } },
+        { id: "lowerThird", type: "lowerThird", visible: true, frame: px(12, 351, 120, 40), props: { handle: "", subtitle: "" } },
+        { id: "lyrics", type: "lyrics", visible: true, frame: px(494, 263, 216, 134), props: { lines: 5 } },
+        { id: "title", type: "title", visible: true, frame: { x: 0.05, y: 0.6, w: 0.4, h: 0.25 }, props: { showArtist: true } },
+        { id: "waveform", type: "waveform", visible: false, frame: px(582, 74, 118, 28), props: { bars: 34 } },
+        { id: "albumArt", type: "albumArt", visible: true, frame: px(482, 18, 88, 88), props: {} },
+      ],
+    };
+    await ev(page, async ([key, value]) => (await import("/js/utils.js")).storeSet(key, value), [`stemdeck:streamer:scene:${JOB_ID}`, old]);
+    await openStreamer(page);
+    await expect(sm(page, '.sm-layer[data-layer="trackInfo"]')).toHaveCount(1);
+    await expect(sm(page, '.sm-layer[data-type="title"], .sm-layer[data-type="albumArt"], .sm-layer[data-type="waveform"]')).toHaveCount(0);
+    // Shown, not edited: the stored scene is still the old one.
+    await page.waitForTimeout(600);
+    expect((await savedScene(page)).v).toBe(1);
+    await sm(page, '.sm-layer[data-layer="lyrics"] [role=switch]').click();
+    await expect.poll(async () => (await savedScene(page))?.v).toBe(2);
+    const saved = await savedScene(page);
+    const ti = saved.layers.filter((l) => l.type === "trackInfo");
+    expect(ti).toHaveLength(1);
+    expect(ti[0].frame).toEqual({ x: 0.05, y: 0.6, w: 0.4, h: 0.25 });
+    expect(ti[0].props).toEqual({ art: true, title: true, waveform: false, showArtist: true, bars: 34 });
+    expect(saved.layers.map((l) => l.id)).toEqual(["background", "camera", "lowerThird", "lyrics", "trackInfo"]);
   });
 });
