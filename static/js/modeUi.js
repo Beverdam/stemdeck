@@ -1,8 +1,8 @@
 // The Mode control in the sidebar rail, above Favorites: a brain and the word
 // Mode. It opens a small menu of the modes (mode.js): Practice and Advanced to
-// choose from, Karaoke and Streamer (karaoke/karaoke.js, streamer/streamer.js:
-// the same views as the rail's Karaoke and Streamer buttons, over whichever of
-// the two is in force), and Streaming shown as coming.
+// choose from, Karaoke and Performance (id "streamer"; karaoke/karaoke.js,
+// streamer/streamer.js: the same views as the rail's Karaoke and Performance
+// buttons, over whichever of the two is in force).
 //
 // Keyboard: Enter or Space opens the menu with the current mode focused,
 // Up and Down move, Enter or Space chooses, Escape closes and returns focus.
@@ -46,8 +46,6 @@ function paint() {
     item.setAttribute("aria-checked", String(on));
     item.querySelector(".mode-item-name").textContent = t(`mode.${m}`);
     item.querySelector(".mode-item-desc").textContent = t(`mode.${m}Desc`);
-    const soon = item.querySelector(".mode-item-soon");
-    if (soon) soon.textContent = t("mode.soon");
   }
   if (menu) menu.setAttribute("aria-label", t("mode.menuAria"));
 }
@@ -58,16 +56,13 @@ function build() {
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   for (const m of MODES) {
-    const available = SELECTABLE.includes(m);
     const item = el("button", "mode-item");
     item.type = "button";
     item.dataset.mode = m;
     item.setAttribute("role", "menuitemradio");
     item.tabIndex = -1;
-    if (!available) item.setAttribute("aria-disabled", "true");
     const head = el("span", "mode-item-head");
     head.append(el("span", "mode-item-check"), el("span", "mode-item-name"));
-    if (!available) head.append(el("span", "mode-item-soon"));
     item.append(head, el("span", "mode-item-desc"));
     item.addEventListener("click", (e) => {
       e.stopPropagation();

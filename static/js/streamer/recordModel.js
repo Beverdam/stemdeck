@@ -94,10 +94,10 @@ export function videoBitrate({ width, height }, fps) {
 const BAD = /[<>:"/\\|?*\u0000-\u001f\u007f]/g;
 
 /**
- * "<Title> - <Artist> (Streamer).mp4", made safe for every file system:
+ * "<Title> - <Artist> (Performance).mp4", made safe for every file system:
  * forbidden characters become spaces, runs of spaces one, no dot or space at
  * the ends, at most 120 characters before the suffix. Without a title,
- * "Streamer.mp4"; without an artist, "<Title> (Streamer).mp4".
+ * "Performance.mp4"; without an artist, "<Title> (Performance).mp4".
  */
 export function exportFileName(title, artist, ext = "mp4") {
   const clean = (s) => String(s || "").replace(BAD, " ").replace(/\s+/g, " ").trim().replace(/^[.\s]+|[.\s]+$/g, "");
@@ -110,7 +110,7 @@ export function exportFileName(title, artist, ext = "mp4") {
   if (chars.length > 120) base = chars.slice(0, 120).join("").trim().replace(/[.\s]+$/g, "");
   // A name Windows reserves (CON, NUL, COM1...) is not a file name there.
   if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(base)) base = `${base} song`;
-  return base ? `${base} (Streamer).${ext}` : `Streamer.${ext}`;
+  return base ? `${base} (Performance).${ext}` : `Performance.${ext}`;
 }
 
 // ── The render request ──
