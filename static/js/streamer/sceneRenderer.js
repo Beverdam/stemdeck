@@ -15,6 +15,8 @@
 // Called without it (the output), none of them is drawn. The REC badge is a
 // button over the preview, not part of the picture at all.
 
+import { isSquareLayer } from "./streamerModel.js";
+
 const DESIGN_SHORT = 403;
 
 // Rounded rectangle path, without ctx.roundRect (older WebKitGTK lacks it).
@@ -161,31 +163,119 @@ function drawCamera(ctx, b, env, layer) {
   ctx.restore();
 }
 
-/** The title card: its backdrop over the whole frame, the song's title and
- * artist to the right of the album art when that layer is shown inside it. */
-function drawTitle(ctx, b, env, layer) {
-  const { u, frame } = env;
-  ctx.fillStyle = "rgba(16,13,11,.58)";
-  rr(ctx, b.x, b.y, b.w, b.h, 6 * u);
-  ctx.fill();
-  let left = b.x + 10 * u;
-  const art = env.layer("albumArt");
-  if (art?.visible) {
-    const a = box(art, env.W, env.H);
-    const aw = Math.min(a.w, a.h);
-    if (a.x >= b.x - 1 && a.x + aw <= b.x + b.w && a.y < b.y + b.h && a.y + aw > b.y) left = Math.max(left, a.x + aw + 12 * u);
+// Track Info's card per output shape, taken from the version 1 default
+// frames (the title card and the album art and waveform layers inside it),
+// so the default card is drawn exactly as those three layers drew it. Across
+// (padX, artW, waveX, right) in fractions of the card's width, down (padY,
+// art, waveY, waveH) in fractions of its height: the art's inset and side
+// (the smaller of art and artW, a square), the waveform's left, top and
+// height, and its right inset.
+const TI_LAYOUT = {
+  // 716 x 403 preview: card 238 x 108, art 88 at 10, 10, waveform 118 x 28 at 110, 66.
+  landscape: { padX: 10 / 238, padY: 10 / 108, art: 88 / 108, artW: 88 / 238, waveX: 110 / 238, waveY: 66 / 108, waveH: 28 / 108, right: 10 / 238 },
+  // 403 x 716: card 371 x 140, art 114 at 13, 13, waveform 215 x 36 at 143, 86.
+  portrait: { padX: 13 / 371, padY: 13 / 140, art: 114 / 140, artW: 114 / 371, waveX: 143 / 371, waveY: 86 / 140, waveH: 36 / 140, right: 13 / 371 },
+  // 483 x 483: card 280 x 124, art 101 at 12, 11, waveform 142 x 32 at 127, 76.
+  square: { padX: 12 / 280, padY: 11 / 124, art: 101 / 124, artW: 101 / 280, waveX: 127 / 280, waveY: 76 / 124, waveH: 32 / 124, right: 11 / 280 },
+};
+
+/** The output's shape, as aspectScale reads it. */
+export function shapeOf(W, H) {
+  if (!(W > 0 && H > 0)) return "landscape";
+  const r = W / H;
+  return r < 0.9 ? "portrait" : r <= 1.1 ? "square" : "landscape";
+}
+
+/**
+ * Where Track Info's parts go in its box `b` (pixels), from its part
+ * switches; `u` is the design pixel, `shape` the output's (shapeOf).
+ * { card, art, text, bars, empty }:
+ * - card: the backdrop. The frame, except with the album art alone, where
+ *   it shrinks to a square around the art.
+ * - art: a square on the left, inset and as tall as the design's.
+ * - text: { left, right, top } of the title line (the artist 23u under it):
+ *   right of the art, at the top when the waveform is under it, else centred
+ *   in the card's height.
+ * - bars: { x, y, w, h } of the waveform: under the artist when the title is
+ *   shown, else a band centred in the card's height; right of the art.
+ * - empty: every part off (the editor shows a faint card, the video nothing).
+ * With every part on this is the design's title card, so a version 1 scene
+ * looks as it did.
+ */
+export function trackInfoLayout(b, props, u, shape = "landscape") {
+  const p = props || {};
+  const k = TI_LAYOUT[shape] || TI_LAYOUT.landscape;
+  const art = p.art !== false;
+  const title = p.title !== false;
+  const wave = p.waveform !== false;
+  const out = { card: { ...b }, art: null, text: null, bars: null, empty: !art && !title && !wave };
+  if (out.empty) return out;
+  const padX = k.padX * b.w;
+  const padY = k.padY * b.h;
+  let after = b.x + padX;
+  if (art) {
+    // As the old album art layer: a square of the smaller of its two sides.
+    const s = Math.max(0, Math.min(k.art * b.h, k.artW * b.w));
+    out.art = { x: b.x + padX, y: b.y + Math.min(padY, (b.h - s) / 2), w: s, h: s };
+    after = out.art.x + s;
+    if (!title && !wave) {
+      // The album art alone: the card is a square around it.
+      out.card.w = Math.min(b.w, b.h);
+      out.art.x = b.x + (out.card.w - s) / 2;
+      out.art.y = b.y + (b.h - s) / 2;
+      return out;
+    }
   }
-  const maxW = b.x + b.w - 10 * u - left;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
-  ctx.fillStyle = "#ffffff";
-  ctx.font = `700 ${16 * u}px ${env.font}`;
-  const top = b.y + 16 * u;
-  ctx.fillText(fit(ctx, frame.title, maxW), left, top);
-  if (layer?.props?.showArtist === false) return;
-  ctx.fillStyle = "rgba(232,235,239,.72)";
-  ctx.font = `400 ${12.5 * u}px ${env.font}`;
-  ctx.fillText(fit(ctx, frame.artist, maxW), left, top + 23 * u);
+  if (title) {
+    const left = art ? Math.max(b.x + 10 * u, after + 12 * u) : b.x + 10 * u;
+    const block = p.showArtist === false ? 16 * u : 23 * u + 12.5 * u;
+    const top = wave ? b.y + 16 * u : b.y + Math.max(6 * u, (b.h - block) / 2);
+    out.text = { left, right: b.x + b.w - 10 * u, top };
+  }
+  if (wave) {
+    // Where the design put it, but never on the art (a card made narrow).
+    const x = art ? Math.max(b.x + k.waveX * b.w, after + 6 * u) : b.x + padX;
+    const w = b.x + b.w - k.right * b.w - x;
+    const h = title ? k.waveH * b.h : Math.max(k.waveH * b.h, (b.h - 2 * padY) * 0.5);
+    const y = title ? b.y + k.waveY * b.h : b.y + (b.h - h) / 2;
+    if (w > 0) out.bars = { x, y, w, h };
+  }
+  return out;
+}
+
+/** Track Info: the title card with the parts that are switched on (the
+ * song's title and artist, the album art, the waveform), one translucent
+ * card behind them. */
+function drawTrackInfo(ctx, b, env, layer) {
+  const { u, frame } = env;
+  const L = trackInfoLayout(b, layer?.props, u, shapeOf(env.W, env.H));
+  const c = L.card;
+  if (L.empty) {
+    if (!env.editor) return;
+    ctx.fillStyle = "rgba(16,13,11,.3)";
+    rr(ctx, c.x, c.y, c.w, c.h, 6 * u);
+    ctx.fill();
+    return;
+  }
+  ctx.fillStyle = "rgba(16,13,11,.58)";
+  rr(ctx, c.x, c.y, c.w, c.h, 6 * u);
+  ctx.fill();
+  if (L.text) {
+    const { left, right, top } = L.text;
+    const maxW = right - left;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `700 ${16 * u}px ${env.font}`;
+    ctx.fillText(fit(ctx, frame.title, maxW), left, top);
+    if (layer?.props?.showArtist !== false) {
+      ctx.fillStyle = "rgba(232,235,239,.72)";
+      ctx.font = `400 ${12.5 * u}px ${env.font}`;
+      ctx.fillText(fit(ctx, frame.artist, maxW), left, top + 23 * u);
+    }
+  }
+  if (L.bars) drawWaveform(ctx, L.bars, env, layer);
+  if (L.art) drawAlbumArt(ctx, L.art, env);
 }
 
 // A text layer's colours, by the names the model allows.
@@ -424,9 +514,7 @@ function drawLowerThird(ctx, b, env, layer) {
 const DRAW = {
   background: drawBackground,
   camera: drawCamera,
-  title: drawTitle,
-  albumArt: drawAlbumArt,
-  waveform: drawWaveform,
+  trackInfo: drawTrackInfo,
   lyrics: drawLyrics,
   lowerThird: drawLowerThird,
   text: drawText,
@@ -442,7 +530,7 @@ function drawSelection(ctx, layer, env) {
   const o = (full ? -4 : 3) * env.u;
   let w = b.w;
   let h = b.h;
-  if (layer.type === "albumArt") w = h = Math.min(b.w, b.h);
+  if (isSquareLayer(layer)) w = h = Math.min(b.w, b.h);
   ctx.save();
   ctx.strokeStyle = env.accent;
   ctx.lineWidth = Math.max(1, 1.5 * env.u);
@@ -511,7 +599,6 @@ export function renderScene(ctx, scene, frame, opts) {
     labels: { ...(opts.labels || {}) },
     editor,
     frame: frame || {},
-    layer: (type) => scene.layers.find((l) => l.type === type) || null,
   };
   ctx.save();
   ctx.fillStyle = "#000000";

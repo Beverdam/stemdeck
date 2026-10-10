@@ -16,17 +16,23 @@
 
 import { currentLineIndex } from "../lyricsLookup.js";
 
-export const SCENE_VERSION = 1;
+// 2: the album art, waveform and song title layers became one Track Info
+// layer (parseScene merges a version 1 scene's three into it).
+export const SCENE_VERSION = 2;
 export const ASPECTS = Object.freeze(["16:9", "9:16", "1:1"]);
 export const DEFAULT_ASPECT = "16:9";
 // The header's tabs, in order. Any other value (one from an older build, such
 // as the removed "live" tab) opens the Scene Builder.
 export const TABS = Object.freeze(["builder", "templates"]);
 export const tabOf = (id) => (TABS.includes(id) ? id : "builder");
-export const LAYER_TYPES = Object.freeze(["background", "camera", "lowerThird", "lyrics", "title", "waveform", "albumArt", "text", "image"]);
+export const LAYER_TYPES = Object.freeze(["background", "camera", "lowerThird", "lyrics", "trackInfo", "text", "image"]);
 // What + Add Layer offers, in its order. Camera and Background are the scene's
 // own and are never added (or duplicated, or deleted).
-export const ADDABLE_TYPES = Object.freeze(["text", "image", "lowerThird", "lyrics", "waveform", "albumArt", "title"]);
+export const ADDABLE_TYPES = Object.freeze(["text", "image", "lowerThird", "lyrics", "trackInfo"]);
+// Track Info's parts, each a switch in its properties (props of the same name).
+export const TRACK_PARTS = Object.freeze(["art", "title", "waveform"]);
+export const BARS_MIN = 8;
+export const BARS_MAX = 96;
 const FIXED_TYPES = new Set(["camera", "background"]);
 // A text layer's colour, by name (the renderer maps names to colours).
 export const TEXT_COLORS = Object.freeze(["white", "yellow", "red", "blue", "green"]);
@@ -75,15 +81,15 @@ export function fitAspect(boxW, boxH, aspect) {
 // the right column, lower third bottom left); portrait and square keep the
 // same overlays at the same size, the portrait title card below the REC
 // badge. A text layer starts in the middle, an image layer clear of it.
+// Track Info's frame is the title card; the album art and the waveform are
+// laid out inside it (sceneRenderer.js trackInfoLayout).
 const px = (x, y, w, h, W, H) => ({ x: x / W, y: y / H, w: w / W, h: h / H });
 const FULL = { x: 0, y: 0, w: 1, h: 1 };
 const DEFAULT_FRAMES = {
   "16:9": {
     background: FULL,
     camera: FULL,
-    title: px(472, 8, 238, 108, 716, 403),
-    albumArt: px(482, 18, 88, 88, 716, 403),
-    waveform: px(582, 74, 118, 28, 716, 403),
+    trackInfo: px(472, 8, 238, 108, 716, 403),
     lyrics: px(494, 263, 216, 134, 716, 403),
     lowerThird: px(12, 351, 120, 40, 716, 403),
     text: px(208, 171, 300, 60, 716, 403),
@@ -94,9 +100,7 @@ const DEFAULT_FRAMES = {
     camera: FULL,
     // Portrait text and padding are drawn 1.3 times larger (sceneRenderer's
     // aspectScale), so the cards are that much larger too.
-    title: px(16, 76, 371, 140, 403, 716),
-    albumArt: px(29, 89, 114, 114, 403, 716),
-    waveform: px(159, 162, 215, 36, 403, 716),
+    trackInfo: px(16, 76, 371, 140, 403, 716),
     lyrics: px(16, 430, 371, 195, 403, 716),
     lowerThird: px(16, 650, 208, 52, 403, 716),
     text: px(40, 340, 323, 88, 403, 716),
@@ -106,9 +110,7 @@ const DEFAULT_FRAMES = {
     background: FULL,
     camera: FULL,
     // Square: 1.15 times larger (sceneRenderer's aspectScale).
-    title: px(197, 8, 280, 124, 483, 483),
-    albumArt: px(209, 19, 101, 101, 483, 483),
-    waveform: px(324, 84, 142, 32, 483, 483),
+    trackInfo: px(197, 8, 280, 124, 483, 483),
     lyrics: px(229, 318, 248, 154, 483, 483),
     lowerThird: px(12, 425, 138, 46, 483, 483),
     text: px(92, 207, 300, 70, 483, 483),
@@ -125,18 +127,15 @@ const DEFAULT_LAYERS = [
   { type: "camera", visible: true },
   { type: "lowerThird", visible: true },
   { type: "lyrics", visible: true },
-  { type: "title", visible: true },
-  { type: "waveform", visible: true },
-  { type: "albumArt", visible: true },
+  { type: "trackInfo", visible: true },
 ];
 
 const DEFAULT_PROPS = {
   // An image the person chose (sceneImages.js keeps it; the scene holds its key).
   background: () => ({ imageKey: "" }),
   camera: () => ({ mirror: false }),
-  title: () => ({ showArtist: true }),
-  albumArt: () => ({}),
-  waveform: () => ({ bars: 34 }),
+  // Every part shown; the artist line is part of "title" and can be left out.
+  trackInfo: () => ({ art: true, title: true, waveform: true, showArtist: true, bars: 34 }),
   lyrics: () => ({ lines: 5 }),
   // Empty text shows the placeholder (an i18n string the page passes in).
   lowerThird: () => ({ handle: "", subtitle: "" }),
@@ -149,7 +148,7 @@ export function defaultFrame(type, aspect = DEFAULT_ASPECT) {
   return { ...(frames[type] || FULL) };
 }
 
-/** A new scene: the seven default layers at `aspect`, the whole song kept. */
+/** A new scene: the five default layers at `aspect`, the whole song kept. */
 export function defaultScene(aspect = DEFAULT_ASPECT) {
   const a = ASPECTS.includes(aspect) ? aspect : DEFAULT_ASPECT;
   return {
@@ -219,7 +218,7 @@ export function parseScene(raw) {
   const aspect = ASPECTS.includes(data.aspect) ? data.aspect : DEFAULT_ASPECT;
   const seen = new Set();
   const layers = [];
-  for (const l of data.layers) {
+  for (const l of migrateLayers(data.layers)) {
     if (!l || !LAYER_TYPES.includes(l.type)) continue;
     const id = typeof l.id === "string" && l.id && !seen.has(l.id) ? l.id : `${l.type}-${layers.length}`;
     seen.add(id);
@@ -236,6 +235,69 @@ export function parseScene(raw) {
   }
   if (!layers.length) return defaultScene(aspect);
   return { v: SCENE_VERSION, aspect, trim: cleanTrim(data.trim), layers };
+}
+
+// ── Version 1 to 2: three song layers become one Track Info ──
+
+// The version 1 layer types and the Track Info part each one was.
+const LEGACY_PART = { title: "title", albumArt: "art", waveform: "waveform" };
+const isLegacy = (l) => Boolean(l) && typeof l === "object" && Object.hasOwn(LEGACY_PART, l.type);
+const shown = (l) => l.visible !== false;
+const objectOr = (v) => (v && typeof v === "object" ? v : null);
+
+/**
+ * Saved layers (raw JSON) with the version 1 Song Title, Album Art and
+ * Waveform layers merged into Track Info layers; anything else is passed on
+ * untouched (parseScene cleans it). The first of each of the three types
+ * make one Track Info, at the place in the drawing order of the earliest of
+ * them:
+ * - its frame is the Song Title's, else the Album Art's, else the Waveform's;
+ * - a part is on when its layer was there and shown (when none of them was
+ *   shown, the card is hidden and a part is on when its layer was there);
+ * - it is shown when any of them was;
+ * - its name is the first name of their own (Song Title, Album Art,
+ *   Waveform), none when none was renamed;
+ * - the artist switch is the Song Title's, the bar count the Waveform's.
+ * A second layer of a type (a duplicate) becomes a Track Info of its own
+ * with only its part on, where it was. Layers that are not the old types,
+ * and a scene without them, come back as they were (so running it twice
+ * gives the same result).
+ */
+export function migrateLayers(layers) {
+  if (!Array.isArray(layers) || !layers.some(isLegacy)) return Array.isArray(layers) ? layers : [];
+  const used = new Set(layers.filter((l) => l && !isLegacy(l) && typeof l.id === "string").map((l) => l.id));
+  const nextId = () => {
+    let id = "trackInfo";
+    for (let n = 2; used.has(id); n++) id = `trackInfo-${n}`;
+    used.add(id);
+    return id;
+  };
+  const first = {};
+  layers.forEach((l, i) => {
+    if (isLegacy(l) && first[l.type] === undefined) first[l.type] = i;
+  });
+  const at = Math.min(...Object.values(first));
+  const of = (type) => (first[type] === undefined ? null : layers[first[type]]);
+  const make = (members) => {
+    const anyShown = members.some(shown);
+    const t = members.find((m) => m.type === "title");
+    const w = members.find((m) => m.type === "waveform");
+    const props = { art: false, title: false, waveform: false, showArtist: objectOr(t?.props)?.showArtist !== false, bars: objectOr(w?.props)?.bars ?? 34 };
+    for (const m of members) props[LEGACY_PART[m.type]] = anyShown ? shown(m) : true;
+    const out = { id: nextId(), type: "trackInfo", visible: anyShown, props };
+    const frame = members.map((m) => objectOr(m.frame)).find(Boolean);
+    if (frame) out.frame = { ...frame };
+    const name = members.map((m) => cleanName(m.name)).find(Boolean);
+    if (name) out.name = name;
+    return out;
+  };
+  const out = [];
+  layers.forEach((l, i) => {
+    if (!isLegacy(l)) out.push(l);
+    else if (i === at) out.push(make(["title", "albumArt", "waveform"].map(of).filter(Boolean)));
+    else if (first[l.type] !== i) out.push(make([l]));
+  });
+  return out;
 }
 
 /** What is stored: a deep copy with nothing but the scene's own fields. */
@@ -268,10 +330,20 @@ function cleanProps(type, props) {
     p.mirror = p.mirror === true;
   } else if (type === "image" || type === "background") {
     p.imageKey = typeof p.imageKey === "string" && /^[a-z0-9:_-]{0,80}$/i.test(p.imageKey) ? p.imageKey : "";
-  } else if (type === "title") {
+  } else if (type === "trackInfo") {
+    for (const part of TRACK_PARTS) p[part] = p[part] !== false;
     p.showArtist = p.showArtist !== false;
+    p.bars = Math.round(clampNum(p.bars, BARS_MIN, BARS_MAX, 34));
   }
   return p;
+}
+
+/** Whether `layer` is drawn as a square: a Track Info with the album art
+ * and nothing else (its card shrinks to the art; the editor's outline and
+ * handles follow). */
+export function isSquareLayer(layer) {
+  const p = layer?.props;
+  return layer?.type === "trackInfo" && p?.art !== false && p?.title === false && p?.waveform === false;
 }
 
 function cleanTrim(trim) {

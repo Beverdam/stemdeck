@@ -10,7 +10,7 @@ import {
   emptyHistory, pushHistory, undoHistory, redoHistory, HISTORY_CAP,
   TRIM_MIN, trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery, ZOOM_MAX_PPS,
   IMAGE_MAX_BYTES, IMAGE_TYPES, downscaleSize, fitRect, imageKey,
-  TABS, tabOf,
+  TABS, tabOf, isSquareLayer, migrateLayers,
 } from "../../static/js/streamer/streamerModel.js";
 
 let failed = 0;
@@ -32,23 +32,21 @@ check("unknown or missing tabs fall back to the Scene Builder", [undefined, null
 // Defaults
 const s = defaultScene();
 check("default scene is 16:9, current version", s.aspect === "16:9" && s.v === SCENE_VERSION && DEFAULT_ASPECT === "16:9");
-check("seven default layers, one of each built-in type", s.layers.length === 7 && eq([...s.layers.map((l) => l.type)].sort(), ["albumArt", "background", "camera", "lowerThird", "lyrics", "title", "waveform"]));
+check("five default layers, one of each built-in type", s.layers.length === 5 && eq([...s.layers.map((l) => l.type)].sort(), ["background", "camera", "lowerThird", "lyrics", "trackInfo"]));
+check("the old song layers are no layer types any more", !["title", "albumArt", "waveform"].some((type) => LAYER_TYPES.includes(type)) && LAYER_TYPES.includes("trackInfo"));
 check("text and image are layer types too", LAYER_TYPES.includes("text") && LAYER_TYPES.includes("image"));
 check("a new scene keeps the whole song (no trim)", s.trim === null);
 check("ids are unique", new Set(s.layers.map((l) => l.id)).size === s.layers.length);
 check("everything shown but the background image", s.layers.every((l) => l.visible === (l.type !== "background")));
-check("background at the back, album art in front", s.layers[0].type === "background" && s.layers[1].type === "camera" && s.layers[s.layers.length - 1].type === "albumArt");
-check("album art is drawn over the title card", s.layers.findIndex((l) => l.type === "albumArt") > s.layers.findIndex((l) => l.type === "title"));
+check("background at the back, Track Info in front", s.layers[0].type === "background" && s.layers[1].type === "camera" && s.layers[s.layers.length - 1].type === "trackInfo");
+check("Track Info shows every part by default", eq(s.layers.find((l) => l.type === "trackInfo").props, { art: true, title: true, waveform: true, showArtist: true, bars: 34 }));
 check("camera and background fill the frame", eq(defaultFrame("camera"), { x: 0, y: 0, w: 1, h: 1 }) && eq(defaultFrame("background", "9:16"), { x: 0, y: 0, w: 1, h: 1 }));
 check("every default frame is inside the output, at every aspect", ASPECTS.every((a) => defaultScene(a).layers.every((l) => inUnit(l.frame))));
-check("frames are fractions of the design preview", near(defaultFrame("title").x, 472 / 716) && near(defaultFrame("title").w, 238 / 716) && near(defaultFrame("lyrics").h, 134 / 403));
-check("the album art sits inside the title card", (() => {
-  const t = defaultFrame("title"), a = defaultFrame("albumArt");
-  return a.x >= t.x && a.y >= t.y && a.x + a.w <= t.x + t.w && a.y + a.h <= t.y + t.h;
-})());
+check("frames are fractions of the design preview", near(defaultFrame("trackInfo").x, 472 / 716) && near(defaultFrame("trackInfo").w, 238 / 716) && near(defaultFrame("lyrics").h, 134 / 403));
+check("Track Info is where the title card was, at every aspect", eq(defaultFrame("trackInfo", "9:16"), { x: 16 / 403, y: 76 / 716, w: 371 / 403, h: 140 / 716 }) && eq(defaultFrame("trackInfo", "1:1"), { x: 197 / 483, y: 8 / 483, w: 280 / 483, h: 124 / 483 }));
 check("an unknown aspect gives the default scene", defaultScene("4:3").aspect === "16:9");
 check("a new scene is a new object each time", defaultScene() !== defaultScene() && defaultScene().layers[0].frame !== defaultScene().layers[0].frame);
-check("default props", eq(s.layers.find((l) => l.type === "lowerThird").props, { handle: "", subtitle: "" }) && s.layers.find((l) => l.type === "waveform").props.bars === 34);
+check("default props", eq(s.layers.find((l) => l.type === "lowerThird").props, { handle: "", subtitle: "" }) && s.layers.find((l) => l.type === "trackInfo").props.bars === 34);
 
 // Aspect fractions
 check("aspect ratios", near(aspectRatio("16:9"), 16 / 9) && near(aspectRatio("9:16"), 9 / 16) && aspectRatio("1:1") === 1 && near(aspectRatio("nope"), 16 / 9));
@@ -87,7 +85,7 @@ check("no readable layers keeps the aspect", eq(parseScene({ aspect: "1:1", laye
 const dirty = parseScene({
   aspect: "4:3",
   layers: [
-    { id: "a", type: "title", frame: { x: -1, y: 2, w: 5, h: 0 } },
+    { id: "a", type: "text", frame: { x: -1, y: 2, w: 5, h: 0 } },
     { id: "a", type: "lyrics", visible: false, props: { lines: 3 } },
     { type: "spaceship" },
   ],
@@ -129,7 +127,7 @@ check("no duration, no ticks", eq(rulerTicks(0), []));
 // ── Phase 2: editing ──
 
 // Add, duplicate, delete: rules
-check("+ Add Layer offers text, image and the song layers, never camera or background", eq(ADDABLE_TYPES, ["text", "image", "lowerThird", "lyrics", "waveform", "albumArt", "title"]));
+check("+ Add Layer offers text, image and the song layers, never camera or background", eq(ADDABLE_TYPES, ["text", "image", "lowerThird", "lyrics", "trackInfo"]));
 check("camera and background cannot be deleted or duplicated", ["camera", "background"].every((type) => {
   const r = layerRules({ type });
   return !r.canDelete && !r.canDuplicate && r.canReorder;
@@ -140,7 +138,7 @@ check("the recording lock stops add, delete, duplicate and reorder", (() => {
 })());
 check("new ids are unique", newLayerId(s, "text") === "text" && newLayerId(s, "lyrics") === "lyrics-2" && newLayerId(addLayer(s, "lyrics"), "lyrics") === "lyrics-3");
 const withText = addLayer(s, "text");
-check("an added layer goes in front, shown, with its defaults", withText.layers.length === 8 && withText.layers[7].type === "text" && withText.layers[7].visible && eq(withText.layers[7].props, { text: "", size: 1, color: "white" }) && s.layers.length === 7);
+check("an added layer goes in front, shown, with its defaults", withText.layers.length === 6 && withText.layers[5].type === "text" && withText.layers[5].visible && eq(withText.layers[5].props, { text: "", size: 1, color: "white" }) && s.layers.length === 5);
 // Overlays: the layers that are not full frame (camera and background are).
 const overlays = (sc) => sc.layers.filter((l) => !(l.frame.w >= 0.99 && l.frame.h >= 0.99));
 const clashes = (sc, id) => {
@@ -149,23 +147,18 @@ const clashes = (sc, id) => {
 };
 const insideSafe = (f) => f.x >= 0.05 - 1e-9 && f.y >= 0.05 - 1e-9 && f.x + f.w <= 0.95 + 1e-9 && f.y + f.h <= 0.95 + 1e-9;
 check("overlap test: touching edges are not an overlap", !framesOverlap({ x: 0, y: 0, w: 0.5, h: 0.5 }, { x: 0.5, y: 0, w: 0.5, h: 0.5 }) && framesOverlap({ x: 0, y: 0, w: 0.5, h: 0.5 }, { x: 0.4, y: 0.4, w: 0.5, h: 0.5 }));
-// The default scene: the title card holds the album art and the waveform by
-// design; otherwise no overlay touches another, at every aspect.
+// The default scene: no overlay touches another, at every aspect.
 for (const a of ASPECTS) {
   const sc = defaultScene(a);
   const f = (type) => sc.layers.find((l) => l.type === type).frame;
-  const groups = [["title", "albumArt", "waveform"], ["lyrics"], ["lowerThird"]];
-  const inCard = ["albumArt", "waveform"].every((type) => {
-    const c = f("title"), g = f(type);
-    return g.x >= c.x && g.y >= c.y && g.x + g.w <= c.x + c.w + 1e-9 && g.y + g.h <= c.y + c.h + 1e-9;
-  });
+  const groups = [["trackInfo"], ["lyrics"], ["lowerThird"]];
   let apart = true;
   for (let i = 0; i < groups.length; i++) {
     for (let j = i + 1; j < groups.length; j++) {
       for (const p of groups[i]) for (const q of groups[j]) if (framesOverlap(f(p), f(q))) apart = false;
     }
   }
-  check(`default ${a}: album art and waveform inside the title card, no other overlay overlaps`, inCard && apart);
+  check(`default ${a}: no overlay overlaps another`, apart);
   check(`default ${a}: a new text layer lands on no overlay, inside the safe inset`, clashes(addLayer(sc, "text"), "text").length === 0 && insideSafe(addLayer(sc, "text").layers.at(-1).frame));
   check(`default ${a}: text then image do not land on each other`, (() => {
     const two = addLayer(addLayer(sc, "text"), "image");
@@ -182,21 +175,26 @@ check("free spot: nowhere free, 2% further per layer of the type (unavoidable)",
 })());
 check("camera, background and unknown types are not added", addLayer(s, "camera") === s && addLayer(s, "background") === s && addLayer(s, "rocket") === s);
 check("adding while locked does nothing", addLayer(s, "text", { locked: true }) === s);
-const dup = duplicateLayer(s, "waveform");
-const dl = dup.layers[dup.layers.findIndex((l) => l.id === "waveform") + 1];
-check("duplicate sits just in front, same size and props, on no other overlay", dl.id === "waveform-2" && near(dl.frame.w, defaultFrame("waveform").w) && eq(dl.props, { bars: 34 }) && clashes(dup, "waveform-2").length === 0);
+const dup = duplicateLayer(setLayerProps(s, "trackInfo", { waveform: false }), "trackInfo");
+const dl = dup.layers[dup.layers.findIndex((l) => l.id === "trackInfo") + 1];
+check("duplicate sits just in front, same size and props, on no other overlay", dl.id === "trackInfo-2" && near(dl.frame.w, defaultFrame("trackInfo").w) && eq(dl.props, { art: true, title: true, waveform: false, showArtist: true, bars: 34 }) && clashes(dup, "trackInfo-2").length === 0);
+check("a second Track Info can be added, every part on, on no other overlay", (() => {
+  const two = addLayer(s, "trackInfo");
+  const l2 = two.layers.at(-1);
+  return l2.id === "trackInfo-2" && l2.props.art && l2.props.title && l2.props.waveform && clashes(two, "trackInfo-2").length === 0 && near(l2.frame.w, defaultFrame("trackInfo").w);
+})());
 check("duplicating the lower third does not cover the first", clashes(duplicateLayer(s, "lowerThird"), "lowerThird-2").length === 0);
-check("duplicate is a deep copy", (dl.props.bars = 4, s.layers.find((l) => l.id === "waveform").props.bars === 34));
+check("duplicate is a deep copy", (dl.props.bars = 4, s.layers.find((l) => l.id === "trackInfo").props.bars === 34));
 check("camera is not duplicated or deleted", duplicateLayer(s, "camera") === s && deleteLayer(s, "camera") === s && deleteLayer(s, "background") === s);
-check("delete removes one layer", deleteLayer(s, "lyrics").layers.length === 6 && !deleteLayer(s, "lyrics").layers.some((l) => l.id === "lyrics"));
+check("delete removes one layer", deleteLayer(s, "lyrics").layers.length === 4 && !deleteLayer(s, "lyrics").layers.some((l) => l.id === "lyrics"));
 check("delete of an unknown id or while locked does nothing", deleteLayer(s, "nope") === s && deleteLayer(s, "lyrics", { locked: true }) === s);
 
 // Reorder
-const front = reorderLayer(s, "lyrics", 6);
-check("reorder to the front", front.layers[6].id === "lyrics" && front.layers.length === 7);
-check("reorder to the back", reorderLayer(s, "albumArt", 0).layers[0].id === "albumArt");
-check("reorder clamps the index", reorderLayer(s, "lyrics", 99).layers[6].id === "lyrics" && reorderLayer(s, "lyrics", -5).layers[0].id === "lyrics");
-check("reorder to the same place or while locked returns the scene", reorderLayer(s, "lyrics", 3) === s && reorderLayer(s, "lyrics", 6, { locked: true }) === s);
+const front = reorderLayer(s, "lyrics", 4);
+check("reorder to the front", front.layers[4].id === "lyrics" && front.layers.length === 5);
+check("reorder to the back", reorderLayer(s, "trackInfo", 0).layers[0].id === "trackInfo");
+check("reorder clamps the index", reorderLayer(s, "lyrics", 99).layers[4].id === "lyrics" && reorderLayer(s, "lyrics", -5).layers[0].id === "lyrics");
+check("reorder to the same place or while locked returns the scene", reorderLayer(s, "lyrics", 3) === s && reorderLayer(s, "lyrics", 4, { locked: true }) === s);
 
 // Rename and properties
 check("rename sets a name of its own", renameLayer(s, "lyrics", "  Chorus words ").layers.find((l) => l.id === "lyrics").name === "Chorus words");
@@ -206,13 +204,20 @@ const p1 = setLayerProps(s, "lyrics", { lines: 12 });
 check("lyric lines are held to 3..7", p1.layers.find((l) => l.id === "lyrics").props.lines === 7 && setLayerProps(s, "lyrics", { lines: 1 }).layers.find((l) => l.id === "lyrics").props.lines === 3);
 const tl = setLayerProps(withText, "text", { text: "Hi", color: "purple", size: 9 }).layers.find((l) => l.id === "text").props;
 check("text: an unknown colour is white, the size is held to 0.5..3", tl.text === "Hi" && tl.color === "white" && tl.size === 3);
-check("lower third, camera, title props", (() => {
+check("lower third, camera, Track Info props", (() => {
   let x = setLayerProps(s, "lowerThird", { handle: "@me", subtitle: "Covers" });
   x = setLayerProps(x, "camera", { mirror: true });
-  x = setLayerProps(x, "title", { showArtist: false });
+  x = setLayerProps(x, "trackInfo", { showArtist: false });
   const get = (id) => x.layers.find((l) => l.id === id).props;
-  return eq(get("lowerThird"), { handle: "@me", subtitle: "Covers" }) && get("camera").mirror === true && get("title").showArtist === false;
+  return eq(get("lowerThird"), { handle: "@me", subtitle: "Covers" }) && get("camera").mirror === true && get("trackInfo").showArtist === false;
 })());
+check("Track Info parts switch one at a time, and stay true or false", (() => {
+  const x = setLayerProps(s, "trackInfo", { art: false, waveform: 0, title: "yes", bars: 999 }).layers.find((l) => l.id === "trackInfo").props;
+  return x.art === false && x.waveform === true && x.title === true && x.bars === 96 && setLayerProps(s, "trackInfo", { bars: "x" }).layers.at(-1).props.bars === 34;
+})());
+check("Track Info parts survive save and load", eq(parseScene(serializeScene(setLayerProps(s, "trackInfo", { art: false, showArtist: false }))).layers.find((l) => l.id === "trackInfo").props, { art: false, title: true, waveform: true, showArtist: false, bars: 34 }));
+check("a square Track Info is the one with only the album art", isSquareLayer({ type: "trackInfo", props: { art: true, title: false, waveform: false } })
+  && !isSquareLayer(s.layers.find((l) => l.id === "trackInfo")) && !isSquareLayer({ type: "trackInfo", props: { art: false, title: false, waveform: false } }) && !isSquareLayer({ type: "image", props: {} }));
 check("props survive save and load", eq(parseScene(serializeScene(setLayerProps(withText, "text", { text: "Yo", color: "red", size: 2 }))).layers.find((l) => l.id === "text").props, { text: "Yo", size: 2, color: "red" }));
 
 // Frames: move, resize, snap, nudge
@@ -233,11 +238,11 @@ check("resize from the top left keeps the bottom right", near(nw.x, 0.2) && near
 check("resize never goes under 3%", near(resizeFrame(card, "se", -1, -1, { snap: false }).w, 0.03) && near(resizeFrame(card, "nw", 1, 1, { snap: false }).h, 0.03));
 check("a resized edge snaps", near(resizeFrame(card, "ne", 0.445, 0, { tx: 0.01 }).x + resizeFrame(card, "ne", 0.445, 0, { tx: 0.01 }).w, 0.95, 1e-12));
 check("resize is held inside the output", (() => { const r = resizeFrame(card, "se", 5, 5, { snap: false }); return near(r.x + r.w, 1) && near(r.y + r.h, 1); })());
-const nudged = nudgeLayer(s, "waveform", 0.01, 0.05).layers.find((l) => l.id === "waveform").frame;
-check("nudge moves by fractions", near(nudged.x, defaultFrame("waveform").x + 0.01) && near(nudged.y, defaultFrame("waveform").y + 0.05));
+const nudged = nudgeLayer(s, "trackInfo", -0.01, 0.05).layers.find((l) => l.id === "trackInfo").frame;
+check("nudge moves by fractions", near(nudged.x, defaultFrame("trackInfo").x - 0.01) && near(nudged.y, defaultFrame("trackInfo").y + 0.05));
 check("nudge stops at the edge", near(nudgeLayer(s, "lowerThird", -1, 0).layers.find((l) => l.id === "lowerThird").frame.x, 0));
 check("setLayerFrame clamps", eq(setLayerFrame(s, "lyrics", { x: -1, y: 0.5, w: 0.5, h: 0.2 }).layers.find((l) => l.id === "lyrics").frame, { x: 0, y: 0.5, w: 0.5, h: 0.2 }));
-check("the front-most shown layer is picked", layerAt(s, 0.7, 0.1).id === "albumArt" && layerAt(s, 0.95, 0.05).id === "title" && layerAt(s, 0.95, 0.22).id === "waveform" && layerAt(s, 0.3, 0.5).id === "camera");
+check("the front-most shown layer is picked", layerAt(s, 0.7, 0.1).id === "trackInfo" && layerAt(s, 0.95, 0.22).id === "trackInfo" && layerAt(s, 0.8, 0.8).id === "lyrics" && layerAt(s, 0.3, 0.5).id === "camera");
 check("hidden layers are not picked", layerAt(withLayerVisible(s, "camera", false), 0.3, 0.5) === null);
 
 // Undo history
@@ -300,6 +305,126 @@ const withPic = setLayerProps(addLayer(defaultScene(), "image"), "image", { imag
 check("the picture's key survives save and load", parseScene(serializeScene(withPic)).layers.find((l) => l.id === "image").props.imageKey === ik);
 check("a bad picture key is dropped", parseScene(serializeScene(setLayerProps(withPic, "image", { imageKey: "../../x y" }))).layers.find((l) => l.id === "image").props.imageKey === "");
 check("the background takes a picture too", defaultScene().layers.find((l) => l.type === "background").props.imageKey === "");
+
+// ── Version 1 scenes: Song Title, Album Art and Waveform become Track Info ──
+// A version 1 scene as that build saved it: its default frames per aspect.
+const v1px = (x, y, w, h, W, H) => ({ x: x / W, y: y / H, w: w / W, h: h / H });
+const V1_FRAMES = {
+  "16:9": { title: v1px(472, 8, 238, 108, 716, 403), albumArt: v1px(482, 18, 88, 88, 716, 403), waveform: v1px(582, 74, 118, 28, 716, 403) },
+  "9:16": { title: v1px(16, 76, 371, 140, 403, 716), albumArt: v1px(29, 89, 114, 114, 403, 716), waveform: v1px(159, 162, 215, 36, 403, 716) },
+  "1:1": { title: v1px(197, 8, 280, 124, 483, 483), albumArt: v1px(209, 19, 101, 101, 483, 483), waveform: v1px(324, 84, 142, 32, 483, 483) },
+};
+const v1Scene = (aspect = "16:9") => {
+  const now = defaultScene(aspect);
+  const keep = now.layers.filter((l) => l.type !== "trackInfo");
+  const f = V1_FRAMES[aspect];
+  return JSON.parse(JSON.stringify({
+    v: 1, aspect, trim: null,
+    layers: [...keep,
+      { id: "title", type: "title", visible: true, frame: f.title, props: { showArtist: true } },
+      { id: "waveform", type: "waveform", visible: true, frame: f.waveform, props: { bars: 34 } },
+      { id: "albumArt", type: "albumArt", visible: true, frame: f.albumArt, props: {} }],
+  }));
+};
+const tiOf = (sc) => sc.layers.filter((l) => l.type === "trackInfo");
+for (const a of ASPECTS) {
+  const m = parseScene(JSON.stringify(v1Scene(a)));
+  check(`version 1 default ${a}: becomes the version 2 default scene`, eq(m, defaultScene(a)), JSON.stringify(tiOf(m)));
+}
+check("a version 1 scene is read as the current version", parseScene(v1Scene()).v === SCENE_VERSION && SCENE_VERSION === 2);
+{
+  // Customised: the card moved and renamed, the waveform hidden, a text layer between them.
+  const old = v1Scene();
+  const t = old.layers.find((l) => l.id === "title");
+  t.frame = { x: 0.1, y: 0.6, w: 0.4, h: 0.25 };
+  t.name = "Now playing";
+  t.props.showArtist = false;
+  old.layers.find((l) => l.id === "waveform").visible = false;
+  old.layers.find((l) => l.id === "waveform").props.bars = 20;
+  old.layers.splice(old.layers.findIndex((l) => l.id === "waveform"), 0, { id: "text", type: "text", visible: true, frame: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 }, props: { text: "Hi" } });
+  const m = parseScene(old);
+  const ti = tiOf(m);
+  check("customised: one Track Info, the old three gone", ti.length === 1 && !m.layers.some((l) => ["title", "albumArt", "waveform"].includes(l.type)));
+  check("customised: the Song Title's frame is kept", eq(ti[0].frame, { x: 0.1, y: 0.6, w: 0.4, h: 0.25 }));
+  check("customised: a hidden waveform is a part switched off", ti[0].props.art === true && ti[0].props.title === true && ti[0].props.waveform === false && ti[0].visible === true);
+  check("customised: the artist switch, bar count and own name are kept", ti[0].props.showArtist === false && ti[0].props.bars === 20 && ti[0].name === "Now playing");
+  check("customised: at the earliest of their places, the rest in order", eq(m.layers.map((l) => l.id), ["background", "camera", "lowerThird", "lyrics", "trackInfo", "text"]));
+}
+{
+  // Reordered: the album art at the back, the title in front of the lyrics.
+  const old = v1Scene();
+  const art = old.layers.find((l) => l.id === "albumArt");
+  old.layers = [art, ...old.layers.filter((l) => l !== art)];
+  check("the Track Info takes the earliest place of the three", parseScene(old).layers[0].type === "trackInfo" && parseScene(old).layers.length === 5);
+}
+{
+  const hide = (sc, ids) => (sc.layers.forEach((l) => { if (ids.includes(l.id)) l.visible = false; }), sc);
+  const art = tiOf(parseScene(hide(v1Scene(), ["albumArt"])))[0];
+  check("a hidden album art is the art part off", art.props.art === false && art.props.title && art.props.waveform && art.visible);
+  const all = tiOf(parseScene(hide(v1Scene(), ["albumArt", "title", "waveform"])))[0];
+  check("all three hidden: the card is hidden with every part on", all.visible === false && all.props.art && all.props.title && all.props.waveform);
+  const onlyTitle = tiOf(parseScene(hide(v1Scene(), ["albumArt", "waveform"])))[0];
+  check("only the title shown: title on, art and waveform off", onlyTitle.visible && onlyTitle.props.title && !onlyTitle.props.art && !onlyTitle.props.waveform);
+}
+{
+  // Only some of the three.
+  const only = (types) => {
+    const sc = v1Scene();
+    sc.layers = sc.layers.filter((l) => !["title", "albumArt", "waveform"].includes(l.type) || types.includes(l.type));
+    return tiOf(parseScene(sc));
+  };
+  const aw = only(["albumArt", "waveform"]);
+  check("album art and waveform, no title: the album art's frame, title off", aw.length === 1 && eq(aw[0].frame, V1_FRAMES["16:9"].albumArt) && aw[0].props.art && aw[0].props.waveform && !aw[0].props.title);
+  const w = only(["waveform"]);
+  check("the waveform alone: its frame, only the waveform on", w.length === 1 && eq(w[0].frame, V1_FRAMES["16:9"].waveform) && !w[0].props.art && !w[0].props.title && w[0].props.waveform);
+  const t = only(["title"]);
+  check("the title alone: the title card, only the title on", t.length === 1 && eq(t[0].frame, V1_FRAMES["16:9"].title) && t[0].props.title && !t[0].props.art && !t[0].props.waveform);
+  const none = only([]);
+  check("none of the three: no Track Info is made up", none.length === 0);
+}
+{
+  // Two of the same: the duplicate becomes a Track Info of its own, where it was.
+  const old = v1Scene();
+  old.layers.push({ id: "waveform-2", type: "waveform", visible: true, frame: { x: 0.1, y: 0.1, w: 0.2, h: 0.05 }, props: { bars: 40 }, name: "Second wave" });
+  old.layers.push({ id: "title-2", type: "title", visible: false, frame: { x: 0.1, y: 0.3, w: 0.3, h: 0.2 }, props: { showArtist: false } });
+  const m = parseScene(old);
+  const ti = tiOf(m);
+  check("two of the same: three Track Info layers, unique ids", ti.length === 3 && eq(ti.map((l) => l.id), ["trackInfo", "trackInfo-2", "trackInfo-3"]));
+  check("the first of each merged as usual", eq(ti[0].frame, V1_FRAMES["16:9"].title) && ti[0].props.art && ti[0].props.title && ti[0].props.waveform && ti[0].props.bars === 34);
+  check("a second waveform: only its waveform, its frame, bars and name", ti[1].props.waveform && !ti[1].props.art && !ti[1].props.title && ti[1].props.bars === 40 && ti[1].name === "Second wave" && eq(ti[1].frame, { x: 0.1, y: 0.1, w: 0.2, h: 0.05 }));
+  check("a second hidden title: hidden, only the title, its artist switch", ti[2].visible === false && ti[2].props.title && !ti[2].props.waveform && ti[2].props.showArtist === false);
+}
+{
+  // An id already called trackInfo (a text layer, say) is not taken over.
+  const old = v1Scene();
+  old.layers.push({ id: "trackInfo", type: "text", visible: true, frame: { x: 0.3, y: 0.4, w: 0.2, h: 0.1 }, props: {} });
+  const m = parseScene(old);
+  check("a taken id: the Track Info gets the next one", m.layers.find((l) => l.type === "trackInfo").id === "trackInfo-2" && m.layers.find((l) => l.type === "text").id === "trackInfo");
+}
+{
+  // Bad data: frames, props and visibility that are not what they should be.
+  const bad = parseScene({ v: 1, aspect: "16:9", layers: [
+    { type: "camera" },
+    { type: "title", frame: "nope", props: "x", visible: "yes" },
+    { type: "albumArt", frame: { x: -3, y: 9, w: 7, h: 0 } },
+    { type: "waveform", props: { bars: "lots" } },
+    null, 7, { type: "title", frame: null },
+  ] });
+  const ti = tiOf(bad);
+  check("bad data: no throw, the frame falls back and is clamped", ti.length === 2 && inUnit(ti[0].frame) && eq(ti[0].frame, { x: 0, y: 0.99, w: 1, h: 0.01 }));
+  check("bad data: props cleaned (bars default, artist shown)", ti[0].props.bars === 34 && ti[0].props.showArtist === true && ti[0].props.art && ti[0].props.title && ti[0].props.waveform);
+  check("bad data: a missing frame takes Track Info's default", eq(ti[1].frame, defaultFrame("trackInfo")));
+  check("migrateLayers passes non-arrays and plain lists through", eq(migrateLayers(null), []) && migrateLayers(s.layers) === s.layers);
+}
+{
+  // Idempotence: migrating twice, or loading what was saved, gives the same scene.
+  const old = v1Scene("9:16");
+  old.layers.find((l) => l.id === "albumArt").visible = false;
+  const once = parseScene(old);
+  check("idempotent: parse twice is the same", eq(parseScene(once), once) && eq(parseScene(serializeScene(once)), once));
+  check("idempotent: migrateLayers on its own output changes nothing", eq(migrateLayers(migrateLayers(old.layers)), migrateLayers(old.layers)));
+  check("the saved form carries version 2 and no old layer", serializeScene(once).v === 2 && !JSON.stringify(serializeScene(once)).includes("\"albumArt\""));
+}
 
 
 console.log(`\n${passed} passed, ${failed} failed`);

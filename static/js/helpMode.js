@@ -121,6 +121,18 @@ const HELP = [
   ["#t-master-btn", "help.masterChip", null, "master.title"],
   ["#t-export-btn", "help.export"],
   ["#t-export-master", "help.masterExportRow", null, "master.title"],
+  // Performance Mode's Scene Layers panel (streamer.js). The Track Info row
+  // comes before the other rows; its part switches are in Edit properties.
+  ['#streamer .sm-layer[data-type="trackInfo"] .sm-layer-pick', "help.smTrackInfo"],
+  ["#streamer .sm-layer-pick", "help.smLayer"],
+  ["#streamer .sm-layer-switch", "help.smLayerSwitch"],
+  ["#streamer .sm-layer-kebab", "help.smLayerMenu"],
+  ["#streamer .sm-layer-grip", "help.smLayerGrip"],
+  ["#streamer .sm-add", "help.smAddLayer"],
+  ['.sm-props-switch[data-part="art"]', "help.smPartArt"],
+  ['.sm-props-switch[data-part="title"]', "help.smPartTitle"],
+  ['.sm-props-switch[data-part="artist"]', "help.smPartArtist"],
+  ['.sm-props-switch[data-part="waveform"]', "help.smPartWaveform"],
 ];
 
 // Every option in Settings, by tab: the tab and option names are the dialog's

@@ -1,7 +1,8 @@
 // Streamer Mode: a workspace view over the studio, entered from the rail's
 // Streamer button (or the Mode menu), for building a performance video: a
-// scene of layers (camera, song title, lyrics, waveform, lower third, album
-// art, background, text, image) drawn over the song as it plays, a take
+// scene of layers (camera, Track Info: the song's title, artist, album art
+// and waveform in one card, lyrics, lower third, background, text, image)
+// drawn over the song as it plays, a take
 // timeline, and the recording and output settings.
 //
 // Like Karaoke Mode (karaoke/karaoke.js), it is a view, not a second player:
@@ -44,7 +45,7 @@ import {
   setLayerFrame, nudgeLayer, moveFrame, resizeFrame, layerAt,
   emptyHistory, pushHistory, undoHistory, redoHistory,
   trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery,
-  outputSize, imageKey, IMAGE_TYPES, IMAGE_MAX_BYTES, TABS, tabOf,
+  outputSize, imageKey, IMAGE_TYPES, IMAGE_MAX_BYTES, TABS, tabOf, isSquareLayer, TRACK_PARTS,
 } from "./streamerModel.js";
 import { preparePicture, saveImage, pictureFor, onPictureLoaded, forgetAllPictures, pruneImages } from "./sceneImages.js";
 import { getBeats, getBeatGridSnap } from "../beatgrid.js";
@@ -84,11 +85,9 @@ const TAB_LABEL = { builder: "streamer.tabBuilder", templates: "streamer.tabTemp
 const ASPECT_LABEL = { "16:9": "streamer.aspect169", "9:16": "streamer.aspect916", "1:1": "streamer.aspect11" };
 const LAYER_NAME = {
   camera: "streamer.layer.camera",
-  title: "streamer.layer.title",
+  trackInfo: "streamer.layer.trackInfo",
   lyrics: "streamer.layer.lyrics",
-  waveform: "streamer.layer.waveform",
   lowerThird: "streamer.layer.lowerThird",
-  albumArt: "streamer.layer.albumArt",
   background: "streamer.layer.background",
   text: "streamer.layer.text",
   image: "streamer.layer.image",
@@ -115,7 +114,7 @@ let scene = defaultScene();
 let sceneJob = null;
 let sceneToken = 0;
 let history = emptyHistory();
-let selected = "title";
+let selected = "trackInfo";
 let tab = "builder";
 let safeZones = readSafeZones();
 // The recording lock (phase 4 sets it): no adding, deleting or reordering.
@@ -1308,7 +1307,8 @@ function paintTransport(hasTrack) {
 function waveBars() {
   const src = overviewPeaks();
   const names = audibleStems();
-  const layer = scene.layers.find((l) => l.type === "waveform");
+  // One bar count for the scene: the first Track Info's (34 by default).
+  const layer = scene.layers.find((l) => l.type === "trackInfo");
   const n = layer?.props?.bars || 34;
   const sig = `${src ? src.data && Object.keys(src.data).length : 0}|${names.join(",")}|${n}`;
   if (painted.barsSig !== sig || painted.barsSrc !== src) {
@@ -1417,7 +1417,8 @@ function paintPreview(tNow, meta, lyrics, data) {
   paintSelBox(f);
 }
 
-/** The selected layer's handles, over its frame (the album art's square). */
+/** The selected layer's handles, over its frame (a Track Info with only the
+ * album art: the art's square). */
 function paintSelBox(f) {
   const box = ui.builder.selbox;
   const layer = selected && scene.layers.find((l) => l.id === selected && l.visible);
@@ -1427,7 +1428,7 @@ function paintSelBox(f) {
   }
   let w = layer.frame.w * f.w;
   let h = layer.frame.h * f.h;
-  if (layer.type === "albumArt") w = h = Math.min(w, h);
+  if (isSquareLayer(layer)) w = h = Math.min(w, h);
   box.hidden = false;
   box.style.left = `${f.x + layer.frame.x * f.w}px`;
   box.style.top = `${f.y + layer.frame.y * f.h}px`;
@@ -1534,14 +1535,12 @@ function layerSub(layer, meta, lyrics) {
       if (c.live) return t("streamer.sub.cameraLive", { name: cameraName(c.label), width: c.width || "?", height: c.height || "?" });
       return t("streamer.sub.cameraNone");
     }
-    case "title": return [meta.title, layer.props?.showArtist === false ? "" : meta.artist].filter(Boolean).join("\n") || t("streamer.sub.noSong");
+    case "trackInfo": return t(TRACK_PARTS.some((p) => layer.props?.[p] !== false) ? "streamer.sub.trackInfo" : "streamer.sub.trackInfoEmpty");
     case "lyrics": {
       if (!lyrics.length) return t("streamer.sub.noLyrics");
       return lyrics.slice(0, 2).map((l) => l.text).join("\n");
     }
-    case "waveform": return t("streamer.sub.waveform");
     case "lowerThird": return `${layer.props?.handle || t("streamer.lowerHandle")}  |  ${layer.props?.subtitle || t("streamer.lowerSub")}`;
-    case "albumArt": return t("streamer.sub.albumArt");
     case "background": return t(layer.props?.imageKey ? "streamer.sub.imageChosen" : "streamer.sub.background");
     case "text": return layer.props?.text || t("streamer.sub.textEmpty");
     case "image": return t(layer.props?.imageKey ? "streamer.sub.imageChosen" : "streamer.sub.image");
@@ -1605,6 +1604,7 @@ function paintLayers(meta, lyrics) {
 function layerRow(layer) {
   const li = el("li", "sm-layer");
   li.dataset.layer = layer.id;
+  li.dataset.type = layer.type;
   // The handle drags the row up or down the list (the drawing order); with
   // the keyboard, Alt and the up or down arrow move it one place.
   const grip = el("span", "sm-layer-grip");
@@ -1615,7 +1615,7 @@ function layerRow(layer) {
   const pick = button("sm-layer-pick");
   const thumb = el("span", `sm-layer-thumb sm-thumb-${layer.type}`);
   let art = null;
-  if (layer.type === "title" || layer.type === "albumArt") {
+  if (layer.type === "trackInfo") {
     art = el("img", "sm-thumb-art");
     art.alt = "";
     art.referrerPolicy = "no-referrer";
@@ -1906,9 +1906,26 @@ function openProps(id, anchor) {
         el("p", "sm-props-hint", t("streamer.props.mirrorHint")),
       );
       break;
-    case "title":
-      body.append(switchField("streamer.props.showArtist", layer.props.showArtist !== false, (on) => set({ showArtist: on })));
+    case "trackInfo": {
+      // One switch per part, and the artist line under the title's.
+      const artist = makeSwitch("sm-props-switch sm-props-sub", "streamer.props.showArtist", layer.props.showArtist !== false, (on) => set({ showArtist: on }));
+      artist.b.dataset.part = "artist";
+      const artistOn = (on) => {
+        artist.b.disabled = !on;
+        artist.b.setAttribute("aria-disabled", String(!on));
+      };
+      artistOn(layer.props.title !== false);
+      for (const part of TRACK_PARTS) {
+        const sw = makeSwitch("sm-props-switch", `streamer.props.part.${part}`, layer.props[part] !== false, (on) => {
+          set({ [part]: on });
+          if (part === "title") artistOn(on);
+        });
+        sw.b.dataset.part = part;
+        body.append(sw.b);
+        if (part === "title") body.append(artist.b);
+      }
       break;
+    }
     case "image":
     case "background":
       body.append(pictureFields(layer, set));
