@@ -574,6 +574,33 @@ test.describe("Streamer Mode polish", () => {
     expect(await ev(page, () => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
   });
 
+  // The preview gives way so no control needs scrolling: the workspace, the
+  // right panel and the drawer (the Scene Layers list may scroll inside).
+  for (const [w, h] of [[1920, 1080], [1600, 900], [1366, 768], [1280, 720]]) {
+    test(`${w} x ${h}: every control fits without scrolling`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await openStudio(page);
+      await openStreamer(page);
+      const out = sm(page, ".sm-output-btn");
+      if (await out.isVisible()) await out.click();
+      const over = await ev(page, () => {
+        const root = document.querySelector("#streamer");
+        const found = [];
+        for (const e of [root, ...root.querySelectorAll("*")]) {
+          if (e.closest(".sm-layer-list") || !e.getClientRects().length) continue;
+          const oy = getComputedStyle(e).overflowY;
+          if ((e === root || oy === "auto" || oy === "scroll") && e.scrollHeight > e.clientHeight + 1) found.push(`${e.className} ${e.scrollHeight}>${e.clientHeight}`);
+        }
+        return found;
+      });
+      expect(over).toEqual([]);
+      const preview = await sm(page, ".sm-preview").boundingBox();
+      expect(preview.width).toBeGreaterThanOrEqual(359);
+      const go = await sm(page, ".sm-export-go").boundingBox();
+      expect(go.y + go.height).toBeLessThanOrEqual(h);
+    });
+  }
+
   test("no song open: the view says so and nothing under it is reachable", async ({ page }) => {
     await page.goto("/");
     await openStreamer(page);
