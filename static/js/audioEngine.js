@@ -25,7 +25,7 @@ import {
 } from "./pitchBus.js";
 import { createPlaybackContext } from "./audioContext.js";
 import { createTickLoop } from "./tickLoop.js";
-import { loadStretchWorklet, pipelineLatencySeconds as stretchLatency } from "./tempoStage.js";
+import { loadStretchWorklet, disposeStretchNode, pipelineLatencySeconds as stretchLatency } from "./tempoStage.js";
 import { createEngineFx, engineFxApi } from "./fxChain.js";
 
 export function createAudioEngine(stems, { onTime, onEnded, context } = {}) {
@@ -66,6 +66,8 @@ export function createAudioEngine(stems, { onTime, onEnded, context } = {}) {
   let _tempoStage = null;
   const _workletReady = (ctx.audioWorklet
     ? loadStretchWorklet(ctx.audioWorklet).then(() => {
+        // Destroyed while the module loaded: no node, or nothing would close its port.
+        if (destroyed) return;
         stNode = new AudioWorkletNode(ctx, 'soundtouch-processor', {
           numberOfInputs: INPUT_COUNT,
           numberOfOutputs: 1,
@@ -422,9 +424,12 @@ export function createAudioEngine(stems, { onTime, onEnded, context } = {}) {
     tickLoop.dispose();
     ctx.removeEventListener("statechange", onCtxStateChange);
     tracks.clear();
-    if (stNode) { try { stNode.disconnect(); } catch { /* noop */ } }
+    // The node stops before its context closes (tempoStage.js): an active
+    // processor keeps the node, the closed context and this engine alive.
+    const node = stNode;
+    stNode = null;
     fx.dispose();
-    if (ownsCtx) ctx.close().catch(() => {});
+    disposeStretchNode(node, ctx, ownsCtx);
   }
 
   return {
