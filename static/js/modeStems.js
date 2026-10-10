@@ -19,11 +19,10 @@
 // reloads only when the two modes show different lanes.
 
 import { storeGet, storeSet } from "./utils.js";
-import { currentJobId, audioEngine, totalDuration, loopEnabled, loopStart, loopEnd } from "./state.js";
-import { transport, setPlayheadTime, setLoopRange } from "./transport.js";
+import { currentJobId } from "./state.js";
 import { setLaneLayout, shownLaneLayout } from "./player.js";
 import { mixModeInForce, onMixModeSettled } from "./mixMode.js";
-import { requestTakesReload } from "./capture/takeLanes.js";
+import { reloadKeepingPlace } from "./reloadPlace.js";
 import {
   BASE_STEMS, choiceKey, parseChoice, serializeChoice, mergeChoice, modeLayout, layoutLanes,
   layoutSignature, songDefaultLanes, splitFreezePatches, STEM_MODES, LANE_MODES, VOICE_MODES,
@@ -263,61 +262,9 @@ export async function extractIntoOpenSong(stems, voice, studioMode) {
 
 // ── Reload with the place kept ──
 
-let pending = null;
-let seekTimer = 0;
-
-function now() {
-  const v = transport()?.getCurrentTime?.();
-  return Number.isFinite(v) ? v : 0;
-}
-
-/**
- * Reload `jobId`'s lanes (catalog.js loadTrackIntoStudio, through the takes
- * reload event) and put the playhead and loop back where they were once the
- * new engine is up. A second reload inside the window (Streamer's own, on
- * the same switch) is followed too: the place is restored after each.
- */
-export function reloadKeepingPlace(jobId) {
-  if (!jobId) return;
-  const keep = pending && pending.job === jobId
-    ? pending
-    : {
-        job: jobId,
-        t: now(),
-        loop: loopEnabled && loopEnd > loopStart ? { start: loopStart, end: loopEnd } : null,
-      };
-  pending = { ...keep, engine: audioEngine, readyAt: 0, settledAt: 0, until: performance.now() + 20000 };
-  requestTakesReload(jobId);
-  clearInterval(seekTimer);
-  seekTimer = setInterval(finishReload, 100);
-}
-
-function finishReload() {
-  const p = pending;
-  if (!p || currentJobId !== p.job || performance.now() > p.until) {
-    pending = null;
-    clearInterval(seekTimer);
-    return;
-  }
-  if (!(audioEngine && audioEngine !== p.engine && totalDuration > 0 && transport())) return;
-  const nowMs = performance.now();
-  if (!p.readyAt) p.readyAt = nowMs;
-  // The new engine settles its own position a moment after it is up.
-  if (nowMs - p.readyAt < 300) return;
-  if (p.loop && !loopEnabled) setLoopRange(p.loop.start, p.loop.end);
-  if (p.t > 0 && Math.abs(now() - p.t) >= 0.25) {
-    setPlayheadTime(p.t);
-    p.settledAt = 0;
-    return;
-  }
-  // Held for a second and a half: done, unless another engine came up.
-  if (!p.settledAt) p.settledAt = nowMs;
-  if (nowMs - p.settledAt > 1500) {
-    p.engine = audioEngine;
-    pending = null;
-    clearInterval(seekTimer);
-  }
-}
+// One helper for every reload of the open song that the user did not ask
+// for by choosing a song: here, Karaoke's lanes and Streamer's "I play".
+export { reloadKeepingPlace };
 
 // ── Mode switches ──
 

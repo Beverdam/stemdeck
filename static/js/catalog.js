@@ -13,6 +13,7 @@ import {
 } from "./queue.js";
 import { fmtTime, isReimportableSource, storeGet, storeSet } from "./utils.js";
 import { takeStemsFromJob } from "./capture/takeLanes.js";
+import { inLibraryList, libraryDeleteTrackId } from "./libraryDeleteKey.js";
 import { notifyFailure, setReleasePending, dismissFailuresByJobId, dismissFailuresByKind } from "./notifications.js";
 // Aliased (not the bare "t") -- this file already uses "t"/"tr" as local
 // variable names for track objects and table rows in several scopes.
@@ -1763,20 +1764,30 @@ function wireRailLibraryDrop() {
   });
 }
 
-function isTextEditingTarget(target) {
-  return Boolean(target?.closest?.("input, textarea, select, [contenteditable='true'], .folder-editor"));
-}
-
+/** Delete or Backspace moves a song to the Trash only from the library's
+ *  song rows (libraryDeleteKey.js has the rule and why). */
 function wireLibraryDeleteKeys() {
   if (document.body.dataset.libraryDeleteReady === "1") return;
   document.body.dataset.libraryDeleteReady = "1";
 
+  // A click on a row does not focus it, so where the last press landed is
+  // what says the user is on the list. Focus moving anywhere else ends it.
+  let lastPointerInList = false;
+  document.addEventListener("pointerdown", (e) => { lastPointerInList = inLibraryList(e.target); }, true);
+  document.addEventListener("focusin", (e) => {
+    if (e.target !== document.body && !inLibraryList(e.target)) lastPointerInList = false;
+  }, true);
+
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Delete" && e.key !== "Backspace") return;
-    if (isTextEditingTarget(e.target)) return;
-    if (!_currentTrackId || !tracks[_currentTrackId]) return;
+    const id = libraryDeleteTrackId(e, {
+      openTrackId: _currentTrackId,
+      lastPointerInList,
+      body: document.body,
+      root: document.documentElement,
+    });
+    if (!id || !tracks[id]) return;
     e.preventDefault();
-    moveTrackToTrash(_currentTrackId);
+    moveTrackToTrash(id);
   });
 }
 

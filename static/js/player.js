@@ -1034,6 +1034,7 @@ function hideNowPlayingArtist() {
 }
 
 export function destroyPlayer() {
+  clearLoadingTimers();
   document.querySelector(".app")?.classList.remove("is-import");
   document.querySelector(".app")?.classList.remove("engine-waveforms");
   document.querySelector(".app")?.classList.add("no-track");
@@ -1322,6 +1323,15 @@ function _applyLaneHeight(count) {
   return rowH - WAVEFORM_SEPARATOR_HEIGHT;
 }
 
+// The loading overlay's stall and give-up timers. Kept so the next load and
+// destroyPlayer() can clear them: a pending timer holds this whole scope (the
+// multitrack and its context) for up to a minute after the song is gone.
+let _loadingTimers = [];
+function clearLoadingTimers() {
+  for (const id of _loadingTimers) window.clearTimeout(id);
+  _loadingTimers = [];
+}
+
 export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, title = "", peaksPromise = null, hasVideo = false, videoStatus = null) {
   const rawStems = stems.filter((stem) => stem?.name && stem?.url);
   // Recorded takes ride along in `stems` as lanes named by take id. They must
@@ -1341,15 +1351,18 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   updatePitchAvailability(false);
   visualRenderToken += 1;
   const token = visualRenderToken;
-  window.setTimeout(() => {
-    const el = document.getElementById("waveLoadingOverlay");
-    if (token === visualRenderToken && el && !el.classList.contains("hidden")) {
-      el.classList.add("stalled");
-    }
-  }, 20000);
-  window.setTimeout(() => {
-    if (token === visualRenderToken) setWaveformLoading(false);
-  }, 60000);
+  clearLoadingTimers();
+  _loadingTimers = [
+    window.setTimeout(() => {
+      const el = document.getElementById("waveLoadingOverlay");
+      if (token === visualRenderToken && el && !el.classList.contains("hidden")) {
+        el.classList.add("stalled");
+      }
+    }, 20000),
+    window.setTimeout(() => {
+      if (token === visualRenderToken) setWaveformLoading(false);
+    }, 60000),
+  ];
   setCurrentJobId(jobId);
   resetMasterForSong();
   setTotalDuration(duration || 0);
@@ -2006,14 +2019,36 @@ function _drawPlaceholderWave() {
   }
 }
 
+// The footer canvas's size, kept rather than read every frame. This draw runs
+// every frame while playing, after the playhead has moved, so reading
+// clientWidth here forced a layout inside the frame's script, a second one
+// per frame (121 a second instead of 60). A ResizeObserver says when the size
+// changes, and redraws at once so the canvas never shows stretched.
+let _footerSize = null;
+let _footerSizeObs = null;
+function footerCanvasSize(canvas) {
+  if (typeof ResizeObserver !== "function") return { w: canvas.clientWidth, h: canvas.clientHeight };
+  if (_footerSizeObs?.target !== canvas) {
+    _footerSizeObs?.disconnect();
+    _footerSizeObs = new ResizeObserver(() => {
+      _footerSize = null;
+      if (_footerWavePeaks) _drawFooterWave(_lastFooterProgress);
+    });
+    _footerSizeObs.target = canvas;
+    _footerSizeObs.observe(canvas);
+    _footerSize = null;
+  }
+  _footerSize ??= { w: canvas.clientWidth, h: canvas.clientHeight };
+  return _footerSize;
+}
+
 function _drawFooterWave(progress) {
   _lastFooterProgress = progress;
   const canvas = document.getElementById("footer-waveform");
   if (!canvas) return;
   if (!_footerWavePeaks) { _drawPlaceholderWave(); return; }
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
+  const { w, h } = footerCanvasSize(canvas);
   if (!w || !h) return;
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
     canvas.width = Math.round(w * dpr);

@@ -185,6 +185,110 @@ const lanesCovered = () => {
   return c.contains("streamer-open") || c.contains("karaoke-open");
 };
 
+// Where the playhead line ends, measured only when the layout changes.
+//
+// The line over the lanes ends at the last lane, and the ruler's own line
+// ends there too. Both used to be measured every frame, after this frame's
+// writes, which forced a layout inside the frame's script on top of the one
+// the frame does anyway (121 a second instead of 60, measured with 45 takes,
+// 53 rows), to read numbers that had not changed. Now they are kept,
+// and measured again only when something that decides them changes: a row
+// added, removed or resized (an EQ panel, a take lane, the zoom, the window),
+// the ruler or the lanes' boxes resized, or a scroll that moves the lanes
+// under the ruler. Each of those re-measures and re-applies at once, in the
+// frame it happened, so the line looks exactly as it did.
+let _laneGeom = null; // { height, markerH } as CSS lengths; null: measure
+let _lanePct = null; // the playhead's last position, in percent
+let _laneWatched = null; // the layer the observers are on
+let _laneResize = null;
+let _laneRows = null;
+
+function measureLaneGeometry(layer, m) {
+  const rows = layer.querySelectorAll(":scope > .stem-waveform-row");
+  const last = rows[rows.length - 1];
+  const geom = { height: last ? `${last.offsetTop + last.offsetHeight}px` : "0px", markerH: null };
+  // The ruler's own line (waves.css .playhead-marker::after) shows through
+  // where no lane covers it: end it at the last lane too. Rects are in
+  // screen pixels and the app may be CSS-zoomed; the ruler's height in
+  // both units gives the factor back to layout pixels.
+  if (last) {
+    const zoom = rulerTime.getBoundingClientRect().height / (rulerTime.offsetHeight || 1) || 1;
+    const span = (last.getBoundingClientRect().bottom - m.getBoundingClientRect().top) / zoom;
+    // ::after starts 8px down and adds 26px to the variable.
+    geom.markerH = `${Math.max(0, span - 8 - 26)}px`;
+  }
+  return geom;
+}
+
+function applyLaneGeometry(line, m, geom) {
+  if (line.style.height !== geom.height) line.style.height = geom.height;
+  if (geom.markerH !== null && m.style.getPropertyValue("--wave-playhead-h") !== geom.markerH) {
+    m.style.setProperty("--wave-playhead-h", geom.markerH);
+  }
+}
+
+/** Measure and apply again now, where the line already is. */
+function refreshLaneGeometry() {
+  _laneGeom = null;
+  if (_lanePct === null || !totalDuration || lanesCovered()) return;
+  const m = rulerTime?.querySelector(".playhead-marker");
+  if (!m || !_laneLayer?.isConnected) return;
+  _laneGeom = measureLaneGeometry(_laneLayer, m);
+  applyLaneGeometry(laneLine(_laneLayer), m, _laneGeom);
+}
+
+// A scroll moves the lanes under the ruler (the marker's span), not the rows.
+function onLaneScroll(e) {
+  const t = e.target;
+  if (t === document || (t instanceof Node && (t.contains(_laneLayer) || t.contains(rulerTime)))) refreshLaneGeometry();
+}
+
+/**
+ * Watch what decides the geometry: the rows (added, removed, resized), the
+ * layer, the ruler, and every box between them and their common ancestor.
+ * Without ResizeObserver the geometry is measured every frame, as before.
+ */
+function watchLaneLayer(layer) {
+  if (_laneWatched === layer) return;
+  _laneResize?.disconnect();
+  _laneRows?.disconnect();
+  _laneWatched = layer;
+  _laneGeom = null;
+  if (typeof ResizeObserver !== "function" || typeof MutationObserver !== "function") {
+    _laneResize = null;
+    _laneRows = null;
+    return;
+  }
+  // The callback runs after layout and before paint: re-measured there, the
+  // frame that changed the layout is painted with the new geometry.
+  _laneResize = new ResizeObserver(refreshLaneGeometry);
+  const boxes = new Set([layer, rulerTime]);
+  const top = document.getElementById("lanes") || document.body;
+  for (const start of [layer, rulerTime]) {
+    for (let n = start?.parentElement; n && n !== document.body; n = n.parentElement) {
+      boxes.add(n);
+      if (n === top) break;
+    }
+  }
+  for (const row of layer.children) boxes.add(row);
+  for (const box of boxes) if (box) _laneResize.observe(box);
+  _laneRows = new MutationObserver((records) => {
+    for (const r of records) {
+      for (const n of r.addedNodes) if (n.nodeType === 1) _laneResize.observe(n);
+      for (const n of r.removedNodes) if (n.nodeType === 1) _laneResize.unobserve(n);
+    }
+    // The resize callback for a new row follows after layout; a removal has
+    // none, so measure on the next frame's update.
+    _laneGeom = null;
+  });
+  _laneRows.observe(layer, { childList: true });
+  if (!onLaneScroll.added) {
+    document.addEventListener("scroll", onLaneScroll, { capture: true, passive: true });
+    window.addEventListener("resize", refreshLaneGeometry);
+    onLaneScroll.added = true;
+  }
+}
+
 export function updatePlayheadMarker(currentSec) {
   if (!playheadMarker || !totalDuration || lanesCovered()) return;
   const m = rulerTime.querySelector(".playhead-marker");
@@ -195,29 +299,19 @@ export function updatePlayheadMarker(currentSec) {
     // zoom scales getBoundingClientRect() values, while left/width
     // styles are interpreted in unzoomed layout pixels.
     const pct = Math.max(0, Math.min(100, (currentSec / totalDuration) * 100));
-    m.style.left = `${pct}%`;
+    _lanePct = pct;
     // The same line over the lanes (waves.css), above a video track's frames.
     if (!_laneLayer?.isConnected) _laneLayer = document.querySelector(".stem-waveform-layer");
+    if (_laneLayer) watchLaneLayer(_laneLayer);
+    // Measured before this frame's writes, so the read finds the layout as
+    // the last frame left it rather than forcing it again.
+    if (_laneLayer && (!_laneGeom || !_laneResize)) _laneGeom = measureLaneGeometry(_laneLayer, m);
+    m.style.left = `${pct}%`;
     if (_laneLayer) {
       const line = laneLine(_laneLayer);
       // Ends at the last lane: the + track row under it is not a lane.
-      // Measured before anything is written this frame, so the read finds
-      // the layout clean and costs nothing to bring up to date.
-      const rows = _laneLayer.querySelectorAll(":scope > .stem-waveform-row");
-      const last = rows[rows.length - 1];
-      const height = last ? `${last.offsetTop + last.offsetHeight}px` : "0px";
       line.style.left = `${pct}%`;
-      if (line.style.height !== height) line.style.height = height;
-      // The ruler's own line (waves.css .playhead-marker::after) shows through
-      // where no lane covers it: end it at the last lane too. Rects are in
-      // screen pixels and the app may be CSS-zoomed; the ruler's height in
-      // both units gives the factor back to layout pixels.
-      if (last) {
-        const zoom = rulerTime.getBoundingClientRect().height / (rulerTime.offsetHeight || 1) || 1;
-        const span = (last.getBoundingClientRect().bottom - m.getBoundingClientRect().top) / zoom;
-        // ::after starts 8px down and adds 26px to the variable.
-        m.style.setProperty("--wave-playhead-h", `${Math.max(0, span - 8 - 26)}px`);
-      }
+      applyLaneGeometry(line, m, _laneGeom);
     }
   }
 }
@@ -610,6 +704,26 @@ export function togglePlayPause() {
     let startPos = eng.getCurrentTime?.() ?? 0;
     if (totalDuration > 0 && startPos >= totalDuration) startPos = 0;
     if (!_armCountIn(eng, startPos)) eng.play();
+    playBtn.classList.add("playing");
+    stopBtn.classList.remove("stopped");
+  } else {
+    _playWhenReady();
+  }
+}
+
+/**
+ * Play on from where the playhead is: no count-in and no snap to the loop
+ * start, which are for a press of Play. For playback that was going before a
+ * reload of the song (reloadPlace.js), so it carries on where it stopped.
+ */
+export function resumePlayback() {
+  const eng = audioEngine;
+  const tx = eng ?? multitrack;
+  if (!tx || tx.isPlaying()) return;
+  const ctx = tx.audioContext;
+  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+  if (eng) {
+    eng.play();
     playBtn.classList.add("playing");
     stopBtn.classList.remove("stopped");
   } else {

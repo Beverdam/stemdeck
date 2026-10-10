@@ -21,8 +21,9 @@
 // recording (streamerRecord.js) and export (streamerExport.js).
 
 import { t, onLanguageChange } from "../i18n.js";
-import { currentJobId, mixerState, trackIndex, totalDuration, audioEngine, loopEnabled, loopStart, loopEnd } from "../state.js";
-import { transport, setPlayheadTime, togglePlayPause, stopTransport, setLoopRange } from "../transport.js";
+import { currentJobId, mixerState, trackIndex, totalDuration } from "../state.js";
+import { transport, setPlayheadTime, togglePlayPause, stopTransport } from "../transport.js";
+import { reloadKeepingPlace } from "../reloadPlace.js";
 import { laneLabel, STEM_COLORS } from "../constants.js";
 import { karaokeLyrics } from "../lyrics.js";
 import { getCurrentTrackInfo } from "../catalog.js";
@@ -47,7 +48,7 @@ import {
 } from "./streamerModel.js";
 import { preparePicture, saveImage, pictureFor, onPictureLoaded, forgetAllPictures, pruneImages } from "./sceneImages.js";
 import { getBeats, getBeatGridSnap } from "../beatgrid.js";
-import { getTracks, requestTakesReload } from "../capture/takeLanes.js";
+import { getTracks } from "../capture/takeLanes.js";
 import { loadScene, saveScene, flushScene } from "./sceneStore.js";
 import {
   SETTINGS_KEY, NONE, defaultRecordingSettings, parseRecordingSettings, serializeRecordingSettings,
@@ -2605,8 +2606,6 @@ function feedLive(tNow) {
 // The open song's choice: { job, remove, present (stems with a file), loaded }.
 let part = { job: null, remove: "", present: [], loaded: false };
 let partToken = 0;
-// A reload to apply a new choice: the playhead goes back where it was.
-let pendingSeek = null;
 
 /** The song's stems on disk and Streamer's saved choice for it. */
 async function loadPart(job) {
@@ -2680,45 +2679,10 @@ function applyPart() {
   }
   setPlaybackExclusion(job, want);
   if (!job) return;
-  // The loop region is cleared by a load: kept here and set again after.
-  pendingSeek = {
-    job, t: now(), engine: audioEngine, until: performance.now() + 20000, readyAt: 0,
-    loop: loopEnabled && loopEnd > loopStart ? { start: loopStart, end: loopEnd } : null,
-  };
-  requestTakesReload(job);
-  // Checked by a timer, not the frame loop: a close reloads too, after the
-  // loop has stopped.
-  clearInterval(seekTimer);
-  seekTimer = setInterval(() => {
-    finishPartReload();
-    if (!pendingSeek || performance.now() > pendingSeek.until) {
-      pendingSeek = null;
-      clearInterval(seekTimer);
-    }
-  }, 100);
-}
-let seekTimer = 0;
-
-/** After a reload for the choice: the playhead back where it was. */
-function finishPartReload() {
-  if (!pendingSeek) return;
-  if (currentJobId !== pendingSeek.job) {
-    pendingSeek = null;
-    return;
-  }
-  if (!(audioEngine && audioEngine !== pendingSeek.engine && totalDuration > 0 && transport())) return;
-  // The new engine is up; its load settles its own position a moment later,
-  // so the seek waits a little and is checked until it holds.
-  const nowMs = performance.now();
-  if (!pendingSeek.readyAt) pendingSeek.readyAt = nowMs;
-  if (nowMs - pendingSeek.readyAt < 300) return;
-  const { t: t0, loop } = pendingSeek;
-  if (loop && !loopEnabled) setLoopRange(loop.start, loop.end);
-  if (t0 <= 0 || Math.abs(now() - t0) < 0.25) {
-    pendingSeek = null;
-    return;
-  }
-  setPlayheadTime(t0);
+  // The place (playhead, play state, loop) is kept across the reload by the
+  // same helper the modes use (reloadPlace.js). It runs on a timer, not the
+  // frame loop: a close reloads too, after the loop has stopped.
+  reloadKeepingPlace(job);
 }
 
 /** A part the musician plays, as "I play" names it: Keys and Voice, the
