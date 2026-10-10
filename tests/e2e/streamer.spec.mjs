@@ -154,16 +154,20 @@ test.describe("Streamer Mode", () => {
     await expect(page.locator("#streamer")).toBeHidden();
   });
 
-  test("tabs: Live Controls and Templates are not available yet", async ({ page }) => {
+  test("tabs: Scene Builder and Templates; Templates is not available yet", async ({ page }) => {
     await openStudio(page);
     await openStreamer(page);
+    const tabs = sm(page, "[role=tab]");
+    await expect(tabs).toHaveCount(2);
+    await expect(tabs.nth(0)).toHaveAttribute("data-tab", "builder");
+    await expect(tabs.nth(1)).toHaveAttribute("data-tab", "templates");
+    await expect(sm(page, '[role=tab][data-tab="live"]')).toHaveCount(0);
+    await expect(sm(page, ".sm-tabs")).not.toContainText("Live Controls");
     await expect(sm(page, '[role=tab][data-tab="builder"]')).toHaveAttribute("aria-selected", "true");
-    await sm(page, '[role=tab][data-tab="live"]').click();
-    await expect(page.locator("#streamerBuilderPanel")).toBeHidden();
-    await expect(page.locator("#streamerOtherPanel")).toContainText("Live Controls");
-    await expect(page.locator("#streamerOtherPanel")).toContainText("Not available yet.");
     await sm(page, '[role=tab][data-tab="templates"]').click();
+    await expect(page.locator("#streamerBuilderPanel")).toBeHidden();
     await expect(page.locator("#streamerOtherPanel")).toContainText("Templates");
+    await expect(page.locator("#streamerOtherPanel")).toContainText("Not available yet.");
     await sm(page, '[role=tab][data-tab="builder"]').click();
     await expect(page.locator("#streamerBuilderPanel")).toBeVisible();
     await expect(sm(page, ".sm-canvas")).toBeVisible();
@@ -441,10 +445,14 @@ test.describe("Streamer Mode: devices and meter", () => {
     await page.locator("#streamerRes").selectOption("720");
     await page.locator("#streamerFps").selectOption("24");
     await expect(sm(page, ".sm-heavy")).toBeHidden();
+    // Two switches: mixed audio and auto-stop. No metronome click.
+    await expect(sm(page, ".sm-out-switches [data-setting]")).toHaveCount(2);
+    await expect(sm(page, '[data-setting="includeClick"]')).toHaveCount(0);
     await sm(page, '[data-setting="autoStopAtEnd"]').click();
     await expect.poll(async () => (await savedSettings(page))?.resolution).toBe("720");
     expect((await savedSettings(page)).fps).toBe(24);
     expect((await savedSettings(page)).autoStopAtEnd).toBe(false);
+    expect("includeClick" in (await savedSettings(page))).toBe(false);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
     await openStreamer(page);
