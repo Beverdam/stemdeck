@@ -44,7 +44,7 @@ import {
   setLayerFrame, nudgeLayer, moveFrame, resizeFrame, layerAt,
   emptyHistory, pushHistory, undoHistory, redoHistory,
   trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery,
-  outputSize, imageKey, IMAGE_TYPES, IMAGE_MAX_BYTES,
+  outputSize, imageKey, IMAGE_TYPES, IMAGE_MAX_BYTES, TABS, tabOf,
 } from "./streamerModel.js";
 import { preparePicture, saveImage, pictureFor, onPictureLoaded, forgetAllPictures, pruneImages } from "./sceneImages.js";
 import { getBeats, getBeatGridSnap } from "../beatgrid.js";
@@ -80,8 +80,7 @@ import { shouldAutoStop, exportFileName, rawExtension, takeHoldStep, reviewStep 
 import { renderScene } from "./sceneRenderer.js";
 
 const SAFE_KEY = "stemdeck.streamer.safeZones";
-const TABS = ["builder", "live", "templates"];
-const TAB_LABEL = { builder: "streamer.tabBuilder", live: "streamer.tabLive", templates: "streamer.tabTemplates" };
+const TAB_LABEL = { builder: "streamer.tabBuilder", templates: "streamer.tabTemplates" };
 const ASPECT_LABEL = { "16:9": "streamer.aspect169", "9:16": "streamer.aspect916", "1:1": "streamer.aspect11" };
 const LAYER_NAME = {
   camera: "streamer.layer.camera",
@@ -723,7 +722,7 @@ function buildSide() {
   heavy.hidden = true;
   const switches = el("div", "sm-out-switches");
   const sw = {};
-  for (const [key, k] of [["recordMixedAudio", "streamer.recMixed"], ["includeClick", "streamer.recClick"], ["autoStopAtEnd", "streamer.recAutostop"]]) {
+  for (const [key, k] of [["recordMixedAudio", "streamer.recMixed"], ["autoStopAtEnd", "streamer.recAutostop"]]) {
     sw[key] = makeSwitch("", k, settings[key], (on) => setSetting({ [key]: on }));
     sw[key].b.dataset.setting = key;
     switches.append(sw[key].b);
@@ -789,8 +788,7 @@ function relabel() {
 // ── Tabs, aspect, safe zones, drawer ──
 
 function setTab(id) {
-  if (!TABS.includes(id)) return;
-  tab = id;
+  tab = tabOf(id);
   paintTabs();
   painted.scene = null;
 }

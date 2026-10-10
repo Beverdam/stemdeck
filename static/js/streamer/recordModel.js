@@ -158,11 +158,12 @@ export function exportFileName(title, artist, ext = "mp4") {
  * - the canvas at the scene's aspect, `resolution` and `fps`, fit "fill"
  *   (the recorded picture is the scene, already the canvas's shape);
  * - the kept range as span "range";
- * - the click, the lanes' EQ and the master when given;
+ * - never a click (Performance has no click switch);
+ * - the lanes' EQ and the master when given;
  * - `remove`: the part the musician played, left out of the backing.
  */
 export function buildRenderRequest({
-  mix, exclude = [], mixedAudio = true, includeClick = false, aspect = "16:9",
+  mix, exclude = [], mixedAudio = true, aspect = "16:9",
   resolution = "1080", fps = 30, range, fx = "", master = "", remove = "",
 }) {
   const names = [];
@@ -186,7 +187,7 @@ export function buildRenderRequest({
     // A take recorded at 4K (no longer offered) renders at 1080p.
     size: SHORT[resolution] ? String(resolution) : "1080",
     fps: Number(fps),
-    click: Boolean(includeClick),
+    click: false,
   };
   if (range) {
     body.span = "range";

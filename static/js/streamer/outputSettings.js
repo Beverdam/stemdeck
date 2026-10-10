@@ -4,7 +4,8 @@
 // RecordingSettings (stored per user in the app's store, sceneStore's
 // neighbour; deviceIds are per machine, which is where the store lives):
 //   { videoDeviceId, audioDeviceId, audioChannels, resolution, fps,
-//     recordMixedAudio, includeClick, autoStopAtEnd }
+//     recordMixedAudio, autoStopAtEnd }
+// (An includeClick from an older build is ignored: a take never has a click.)
 // A device id of "" is the default device, NONE is "no camera" or "no audio
 // input". Nothing here touches the DOM or a device.
 
@@ -32,7 +33,6 @@ export function defaultRecordingSettings() {
     resolution: "1080",
     fps: 30,
     recordMixedAudio: true,
-    includeClick: false,
     autoStopAtEnd: true,
   };
 }
@@ -57,7 +57,6 @@ export function parseRecordingSettings(raw) {
     resolution: resolutionOf(data.resolution),
     fps: FRAME_RATES.includes(Number(data.fps)) ? Number(data.fps) : d.fps,
     recordMixedAudio: flag(data.recordMixedAudio, d.recordMixedAudio),
-    includeClick: flag(data.includeClick, d.includeClick),
     autoStopAtEnd: flag(data.autoStopAtEnd, d.autoStopAtEnd),
   };
 }

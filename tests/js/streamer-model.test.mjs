@@ -10,6 +10,7 @@ import {
   emptyHistory, pushHistory, undoHistory, redoHistory, HISTORY_CAP,
   TRIM_MIN, trimRange, snapTime, withTrimPoint, pixelsPerSecond, tickStep, ticksEvery, ZOOM_MAX_PPS,
   IMAGE_MAX_BYTES, IMAGE_TYPES, downscaleSize, fitRect, imageKey,
+  TABS, tabOf,
 } from "../../static/js/streamer/streamerModel.js";
 
 let failed = 0;
@@ -20,6 +21,13 @@ function check(name, ok, detail = "") {
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const near = (a, b, e = 1e-9) => Math.abs(a - b) < e;
 const inUnit = (f) => f.x >= 0 && f.y >= 0 && f.w > 0 && f.h > 0 && f.x + f.w <= 1 + 1e-9 && f.y + f.h <= 1 + 1e-9;
+
+// Tabs: Scene Builder and Templates. Live Controls is gone, so a "live" from
+// an older build (or anything unknown) opens the Scene Builder, no error.
+check("two tabs: Scene Builder and Templates", eq(TABS, ["builder", "templates"]));
+check("a known tab is itself", tabOf("builder") === "builder" && tabOf("templates") === "templates");
+check("the removed live tab falls back to the Scene Builder", tabOf("live") === "builder");
+check("unknown or missing tabs fall back to the Scene Builder", [undefined, null, "", "LIVE", 7, {}].every((v) => tabOf(v) === "builder"));
 
 // Defaults
 const s = defaultScene();

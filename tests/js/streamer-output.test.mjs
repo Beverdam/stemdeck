@@ -17,15 +17,24 @@ const near = (a, b, e = 1e-9) => Math.abs(a - b) < e;
 
 // Defaults and serialization
 const d = defaultRecordingSettings();
-check("defaults: default devices, 1080p, 30 fps, mixed audio on, click off, auto-stop on", eq(d, {
-  videoDeviceId: "", audioDeviceId: "", audioChannels: null, resolution: "1080", fps: 30, recordMixedAudio: true, includeClick: false, autoStopAtEnd: true,
+check("defaults: default devices, 1080p, 30 fps, mixed audio on, auto-stop on", eq(d, {
+  videoDeviceId: "", audioDeviceId: "", audioChannels: null, resolution: "1080", fps: 30, recordMixedAudio: true, autoStopAtEnd: true,
 }));
 check("the settings key", SETTINGS_KEY === "stemdeck:streamer:recording");
 check("choices: 720p and 1080p only, no 4K", eq(RESOLUTIONS, ["720", "1080"]) && eq(FRAME_RATES, [24, 30, 60]));
 check("garbage gives the defaults", eq(parseRecordingSettings(null), d) && eq(parseRecordingSettings("{nope"), d) && eq(parseRecordingSettings(7), d));
-const mine = { videoDeviceId: "cam1", audioDeviceId: NONE, audioChannels: [1], resolution: "720", fps: 24, recordMixedAudio: false, includeClick: true, autoStopAtEnd: false };
+const mine = { videoDeviceId: "cam1", audioDeviceId: NONE, audioChannels: [1], resolution: "720", fps: 24, recordMixedAudio: false, autoStopAtEnd: false };
 check("round trip", eq(parseRecordingSettings(JSON.stringify(serializeRecordingSettings(mine))), mine));
-check("a wrong value takes its default, the rest is kept", eq(parseRecordingSettings({ ...mine, resolution: "8K", fps: 25, includeClick: "yes" }), { ...mine, resolution: "1080", fps: 30, includeClick: false }));
+check("a wrong value takes its default, the rest is kept", eq(parseRecordingSettings({ ...mine, resolution: "8K", fps: 25 }), { ...mine, resolution: "1080", fps: 30 }));
+// Settings saved before the click switch was removed: includeClick (on, off
+// or garbage) loads without an error and is dropped; the rest is kept.
+for (const old of [true, false, "yes"]) {
+  const saved = JSON.stringify({ ...mine, includeClick: old });
+  let got = null;
+  try { got = parseRecordingSettings(saved); } catch { got = null; }
+  check(`old saved includeClick=${JSON.stringify(old)} is ignored`, got !== null && eq(got, mine) && !("includeClick" in got));
+}
+check("an old includeClick is not written back", !("includeClick" in serializeRecordingSettings({ ...mine, includeClick: true })));
 check("numbers as strings are read", parseRecordingSettings({ resolution: 720, fps: "24" }).resolution === "720" && parseRecordingSettings({ fps: "24" }).fps === 24);
 check("serialize keeps only the fields", eq(Object.keys(serializeRecordingSettings({ ...d, extra: 1 })).sort(), Object.keys(d).sort()));
 

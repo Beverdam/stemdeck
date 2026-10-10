@@ -56,11 +56,12 @@ check("another extension for the raw recording", exportFileName("Song", "A", "we
 
 // The render request
 const mix = { names: ["vocals", "drums", "trk1"], gains: [1, 0.5, 1], pitches: [0, 0, 0] };
+// includeClick: an old caller's field, ignored (a take is never rendered with a click).
 const body = buildRenderRequest({ mix, exclude: ["trk1"], aspect: "9:16", resolution: "720", fps: 60, range, includeClick: true });
 check("the Streamer track is left out of the backing", eq(body.stems, ["vocals", "drums"]) && eq(body.gains, [1, 0.5]));
 check("canvas, size, rate, fit fill, no mirror", body.canvas === "9:16" && body.size === "720" && body.fps === 60 && body.fit === "fill" && body.mirror === false);
 check("the trim as span range", body.span === "range" && body.range_in === 30 && body.range_out === 40);
-check("click and take gain", body.click === true && body.take_gain === 1);
+check("never a click, even when an old caller asks; take gain 1", body.click === false && body.take_gain === 1);
 check("no pitches when nothing is transposed", !("pitches" in body));
 check("a take recorded at 4K asks the server for 1080", buildRenderRequest({ mix, range, aspect: "9:16", resolution: "2160", fps: 30 }).size === "1080" && buildRenderRequest({ mix, range, resolution: "720" }).size === "720");
 check("pitches when a lane is", eq(buildRenderRequest({ mix: { names: ["a", "b"], gains: [1, 1], pitches: [0, 2] }, range }).pitches, [0, 2]));

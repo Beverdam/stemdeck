@@ -33,7 +33,6 @@ export function renderRequest({ trackId, settings, aspect, range, remove = "" })
     mix,
     exclude: trackId ? [trackId] : [],
     mixedAudio: settings.recordMixedAudio,
-    includeClick: settings.includeClick,
     aspect,
     resolution: settings.resolution,
     fps: settings.fps,

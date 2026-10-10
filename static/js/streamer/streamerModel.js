@@ -19,6 +19,10 @@ import { currentLineIndex } from "../lyricsLookup.js";
 export const SCENE_VERSION = 1;
 export const ASPECTS = Object.freeze(["16:9", "9:16", "1:1"]);
 export const DEFAULT_ASPECT = "16:9";
+// The header's tabs, in order. Any other value (one from an older build, such
+// as the removed "live" tab) opens the Scene Builder.
+export const TABS = Object.freeze(["builder", "templates"]);
+export const tabOf = (id) => (TABS.includes(id) ? id : "builder");
 export const LAYER_TYPES = Object.freeze(["background", "camera", "lowerThird", "lyrics", "title", "waveform", "albumArt", "text", "image"]);
 // What + Add Layer offers, in its order. Camera and Background are the scene's
 // own and are never added (or duplicated, or deleted).

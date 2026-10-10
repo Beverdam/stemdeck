@@ -940,7 +940,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-swatch-blue { background: #6ea8ff; }
 .sm-swatch-green { background: #22c55e; }
 
-/* Live Controls and Templates: not there yet. */
+/* Templates: not there yet. */
 .sm-other {
   flex: 1;
   display: flex;
