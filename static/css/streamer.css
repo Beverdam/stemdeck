@@ -57,30 +57,54 @@ html.streamer-open .daw-footer { display: none !important; }
   background: var(--sm-card);
 }
 
-/* ── Centre column ── */
+/* ── Centre column ──
+   Every control fits the window without scrolling: the preview is the
+   elastic part. Its width comes from the Scene Builder's own size (the
+   builder is a size container, so a mode header that wraps is counted), held
+   by the room the layers need beside it and by the height the strip under
+   it and the timeline's smallest height leave (the --sm-* heights below,
+   tighter in a short window). Under 360 px of preview the column scrolls
+   instead of squeezing it further. */
 .sm-center {
-  /* The centre column's width, by layout (see the container queries). */
-  --sm-center-w: calc(100cqw - 318px);
   /* The Scene Layers panel: thumbnail, two lines of text, switch, menu. */
   --sm-layers-w: 320px;
+  --sm-gap: 8px;
+  --sm-head-h: 96px;
+  --sm-head-pad: 10px 12px;
+  --sm-ctl-h: 36px;
+  --sm-strip-h: 40px;
+  --sm-col-gap: 12px;
+  /* The take timeline's rows (zoom row, markers, ruler, gap, video, gap,
+     stems; the stem lanes take what height is left, up to twice the
+     design's) and its smallest height: those rows at their least, the
+     card's padding, and 8 px for the scrollbar a zoomed song shows. */
+  --sm-tl-pad: 6px;
+  --sm-video-h: 34px;
+  --sm-tl-rows: 32px minmax(34px, 46px) 24px 5px var(--sm-video-h) 4px minmax(64px, 136px);
+  --sm-tl-min: 217px;
+  --sm-ctl-top: 8px;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sm-gap);
   padding: 10px 8px 8px 10px;
+  /* Only when the window is too short for a 360 px preview. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* Mode header and tabs */
 .sm-head {
   flex: none;
-  height: 96px;
+  height: var(--sm-head-h);
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: var(--sm-head-pad);
 }
-.sm-head-row { height: 36px; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sm-head-row { height: var(--sm-ctl-h); display: flex; align-items: center; gap: 12px; min-width: 0; }
 .sm-head-icon { flex: none; }
 .sm-head-title { font-size: 17px; font-weight: 700; white-space: nowrap; }
 .sm-head-sep { flex: none; width: 1px; height: 20px; background: var(--sm-edge); }
@@ -117,7 +141,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-tabs-row { display: flex; align-items: center; gap: 8px; }
 .sm-tabs { display: flex; gap: 8px; min-width: 0; }
 .sm-tab {
-  height: 36px;
+  height: var(--sm-ctl-h);
   padding: 0 22px;
   box-sizing: border-box;
   border: 1px solid var(--sm-edge);
@@ -198,19 +222,26 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-safe .sm-switch { --sm-sw-w: 38px; --sm-sw-h: 20px; }
 
 /* ── Scene Builder ── */
-.sm-builder { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.sm-builder {
+  flex: 1;
+  /* A 360 px preview, the strip under it and the timeline at its least. */
+  min-height: calc(203px + var(--sm-col-gap) + var(--sm-strip-h) + var(--sm-gap) + var(--sm-tl-min));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sm-gap);
+  container-type: size;
+}
 .sm-builder[hidden] { display: none; }
 .sm-row { flex: none; display: flex; gap: 12px; }
 .sm-preview-col {
   flex: none;
   /* Everything the layers panel leaves, as long as the preview's 16:9
-     height still leaves the timeline its smallest height (336 px is the
-     column's padding, mode header, strip under the preview, gaps and that
-     timeline); never under 480 px. */
-  width: max(480px, min(var(--sm-center-w) - var(--sm-layers-w) - 12px, (100cqh - 336px) * 16 / 9));
+     height still leaves the strip under it and the timeline's smallest
+     height (cqw and cqh are the Scene Builder's); never under 360 px. */
+  width: max(360px, min(100cqw - var(--sm-layers-w) - 12px, (100cqh - var(--sm-col-gap) - var(--sm-strip-h) - var(--sm-gap) - var(--sm-tl-min)) * 16 / 9));
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sm-col-gap);
 }
 
 /* The preview: 16:9 on screen whatever the scene's aspect (pillarboxed). */
@@ -273,7 +304,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-rec-time { font: 500 12px var(--font-mono); color: var(--sm-text); padding: 0 9px; }
 
 /* Under the preview: Take Timeline, undo and redo, the clock */
-.sm-strip { flex: none; height: 40px; display: flex; gap: 8px; }
+.sm-strip { flex: none; height: var(--sm-strip-h); display: flex; gap: 8px; }
 .sm-strip .sm-card { border-radius: 8px; background: var(--sm-panel); }
 .sm-strip-title {
   display: flex;
@@ -307,7 +338,7 @@ html.streamer-open .daw-footer { display: none !important; }
   align-items: center;
   justify-content: center;
   width: 44px;
-  height: 36px;
+  height: var(--sm-ctl-h);
   padding: 0;
   box-sizing: border-box;
   border: 1px solid var(--sm-edge);
@@ -337,7 +368,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-layers {
   /* Its own width, a little more when the preview is held by the height. */
   flex: 1 1 var(--sm-layers-w);
-  max-width: 360px;
+  max-width: 420px;
   min-width: 0;
   contain: size;
   display: flex;
@@ -473,7 +504,7 @@ html.streamer-open .daw-footer { display: none !important; }
   min-height: 0;
   position: relative;
   overflow: hidden;
-  padding: 6px 14px 6px 10px;
+  padding: var(--sm-tl-pad) 14px var(--sm-tl-pad) 10px;
   display: flex;
 }
 .sm-tl-scroll {
@@ -491,10 +522,8 @@ html.streamer-open .daw-footer { display: none !important; }
   min-width: max-content;
   display: grid;
   grid-template-columns: var(--sm-label-w) var(--sm-tl-w, 100%);
-  /* zoom row, markers, ruler, gap, video, gap, stems */
-  /* The stem lanes take what height is left, up to twice the design's, and
-     never less than two readable lanes (the rest scrolls). */
-  grid-template-rows: 32px minmax(34px, 46px) 24px 5px 34px 4px minmax(64px, 136px);
+  /* zoom row, markers, ruler, gap, video, gap, stems (see .sm-center) */
+  grid-template-rows: var(--sm-tl-rows);
   column-gap: 8px;
   align-content: start;
 }
@@ -507,7 +536,7 @@ html.streamer-open .daw-footer { display: none !important; }
   margin-right: -8px;
   background: var(--sm-card);
 }
-.sm-zoom { position: absolute; right: 12px; top: 8px; display: flex; align-items: center; gap: 8px; z-index: 4; }
+.sm-zoom { position: absolute; right: 12px; top: var(--sm-ctl-top); display: flex; align-items: center; gap: 8px; z-index: 4; }
 .sm-zoom-btn { width: 30px; height: 28px; }
 .sm-zoom-btn:disabled { opacity: .4; cursor: default; }
 .sm-zoom-track { width: 110px; position: relative; height: 3px; border-radius: 2px; background: #2a333e; cursor: pointer; touch-action: none; }
@@ -587,7 +616,7 @@ html.streamer-open .daw-footer { display: none !important; }
    the room the icon took). */
 .sm-tl-label-stem > svg { display: none; }
 .sm-tl-label[hidden] { display: none; }
-.sm-tl-label-video { grid-column: 1; grid-row: 5; height: 34px; border-color: #2f5ba8; background: #121c2b; color: #8cb8ff; }
+.sm-tl-label-video { grid-column: 1; grid-row: 5; height: var(--sm-video-h); border-color: #2f5ba8; background: #121c2b; color: #8cb8ff; }
 .sm-tl-audio-labels {
   grid-column: 1;
   grid-row: 7;
@@ -727,7 +756,7 @@ html.streamer-open .daw-footer { display: none !important; }
    timeline card, level with the zoom control on the right. */
 /* Over the playhead's time label when the playhead is near the start (the
    clock under the preview shows the time too). */
-.sm-part { position: absolute; left: 12px; top: 8px; z-index: 6; display: flex; align-items: center; gap: 8px; padding-right: 6px; background: var(--sm-card); }
+.sm-part { position: absolute; left: 12px; top: var(--sm-ctl-top); z-index: 6; display: flex; align-items: center; gap: 8px; padding-right: 6px; background: var(--sm-card); }
 .sm-part-label { font-size: 12.5px; font-weight: 600; color: var(--sm-text-2); white-space: nowrap; }
 .sm-part-select { width: 170px; }
 .sm-part-select .sm-sel { height: 28px; padding: 0 30px 0 10px; font-size: 12.5px; }
@@ -941,13 +970,19 @@ html.streamer-open .daw-footer { display: none !important; }
 /* The panel's one card (export to a file is the only way out for now):
    it fills the panel, and the export sits at its foot. */
 .sm-out { flex: 1 0 auto; display: flex; flex-direction: column; }
-.sm-out-head { padding: 13px 16px; border-bottom: 1px solid var(--sm-line); font-size: 16px; font-weight: 600; }
-.sm-out-body { flex: 1 0 auto; padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
+/* Compact rows, so every control and the export fit without scrolling in a
+   short window and in the drawer. */
+.sm-out-head { padding: 11px 14px; border-bottom: 1px solid var(--sm-line); font-size: 15px; font-weight: 600; }
+.sm-out-body { flex: 1 0 auto; padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 7px; }
+.sm-side .sm-sel { height: 32px; }
+.sm-side .sm-sel-caret { top: 10px; }
+.sm-side .sm-sel-lead { top: 7px; }
 .sm-flabel { font-size: 13px; font-weight: 500; color: var(--sm-text-2); }
 .sm-flabel + .sm-select, .sm-flabel + .sm-inp { margin-top: -3px; }
 /* The input meter: two rows of 36 segments (10 px in all), green to 70%,
    yellow to 86%, red above, as the design's. */
-.sm-meter-row { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
+.sm-meter-row { display: flex; align-items: center; gap: 10px; }
+.sm-meter-row .sm-ib { width: 30px; height: 30px; }
 .sm-meter { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; height: 10px; }
 .sm-meter-bar { flex: 1; display: flex; gap: 2px; }
 .sm-meter-seg { flex: 1; min-width: 0; border-radius: 1px; background: #1a222c; }
@@ -990,11 +1025,17 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-cam-act[hidden] { display: none; }
 /* The camera's video: decoded and drawn into the canvas, never seen itself. */
 .sm-cam-source { position: fixed; left: -10000px; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
-/* Resolution over frame rate: side by side, "1080p (1920 x 1080)" would be cut. */
-.sm-out-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 2px; }
-.sm-out-col { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+/* Resolution and frame rate side by side: the frame rate's column is as
+   narrow as "60 fps" needs, so "1080p (1920 x 1080)" keeps its room. */
+.sm-out-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(84px, auto); gap: 8px; }
+.sm-out-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .sm-out-col .sm-flabel + .sm-select { margin-top: 0; }
-.sm-out-switches { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.sm-out-col .sm-flabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sm-out-col .sm-sel { padding: 0 28px 0 10px; font-size: 12.5px; }
+.sm-out-col .sm-sel-caret { right: 10px; }
+.sm-out-switches { display: flex; flex-direction: column; gap: 5px; margin-top: 1px; }
+.sm-out-switches .sm-switch-row { gap: 12px; padding: 1px 0; font-size: 12.5px; line-height: 1.3; }
+.sm-out-switches .sm-switch { --sm-sw-w: 36px; --sm-sw-h: 20px; }
 
 .sm-inp {
   width: 100%;
@@ -1042,6 +1083,53 @@ html.streamer-open .daw-footer { display: none !important; }
 }
 .sm-note[hidden] { display: none; }
 
+/* ── Shorter workspaces ──
+   Under 760 px of height (a 1366 x 768 or 1280 x 720 window, or a larger one
+   at 125% zoom): the header, the strip and the timeline rows a little
+   tighter, so the preview keeps more of its size. */
+@container streamer (max-height: 760px) {
+  .sm-center {
+    --sm-gap: 6px;
+    --sm-head-h: 84px;
+    --sm-head-pad: 7px 12px;
+    --sm-ctl-h: 32px;
+    --sm-strip-h: 34px;
+    --sm-col-gap: 8px;
+    --sm-tl-pad: 4px;
+    --sm-video-h: 28px;
+    --sm-tl-rows: 30px minmax(32px, 46px) 22px 4px var(--sm-video-h) 4px minmax(56px, 136px);
+    --sm-tl-min: 190px;
+    --sm-ctl-top: 5px;
+    padding-top: 8px;
+    padding-bottom: 6px;
+  }
+  .sm-head-title { font-size: 16px; }
+  .sm-head .sm-sel, .sm-head .sm-ib { height: 32px; }
+  .sm-head .sm-ib:not(.sm-output-btn) { width: 32px; }
+  .sm-head .sm-sel-caret { top: 10px; }
+  .sm-safe { height: 32px; }
+  .sm-strip-title { font-size: 14px; }
+  .sm-clock-now { font-size: 16px; }
+  .sm-layers { gap: 8px; padding-top: 10px; }
+  .sm-primary.sm-add { height: 32px; }
+  .sm-layer { min-height: 54px; padding-top: 5px; padding-bottom: 5px; }
+  .sm-layer-thumb { width: 40px; height: 40px; }
+}
+
+/* Under 600 px of height (a very short window): tighter still; below this
+   the column scrolls rather than squeeze the preview under 360 px. */
+@container streamer (max-height: 600px) {
+  .sm-center {
+    --sm-gap: 5px;
+    --sm-head-h: 80px;
+    --sm-head-pad: 6px 12px;
+    --sm-strip-h: 32px;
+    --sm-video-h: 26px;
+    --sm-tl-rows: 28px minmax(30px, 46px) 20px 4px var(--sm-video-h) 4px minmax(52px, 136px);
+    --sm-tl-min: 180px;
+  }
+}
+
 /* ── Narrower workspaces ── */
 @container streamer (max-width: 1399px) {
   .sm-center { --sm-layers-w: 290px; }
@@ -1049,16 +1137,17 @@ html.streamer-open .daw-footer { display: none !important; }
 /* 1000 to 1199: the output panel is a drawer, opened by Output. */
 @container streamer (max-width: 1199px) {
   /* The right panel is a drawer here: the layers get their full width back. */
-  .sm-center { --sm-center-w: calc(100cqw - 18px); --sm-layers-w: 320px; }
+  .sm-center { --sm-layers-w: 320px; }
   .sm-output-btn { display: inline-flex; }
-  /* Below the mode header, so Output stays in reach to close it. */
+  /* Below the mode header, so Output stays in reach to close it. It scrolls
+     only when the window is too short for it, Export staying in view. */
   .sm-side {
     position: absolute;
     top: var(--sm-drawer-top, 114px);
     right: 0;
     bottom: 0;
     z-index: 6;
-    width: 360px;
+    width: 400px;
     max-width: calc(100% - 40px);
     padding: 10px;
     border-left: 1px solid var(--sm-line);
@@ -1067,36 +1156,50 @@ html.streamer-open .daw-footer { display: none !important; }
     display: none;
   }
   .sm-drawer-open .sm-side { display: flex; }
+  /* In the drawer each source's label sits beside its select, which keeps
+     every control and Export in view in a short window. */
+  .sm-side .sm-out-head { padding: 9px 14px; }
+  .sm-side .sm-out-body { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 12px; align-content: start; }
+  .sm-side .sm-out-body > :not(.sm-flabel, .sm-select) { grid-column: 1 / -1; }
+  .sm-side .sm-out-body > .sm-flabel + .sm-select { margin-top: 0; }
+  .sm-side .sm-out-body > .sm-export { align-self: end; }
   .sm-drawer-open .sm-scrim { display: block; position: absolute; inset: var(--sm-drawer-top, 114px) 0 0; z-index: 5; background: rgba(0, 0, 0, .35); }
 }
-/* Under 1000: the layers go under the preview, and the column scrolls. */
+/* Under 1000: the layers stay beside the preview, narrower; the header
+   wraps rather than cutting Safe Zones, settings and Output. */
 @container streamer (max-width: 999px) {
-  /* The column scrolls. The header, the layers and the timeline fit any
-     width (they wrap or scroll themselves); only the preview keeps its
-     480 px, so a workspace narrower than that scrolls sideways under the
-     header, never squeezing the preview or hiding a control. */
-  .sm-center { overflow: auto; }
+  .sm-center { --sm-layers-w: 280px; }
   .sm-head, .sm-tl, .sm-layers { min-width: 0; }
-  .sm-builder { flex: none; }
-  .sm-row { flex-direction: column; }
-  .sm-preview-col { width: clamp(480px, min(var(--sm-center-w), 716px), 716px); }
-  /* Five rows in view, the rest scroll. */
-  .sm-layers { flex: none; max-width: none; contain: none; }
-  .sm-layer-list { flex: none; max-height: calc(5 * 62px + 4 * 5px); }
-  .sm-tl { flex: none; height: 217px; --sm-label-w: 56px; }
+  .sm-tl { --sm-label-w: 56px; }
   .sm-tl-label { gap: 4px; padding-left: 6px; font-size: 11.5px; }
   .sm-tl-label > svg { display: none; }
-  /* The header wraps instead of cutting Safe Zones, settings and Output. */
-  .sm-head { height: auto; gap: 8px; }
-  .sm-head-row { height: auto; min-height: 36px; flex-wrap: wrap; row-gap: 8px; }
+  .sm-head { height: auto; gap: 6px; }
+  .sm-head-row { height: auto; min-height: var(--sm-ctl-h); flex-wrap: wrap; gap: 6px 8px; }
   .sm-head-sep, .sm-head-sub { display: none; }
-  .sm-tabs-row { flex-wrap: wrap; row-gap: 8px; }
+  .sm-tabs-row { flex-wrap: wrap; row-gap: 6px; }
   .sm-tab { padding: 0 14px; white-space: nowrap; }
-  .sm-aspect { width: 160px; }
+  .sm-aspect { width: 150px; }
   /* I play and the zoom share the timeline's top row: the zoom keeps its
      buttons, its slider goes. */
   .sm-part-select { width: 140px; }
   .sm-zoom-track { display: none; }
+}
+/* Under 680 (no room for a 360 px preview and the layers beside it): the
+   layers go under the preview, and the column scrolls. */
+@container streamer (max-width: 679px) {
+  /* The header, the layers and the timeline fit any width (they wrap or
+     scroll themselves); only the preview keeps its 480 px, so a workspace
+     narrower than that scrolls sideways under the header, never squeezing
+     the preview or hiding a control. */
+  .sm-center { overflow: auto; }
+  .sm-builder { flex: none; min-height: 0; container-type: inline-size; }
+  .sm-row { flex-direction: column; }
+  /* cqw is the Scene Builder's width here. */
+  .sm-preview-col { width: clamp(480px, min(100cqw, 716px), 716px); }
+  /* Five rows in view, the rest scroll. */
+  .sm-layers { flex: none; max-width: none; contain: none; }
+  .sm-layer-list { flex: none; max-height: calc(5 * 62px + 4 * 5px); }
+  .sm-tl { flex: none; height: 217px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1108,16 +1211,30 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-rec.recording .sm-rec-ring { border-color: #ff6b70; }
 .sm-rec.recording .sm-rec-dot { background: #ff4d55; animation: sm-rec-blink 1s steps(2, start) infinite; }
 @keyframes sm-rec-blink { to { visibility: hidden; } }
-.sm-export { display: flex; flex-direction: column; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--sm-line); }
+.sm-export {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--sm-line);
+  /* Where the panel must scroll (a very short window), Export stays in view. */
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--sm-card);
+}
 .sm-export[hidden] { display: none; }
-.sm-export-text { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--sm-text-2); overflow-wrap: break-word; }
+.sm-export-text { margin: 0; font-size: 12.5px; line-height: 1.4; color: var(--sm-text-2); overflow-wrap: break-word; }
 .sm-export-bar { width: 100%; height: 6px; accent-color: var(--sm-yellow); }
 .sm-export-bar[hidden] { display: none; }
 .sm-export-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.sm-export-row .sm-ib { width: auto; height: 32px; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
+.sm-export-row .sm-ib { width: auto; height: 30px; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
 .sm-export-row [hidden] { display: none; }
 /* The primary action of the panel: full width, the yellow button. */
-.sm-export-go { flex: 1 1 100%; height: 40px; font-size: 14px; }
+.sm-export-go { flex: 1 1 auto; min-width: 120px; height: 38px; font-size: 14px; }
+/* Show in folder or Save the raw recording beside it when they fit. */
+.sm-export-row .sm-ib.sm-export-reveal, .sm-export-row .sm-ib.sm-export-raw { height: 38px; }
 .sm-export-go:disabled { opacity: .45; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .sm-rec.recording .sm-rec-dot { animation: none; }
@@ -1128,3 +1245,15 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-rec-level { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: #4ade80; transform: scaleX(0); transform-origin: left; pointer-events: none; }
 /* The empty take lane's hint: in its half of the stem row (the second lane). */
 .sm-tl-take-hint { position: absolute; left: 0; right: 0; bottom: 4px; height: calc(50% - 6px); display: flex; align-items: center; justify-content: center; z-index: 2; }
+
+/* Under a small preview the strip tightens, so the clock never runs into
+   undo and redo. */
+.sm-strip { container-type: inline-size; }
+/* (Last in the file: it overrides the header-height tiers too.) */
+@container (max-width: 480px) {
+  .sm-strip-title { gap: 6px; padding: 0 10px; font-size: 13px; }
+  .sm-history-btn { width: 32px; }
+  .sm-clock { gap: 5px; }
+  .sm-clock-now { font-size: 14px; }
+  .sm-clock-dur { font-size: 11.5px; }
+}
