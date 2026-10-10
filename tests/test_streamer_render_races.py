@@ -48,8 +48,8 @@ def client(jobs_dir):
     )
 
 
-# A long render (the whole 4K song) to have a running ffmpeg to act on.
-_SLOW = {"canvas": "16:9", "fit": "fill", "size": "2160", "fps": 30, "span": "song"}
+# A long render (the whole song at 1080p60) to have a running ffmpeg to act on.
+_SLOW = {"canvas": "16:9", "fit": "fill", "size": "1080", "fps": 60, "span": "song"}
 
 
 async def _running_proc(tid: str, timeout: float = 30.0) -> subprocess.Popen:

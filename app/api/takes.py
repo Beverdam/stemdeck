@@ -33,7 +33,7 @@ render either way; the camera shows where it filmed and the canvas is black
 elsewhere.
 
 Streamer Mode records its composed scene as the take's camera part and asks
-for canvas 16:9, 9:16 or 1:1 at size 720, 1080 or 2160 (the short side) and
+for canvas 16:9, 9:16 or 1:1 at size 720 or 1080 (the short side) and
 fps 24, 30 or 60, fit "fill" (the picture is already the canvas's shape),
 and optionally the click as one more lane.
 """
@@ -59,15 +59,7 @@ from typing import Any, Literal, NamedTuple
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StrictBool,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 from app.api import stems as stems_api
 from app.core.config import (
@@ -1324,7 +1316,7 @@ class RenderBody(BaseModel):
     range_in: float | None = _finite(0, stems_api.MAX_TRIM_SECONDS)
     range_out: float | None = _finite(0, stems_api.MAX_TRIM_SECONDS)
     # The output: the canvas's short side and the frame rate.
-    size: Literal["720", "1080", "2160"] = "1080"
+    size: Literal["720", "1080"] = "1080"
     fps: Literal[24, 30, 60] = 30
     # The click as one more lane (the export's default click: the song's grid,
     # every beat, accents by the detected bars).
@@ -1350,15 +1342,6 @@ class RenderBody(BaseModel):
             if len(name) > 32:
                 raise ValueError("unknown stem requested")
         return v
-
-    @model_validator(mode="after")
-    def _no_4k60(self) -> RenderBody:
-        # 4K at 60 fps is not offered (the maintainer's decision): the
-        # recorder cannot keep 60 frames a second at that size, and the
-        # encode is several times slower than real time.
-        if self.size == "2160" and self.fps == 60:
-            raise ValueError("4K at 60 fps is not supported: use 30 fps or a lower resolution")
-        return self
 
 
 class _RenderAudio(NamedTuple):

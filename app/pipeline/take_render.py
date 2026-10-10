@@ -319,7 +319,7 @@ VIDEO_FPS_CHOICES = (24, 30, 60)
 
 def canvas_size(canvas: str, size: str = "1080") -> tuple[int, int]:
     """(width, height) of a 16:9, 9:16 or 1:1 canvas whose short side is
-    `size` (720, 1080 or 2160). 16:9 and 9:16 at 1080 are CANVAS_SIZES."""
+    `size` (720 or 1080). 16:9 and 9:16 at 1080 are CANVAS_SIZES."""
     short = CANVAS_SHORT_SIDES[size]
     if canvas == "1:1":
         return short, short
@@ -404,7 +404,7 @@ def build_video_render_cmd(
     `alt_aac` are the retry of a master whose AAC decoded over its ceiling
     (stems._render_master_verified).
 
-    `size` (720, 1080, 2160: the canvas's short side) and `fps` (24, 30, 60)
+    `size` (720 or 1080: the canvas's short side) and `fps` (24, 30, 60)
     are Streamer Mode's output choices; the defaults are the camera take's
     1080p at 30 fps.
 
@@ -491,12 +491,6 @@ def libx264_args(width: int, height: int) -> list[str]:
     return [
         "-c:v",
         "libx264",
-        # 4K (Streamer Mode's 2160 output) has four times the pixels of 1080p:
-        # at x264's default preset ("medium") a song-length render takes many
-        # minutes and holds the pipeline lock all that time. "veryfast" cuts
-        # that several times over for a slightly larger file at the same crf.
-        # 720p and 1080p keep the default, as before.
-        *(["-preset", "veryfast"] if min(width, height) >= 2160 else []),
         "-crf",
         "20",
         "-pix_fmt",

@@ -901,8 +901,6 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-dev-act[hidden] { display: none; }
 .sm-heavy { margin: -2px 0 0; font-size: 12px; color: #e9c23a; }
 .sm-heavy[hidden] { display: none; }
-.sm-fps-why { margin: -2px 0 0; font-size: 12px; color: var(--sm-muted); }
-.sm-fps-why[hidden] { display: none; }
 
 /* Over the preview while the camera is not showing. */
 .sm-cam-state {

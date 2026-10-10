@@ -346,7 +346,7 @@ def test_cpu_command_is_byte_for_byte_unchanged():
         master_chain="acompressor,alimiter",
         trim_db=0.7,
         alt_aac=True,
-        size="2160",
+        size="1080",
         fps=60,
     )
     golden_streamer = [
@@ -358,8 +358,8 @@ def test_cpu_command_is_byte_for_byte_unchanged():
         "[1:a]atrim=start=1.500000,asetpts=PTS-STARTPTS,biquad=b=1,rubberband=pitch=1.05,"
         "volume=1.000000[a1];[2:a]atrim=start=1.500000,asetpts=PTS-STARTPTS,biquad=x,"
         "volume=0.900000[a2];[a0][a1][a2]amix=inputs=3:normalize=0,biquad=m,acompressor,"
-        "alimiter,volume=0.92257143[aout];color=c=black:s=2160x3840:r=60:d=30.000000[bg];"
-        "[3:v]setpts=PTS-STARTPTS+(-1.600000)/TB,trim=start=0,scale=2160:3840,hflip,"
+        "alimiter,volume=0.92257143[aout];color=c=black:s=1080x1920:r=60:d=30.000000[bg];"
+        "[3:v]setpts=PTS-STARTPTS+(-1.600000)/TB,trim=start=0,scale=1080:1920,hflip,"
         "setsar=1[cam];[bg][cam]overlay=eof_action=pass:shortest=0,fps=60,format=yuv420p[vout]",
         "-map",
         "[vout]",
@@ -367,8 +367,6 @@ def test_cpu_command_is_byte_for_byte_unchanged():
         "[aout]",
         "-c:v",
         "libx264",
-        "-preset",
-        "veryfast",
         "-crf",
         "20",
         "-pix_fmt",
@@ -408,7 +406,7 @@ def test_gpu_command_changes_only_the_encode():
         fit="fill",
         mirror=False,
         audio_rate=44100,
-        size="2160",
+        size="1080",
         fps=30,
     )
     cpu = build_video_render_cmd(**kw)

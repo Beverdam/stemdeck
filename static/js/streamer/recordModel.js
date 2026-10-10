@@ -62,10 +62,11 @@ export function shouldAutoStop({ t, range, duration, autoStop }) {
 
 // ── Output ──
 
-const SHORT = { 720: 720, 1080: 1080, 2160: 2160 };
+const SHORT = { 720: 720, 1080: 1080 };
 
 /** The output's pixels for an aspect and a resolution (the server's
- * canvas_size: the short side is the resolution). */
+ * canvas_size: the short side is the resolution; anything else, such as a
+ * take recorded at 4K before it was removed, is 1080). */
 export function outputPixels(aspect, resolution) {
   const short = SHORT[resolution] || 1080;
   if (aspect === "1:1") return { width: short, height: short };
@@ -147,7 +148,8 @@ export function buildRenderRequest({
     canvas: aspect,
     fit: "fill",
     mirror: false,
-    size: String(resolution),
+    // A take recorded at 4K (no longer offered) renders at 1080p.
+    size: SHORT[resolution] ? String(resolution) : "1080",
     fps: Number(fps),
     click: Boolean(includeClick),
   };

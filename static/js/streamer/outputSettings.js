@@ -10,9 +10,17 @@
 
 export const SETTINGS_KEY = "stemdeck:streamer:recording";
 export const NONE = "none";
-export const RESOLUTIONS = Object.freeze(["720", "1080", "2160"]);
+// No 4K (the maintainer's decision): a 1080p camera only gets bigger at 4K,
+// for a much slower export. A stored "2160" reads as 1080p (resolutionOf).
+export const RESOLUTIONS = Object.freeze(["720", "1080"]);
 export const FRAME_RATES = Object.freeze([24, 30, 60]);
-const SIZE = { 720: [1280, 720], 1080: [1920, 1080], 2160: [3840, 2160] };
+const SIZE = { 720: [1280, 720], 1080: [1920, 1080] };
+
+/** A stored resolution made one that is offered: "2160" (4K, offered
+ * before) and anything unknown read as "1080". */
+export function resolutionOf(v) {
+  return RESOLUTIONS.includes(String(v)) ? String(v) : "1080";
+}
 
 export function defaultRecordingSettings() {
   return {
@@ -46,9 +54,8 @@ export function parseRecordingSettings(raw) {
     videoDeviceId: idOf(data.videoDeviceId),
     audioDeviceId: idOf(data.audioDeviceId),
     audioChannels: channelsOf(data.audioChannels),
-    resolution: RESOLUTIONS.includes(String(data.resolution)) ? String(data.resolution) : d.resolution,
+    resolution: resolutionOf(data.resolution),
     fps: FRAME_RATES.includes(Number(data.fps)) ? Number(data.fps) : d.fps,
-    ...fpsFor(data.resolution, data.fps),
     recordMixedAudio: flag(data.recordMixedAudio, d.recordMixedAudio),
     includeClick: flag(data.includeClick, d.includeClick),
     autoStopAtEnd: flag(data.autoStopAtEnd, d.autoStopAtEnd),
@@ -73,32 +80,15 @@ export function resolveDeviceId(saved, devices) {
   return ids.includes(saved) ? saved : "";
 }
 
-/** The frame rates offered at `resolution`: no 60 at 4K (the maintainer's
- * decision; the server refuses it too). */
-export function framesFor(resolution) {
-  return String(resolution) === "2160" ? FRAME_RATES.filter((n) => n !== 60) : [...FRAME_RATES];
-}
-
-/** A stored 4K at 60 fps reads as 4K at 30 (only for that pair: the
- * caller's own resolution and fps are kept otherwise). */
-function fpsFor(resolution, fps) {
-  return String(resolution) === "2160" && Number(fps) === 60 ? { fps: 30 } : {};
-}
-
-/**
- * `patch` applied to `s`, kept to what is offered: 4K with 60 fps falls back
- * to 30. Returns { settings, fellBack } (fellBack: the rate was changed).
- */
+/** `patch` applied to `s`, kept to what is offered. */
 export function applySettings(s, patch) {
-  const next = parseRecordingSettings({ ...s, ...patch });
-  const asked = Number(patch?.fps ?? s?.fps);
-  return { settings: next, fellBack: next.resolution === "2160" && asked === 60 && next.fps !== 60 };
+  return parseRecordingSettings({ ...s, ...patch });
 }
 
-/** A heavy choice (4K at 30 fps, or 60 fps at 1080p or 720p): allowed, with
- * a warning about the computer's load. */
+/** A heavy choice (60 fps, at 1080p or 720p): allowed, with a warning about
+ * the computer's load. */
 export function isHeavy(s) {
-  return s?.resolution === "2160" || Number(s?.fps) === 60;
+  return Number(s?.fps) === 60;
 }
 
 /** getUserMedia video constraints for the output settings: the size and

@@ -47,7 +47,9 @@ def test_matrix_runs_the_apps_gpu_arguments(encoder, w, h, fps):
     assert matrix.output_filter(encoder) == ve.output_filter(encoder)
 
 
-@pytest.mark.parametrize(("w", "h", "_fps"), GEOMETRIES)
+# The app renders 720 and 1080 only (no 4K since 0.21.0); the script still
+# measures 4K with its own veryfast preset, as a diagnostic.
+@pytest.mark.parametrize(("w", "h", "_fps"), [g for g in GEOMETRIES if min(g[0], g[1]) <= 1080])
 def test_matrix_runs_the_apps_cpu_arguments(w, h, _fps):
     assert matrix.libx264_args(w, h) == take_render.libx264_args(w, h)
 

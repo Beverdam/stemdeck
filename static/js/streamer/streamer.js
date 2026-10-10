@@ -51,7 +51,7 @@ import { getTracks, requestTakesReload } from "../capture/takeLanes.js";
 import { loadScene, saveScene, flushScene } from "./sceneStore.js";
 import {
   SETTINGS_KEY, NONE, defaultRecordingSettings, parseRecordingSettings, serializeRecordingSettings,
-  resolveDeviceId, isHeavy, applySettings, framesFor, METER_SEGMENTS, METER_FLOOR_DB, meterFraction, levelDb, segmentZone,
+  resolveDeviceId, isHeavy, applySettings, METER_SEGMENTS, METER_FLOOR_DB, meterFraction, levelDb, segmentZone,
   litSegments, holdPeak, newPeakState,
 } from "./outputSettings.js";
 import {
@@ -680,7 +680,7 @@ function buildSide() {
   meterRow.append(meter, level, inSet);
   const grid = el("div", "sm-out-grid");
   const res = selectBox();
-  for (const [v, k] of [["1080", "streamer.res1080"], ["720", "streamer.res720"], ["2160", "streamer.res2160"]]) option(res.sel, v, k);
+  for (const [v, k] of [["1080", "streamer.res1080"], ["720", "streamer.res720"]]) option(res.sel, v, k);
   res.sel.addEventListener("change", () => setSetting({ resolution: res.sel.value }));
   const fps = selectBox();
   for (const n of [30, 60, 24]) {
@@ -696,12 +696,9 @@ function buildSide() {
   const fpsCol = el("div", "sm-out-col");
   fpsCol.append(field("streamer.fps", "streamerFps", fps.sel), fps.wrap);
   grid.append(resCol, fpsCol);
-  // 4K or 60 fps is allowed, with a warning (the 4K policy is not decided).
+  // 60 fps is allowed, with a warning about the computer's load.
   const heavy = tx(el("p", "sm-heavy"), "streamer.heavy");
   heavy.hidden = true;
-  // Why 60 fps is greyed out at 4K.
-  const fpsWhy = tx(el("p", "sm-fps-why"), "streamer.fps60No4k");
-  fpsWhy.hidden = true;
   const switches = el("div", "sm-out-switches");
   const sw = {};
   for (const [key, k] of [["recordMixedAudio", "streamer.recMixed"], ["includeClick", "streamer.recClick"], ["autoStopAtEnd", "streamer.recAutostop"]]) {
@@ -738,7 +735,7 @@ function buildSide() {
   body.append(
     field("streamer.videoSource", "streamerVideoSrc", vsrc.sel), vsrc.wrap, vstate.line,
     field("streamer.audioSource", "streamerAudioSrc", asrc.sel), asrc.wrap, astate.line,
-    meterRow, grid, fpsWhy, heavy, switches, exp,
+    meterRow, grid, heavy, switches, exp,
   );
   rec.append(recHead, body);
 
@@ -747,7 +744,7 @@ function buildSide() {
   aside.append(rec);
   return {
     aside, fps: fps.sel, vsrc: vsrc.sel, asrc: asrc.sel, vstate, astate,
-    meter, meterRows, level, res: res.sel, heavy, fpsWhy, sw,
+    meter, meterRows, level, res: res.sel, heavy, sw,
     exp, expText, expBar, expGo, expCancel, expReveal, expRaw,
   };
 }
@@ -2006,10 +2003,7 @@ async function loadSettings() {
 }
 
 function setSetting(patch) {
-  const r = applySettings(settings, patch);
-  settings = r.settings;
-  // 4K chosen while 60 fps was: the rate drops to 30, and says so.
-  if (r.fellBack && ui) flashNote(t("streamer.fps4kFallback"), ui.side.fps);
+  settings = applySettings(settings, patch);
   storeSet(SETTINGS_KEY, serializeRecordingSettings(settings));
   painted.devices = null;
   painted.layers = null;
@@ -2159,10 +2153,7 @@ function paintDevices() {
   fillDeviceSelect(side.vsrc, "video", lists.video, settings.videoDeviceId);
   fillInputChoice(side.asrc);
   side.res.value = settings.resolution;
-  const offered = framesFor(settings.resolution);
-  for (const o of side.fps.options) o.disabled = !offered.includes(Number(o.value));
   side.fps.value = String(settings.fps);
-  side.fpsWhy.hidden = offered.length === 3;
   for (const [key, s2] of Object.entries(side.sw)) s2.set(settings[key]);
   side.heavy.hidden = !isHeavy(settings);
   paintDeviceLine(side.vstate, "video", c, settings.videoDeviceId === NONE);
