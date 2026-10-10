@@ -18,6 +18,7 @@ import { notifyFailure, setReleasePending, dismissFailuresByJobId, dismissFailur
 // Aliased (not the bare "t") -- this file already uses "t"/"tr" as local
 // variable names for track objects and table rows in several scopes.
 import { wireVideoEncoderSetting } from "./videoEncoderSettings.js";
+import { searchSettings, countBySection, highlightParts, nextTabIndex } from "./settingsNav.js";
 import { t as i18nT, plural as i18nPlural, LANGUAGES, getLanguage, setLanguage, onLanguageChange, applyTranslations } from "./i18n.js";
 
 // Escape user-supplied strings before inserting into innerHTML.
@@ -3875,9 +3876,20 @@ function refreshLibrarySyncSummary() {
   statusEl.textContent = n > 0
     ? i18nPlural("settings.outOfSync.summary", n)
     : i18nT("settings.outOfSync.allSynced");
+  // The same count on Library in the navigation, so it shows from any section.
+  const badge = libraryEditor.querySelector('.settings-tab[data-tab="library"] .settings-tab-badge');
+  if (badge) {
+    badge.hidden = n === 0;
+    badge.textContent = n > 0 ? String(n) : "";
+    badge.title = n > 0 ? statusEl.textContent : "";
+  }
 }
 
-function closeLibraryEditor() {
+// Also a click handler, so its argument may be an Event: only an explicit
+// { restoreFocus: false } (the rebuild after a language change) keeps focus.
+function closeLibraryEditor(opts) {
+  const restoreFocus = opts?.restoreFocus !== false;
+  const wasOpen = Boolean(libraryEditor);
   // Release the microphone and camera the Recording tab may hold.
   recordingPane?.dispose();
   recordingPane = null;
@@ -3889,6 +3901,15 @@ function closeLibraryEditor() {
   closeResetConfirm();
   libraryEditor?.remove();
   libraryEditor = null;
+  if (wasOpen && restoreFocus) {
+    // Back to what opened Settings; the Settings button when that has gone
+    // (the recording panel closes itself on the way to Settings).
+    const back = settingsOpener?.isConnected && settingsOpener.getClientRects().length
+      ? settingsOpener
+      : document.getElementById("settingsBtn");
+    settingsOpener = null;
+    back?.focus?.({ preventScroll: true });
+  }
 }
 
 // Fill the editor's table body from `tracks` (skips Trash). Built via DOM +
@@ -4806,160 +4827,257 @@ function openResetConfirm() {
   input.focus();
 }
 
+// The sections of the Settings dialog, in the order of its left navigation.
+// `id` is the data-tab / data-pane name every caller and test uses to open a
+// section (openRecordingSettings, the Discogs note, the e2e specs), so it never
+// changes even when a label does. Logs and Registry are for when something has
+// gone wrong, so they sit apart under their own heading.
+const SETTINGS_ICON = {
+  general: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  library: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+  details: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  export: '<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/>',
+  recording: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"/>',
+  network: '<path d="M5 12.55a11 11 0 0 1 14 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/>',
+  logs: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8M8 9h2"/>',
+  registry: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/>',
+};
+const SETTINGS_SECTIONS = [
+  { id: "general", label: "settings.tab.general", text: "General", desc: "settings.desc.general" },
+  { id: "library", label: "settings.tab.library", text: "Library", desc: "settings.desc.library" },
+  { id: "details", label: "settings.tab.songDetails", text: "Song details", desc: "settings.desc.details" },
+  { id: "export", label: "settings.tab.export", text: "Export", desc: "settings.desc.export" },
+  { id: "recording", label: "settings.tab.recording", text: "Recording", desc: "settings.desc.recording" },
+  { id: "network", label: "settings.tab.network", text: "Network", desc: "settings.desc.network" },
+  { id: "logs", label: "settings.tab.logs", text: "Logs", desc: "settings.desc.logs", group: "troubleshooting" },
+  { id: "registry", label: "settings.tab.registry", text: "Registry", desc: "settings.desc.registry", group: "troubleshooting" },
+];
+// The Recording pane is built the first time it opens, so until then search
+// finds its settings from this list instead of from the page.
+const RECORDING_SEARCH_ROWS = ["mic", "iface", "latency", "camera", "quality", "mirror"];
+
+const settingsIcon = (id) =>
+  `<svg class="settings-tab-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${SETTINGS_ICON[id]}</svg>`;
+
+function settingsNavHtml() {
+  let html = "";
+  let group = null;
+  for (const s of SETTINGS_SECTIONS) {
+    if (s.group && s.group !== group) {
+      html += `<div class="settings-nav-group" role="presentation" data-i18n="settings.nav.${s.group}">Troubleshooting</div>`;
+    }
+    group = s.group || null;
+    const on = s.id === "general";
+    html += `<button class="settings-tab${on ? " active" : ""}" type="button" role="tab" data-tab="${s.id}" id="settings-tab-${s.id}" aria-controls="settings-pane-${s.id}" aria-selected="${on}" tabindex="${on ? 0 : -1}">${settingsIcon(s.id)}<span class="settings-tab-label" data-i18n="${s.label}">${s.text}</span><span class="settings-tab-badge" hidden></span><span class="settings-tab-dot" hidden></span></button>`;
+  }
+  return html;
+}
+
+// A setting with a number and its unit ("20 min"). The unit sits outside the
+// field so the field keeps the digits-only filter it has always had.
+const unitField = (input, unitKey, unitText) =>
+  `<span class="settings-unit-field">${input}<span class="settings-unit" data-i18n="${unitKey}">${unitText}</span></span>`;
+
+// Focus goes back here when Settings closes.
+let settingsOpener = null;
+// The section showing, and whether the search results are showing instead.
+let settingsActiveTab = "general";
+let settingsSearching = false;
+
 function openLibraryEditor() {
+  // Already open: this is the rebuild after a language change. Keep the
+  // section, the element focus returns to, and focus on the language picker.
+  const rebuilding = Boolean(libraryEditor);
+  const keepTab = rebuilding ? settingsActiveTab : "general";
+  const refocusLanguage = rebuilding && document.activeElement?.classList?.contains("set-language");
+  if (!rebuilding) settingsOpener = document.activeElement;
   closeFolderEditor();
-  closeLibraryEditor();
+  closeLibraryEditor({ restoreFocus: false });
+  settingsActiveTab = "general";
+  settingsSearching = false;
 
   const overlay = document.createElement("div");
   overlay.className = "library-editor-backdrop";
   overlay.innerHTML = `
-    <div class="library-editor" role="dialog" aria-modal="true" aria-label="Settings" data-i18n-aria-label="settings.title">
-      <div class="library-editor-head">
-        <span data-i18n="settings.title">Settings</span>
-        <button class="library-editor-close" type="button" aria-label="Close" data-i18n-aria-label="settings.closeAria">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
-        </button>
-      </div>
-      <div class="settings-tabs" role="tablist">
-        <button class="settings-tab active" type="button" data-tab="general" role="tab" data-i18n="settings.tab.general">General</button>
-        <button class="settings-tab" type="button" data-tab="details" role="tab" data-i18n="settings.tab.songDetails">Song details</button>
-        <button class="settings-tab" type="button" data-tab="network" role="tab" data-i18n="settings.tab.network">Network</button>
-        <button class="settings-tab" type="button" data-tab="export" role="tab" data-i18n="settings.tab.export">Export</button>
-        <button class="settings-tab" type="button" data-tab="recording" role="tab" data-i18n="settings.tab.recording">Recording</button>
-        <button class="settings-tab" type="button" data-tab="logs" role="tab" data-i18n="settings.tab.logs">Logs</button>
-        <button class="settings-tab" type="button" data-tab="registry" role="tab" data-i18n="settings.tab.registry">Registry</button>
-      </div>
-      <div class="settings-pane" data-pane="general">
-        <div class="settings-section">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.language.title">Language</div>
-              <div class="settings-row-desc" data-i18n="settings.language.desc">Display language for this app.</div>
+    <div class="library-editor" role="dialog" aria-modal="true" aria-labelledby="settingsDialogTitle">
+      <aside class="settings-side">
+        <h2 class="settings-side-title" id="settingsDialogTitle" data-i18n="settings.title">Settings</h2>
+        <div class="settings-search">
+          <svg class="settings-search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+          <input type="search" class="settings-search-input" autocomplete="off" spellcheck="false" placeholder="Search settings" data-i18n-placeholder="settings.search.placeholder" aria-label="Search settings" data-i18n-aria-label="settings.search.placeholder" aria-controls="settingsResults" />
+          <button class="settings-search-clear" type="button" hidden aria-label="Clear search" data-i18n-aria-label="settings.search.clear">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+        <div class="settings-tabs" role="tablist" aria-orientation="vertical" aria-label="Settings sections" data-i18n-aria-label="settings.nav.aria">
+          ${settingsNavHtml()}
+        </div>
+      </aside>
+      <section class="settings-main">
+        <header class="settings-main-head">
+          <div class="settings-main-text">
+            <h3 class="settings-main-title" id="settingsMainTitle"></h3>
+            <p class="settings-main-desc"></p>
+          </div>
+          <button class="library-editor-close" type="button" aria-label="Close" data-i18n-aria-label="settings.closeAria">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+          </button>
+        </header>
+        <div class="settings-results" id="settingsResults" hidden>
+          <p class="settings-results-status" role="status" aria-live="polite"></p>
+          <ul class="settings-results-list"></ul>
+        </div>
+      <div class="settings-pane" data-pane="general" id="settings-pane-general" role="tabpanel" aria-labelledby="settings-tab-general">
+        <div class="settings-group">
+          <h4 class="settings-group-title" data-i18n="settings.group.interface">Interface</h4>
+          <div class="settings-section">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.language.title">Language</div>
+                <div class="settings-row-desc" data-i18n="settings.language.desc">Display language for this app.</div>
+              </div>
+              <select class="settings-select settings-select-wide set-language" aria-label="Language" data-i18n-aria-label="settings.language.title"></select>
             </div>
-            <select class="settings-select settings-select-wide set-language" aria-label="Language"></select>
           </div>
         </div>
-        <div class="settings-section">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.maxDuration.title">Max track length</div>
-              <div class="settings-row-desc set-max-duration-desc">Longest track accepted for processing, in minutes (max 60).</div>
+        <div class="settings-group">
+          <h4 class="settings-group-title" data-i18n="settings.group.separation">Separation</h4>
+          <div class="settings-section">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.device.title">Compute device</div>
+                <div class="settings-row-desc set-demucs-desc">Device used for stem separation. Applies to the next track.</div>
+              </div>
+              <select class="settings-select settings-select-wide set-demucs-device" aria-label="Compute device" data-i18n-aria-label="settings.device.title">
+                <option value="auto" data-i18n="settings.device.auto">Auto</option>
+                <option value="cuda">CUDA (NVIDIA)</option>
+                <option value="mps">MPS (Apple Silicon)</option>
+                <option value="cpu">CPU</option>
+              </select>
             </div>
-            <input type="text" class="settings-num-input set-max-duration" inputmode="numeric" maxlength="2" aria-label="Max track length in minutes" data-i18n-aria-label="settings.maxDuration.title" />
-          </div>
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.playlistLimit.title">Playlist import limit</div>
-              <div class="settings-row-desc" data-i18n="settings.playlistLimit.desc">Most tracks one playlist import will queue (max 200).</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.quality.title">Separation quality</div>
+                <div class="settings-row-desc" data-i18n="settings.quality.desc">Best runs the separator twice with randomized shifts and averages the result, for cleaner stems in twice the time.</div>
+              </div>
+              <select class="settings-select settings-select-wide set-separation-quality" aria-label="Separation quality" data-i18n-aria-label="settings.quality.title">
+                <option value="standard" data-i18n="settings.quality.standard">Standard</option>
+                <option value="best" data-i18n="settings.quality.best">Best (2× slower)</option>
+              </select>
             </div>
-            <input type="text" class="settings-num-input set-playlist-max" inputmode="numeric" maxlength="3" aria-label="Playlist import limit" data-i18n-aria-label="settings.playlistLimit.title" />
-          </div>
-          <div class="settings-row settings-row-stack">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.cookies.title">YouTube cookies</div>
-              <div class="settings-row-desc" data-i18n="settings.cookies.desc">Optional. Path to a cookies.txt file, used only when YouTube asks StemDeck to confirm it is not a bot. Leave this empty unless imports are failing.</div>
-            </div>
-            <input type="text" class="settings-text-input set-cookies-file" spellcheck="false" autocomplete="off" placeholder="Path to cookies.txt" data-i18n-placeholder="settings.cookies.placeholder" aria-label="YouTube cookies" data-i18n-aria-label="settings.cookies.title" />
-            <div class="cookies-file-msg" role="status" aria-live="polite"></div>
-          </div>
-          <div class="settings-row settings-row-stack">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.stemsLocation.title">StemData location</div>
-            </div>
-            <div class="stems-location">
-              <code class="stems-location-path" title=""></code>
-              <span class="stems-location-size"></span>
-              <button class="settings-btn set-stems-location" type="button" data-i18n="settings.stemsLocation.change">Change…</button>
-            </div>
-            <div class="stems-location-msg" role="status" aria-live="polite"></div>
-          </div>
-          <div class="settings-row settings-row-stack exports-location-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.exportsLocation.title">Exports folder</div>
-              <div class="settings-row-desc" data-i18n="settings.exportsLocation.desc">Where audio goes when you drag a stem or a loop out of StemDeck. Nothing here is ever deleted automatically, because a project that references a dragged file needs it to stay put.</div>
-            </div>
-            <div class="stems-location">
-              <code class="exports-location-path" title=""></code>
-              <button class="settings-btn set-exports-location" type="button" data-i18n="settings.exportsLocation.change">Change…</button>
-            </div>
-            <div class="exports-location-msg" role="status" aria-live="polite"></div>
-          </div>
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.autoDelete.title">Automatically delete finished tracks</div>
-              <div class="settings-row-desc" data-i18n="settings.autoDelete.desc">Off unless you turn it on. Separated tracks are kept forever by default. Deleting them cannot be undone.</div>
-            </div>
-            <label class="settings-switch">
-              <input type="checkbox" class="auto-delete-input" />
-              <span class="settings-switch-track"><span class="settings-switch-thumb"></span></span>
-            </label>
-          </div>
-          <div class="settings-row auto-delete-days-row disabled">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.autoDelete.daysTitle">Delete after</div>
-              <div class="settings-row-desc auto-delete-days-desc">Days a finished track is kept before it is deleted.</div>
-            </div>
-            <input type="text" class="settings-num-input set-auto-delete-days" inputmode="numeric" maxlength="3" aria-label="Days a track is kept" data-i18n-aria-label="settings.autoDelete.daysTitle" />
           </div>
         </div>
-        <div class="settings-section">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.device.title">Compute device</div>
-              <div class="settings-row-desc set-demucs-desc">Device used for stem separation. Applies to the next track.</div>
+        <div class="settings-group">
+          <h4 class="settings-group-title" data-i18n="settings.group.imports">Imports</h4>
+          <div class="settings-section">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.maxDuration.title">Max track length</div>
+                <div class="settings-row-desc set-max-duration-desc">Longest track accepted for processing, in minutes (max 60).</div>
+              </div>
+              ${unitField('<input type="text" class="settings-num-input set-max-duration" inputmode="numeric" maxlength="2" aria-label="Max track length in minutes" data-i18n-aria-label="settings.maxDuration.title" />', "settings.unit.minutes", "min")}
             </div>
-            <select class="settings-select settings-select-wide set-demucs-device" aria-label="Compute device" data-i18n-aria-label="settings.device.title">
-              <option value="auto" data-i18n="settings.device.auto">Auto</option>
-              <option value="cuda">CUDA (NVIDIA)</option>
-              <option value="mps">MPS (Apple Silicon)</option>
-              <option value="cpu">CPU</option>
-            </select>
-          </div>
-        </div>
-        <div class="settings-section">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.quality.title">Separation quality</div>
-              <div class="settings-row-desc" data-i18n="settings.quality.desc">Best runs the separator twice with randomized shifts and averages the result — cleaner stems, twice the time.</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.playlistLimit.title">Playlist import limit</div>
+                <div class="settings-row-desc" data-i18n="settings.playlistLimit.desc">Most tracks one playlist import will queue (max 200).</div>
+              </div>
+              ${unitField('<input type="text" class="settings-num-input set-playlist-max" inputmode="numeric" maxlength="3" aria-label="Playlist import limit" data-i18n-aria-label="settings.playlistLimit.title" />', "settings.unit.tracks", "tracks")}
             </div>
-            <select class="settings-select settings-select-wide set-separation-quality" aria-label="Separation quality" data-i18n-aria-label="settings.quality.title">
-              <option value="standard" data-i18n="settings.quality.standard">Standard</option>
-              <option value="best" data-i18n="settings.quality.best">Best (2× slower)</option>
-            </select>
-          </div>
-        </div>
-        <div class="settings-subhead" data-i18n="settings.outOfSync.subhead">Out of sync tracks</div>
-        <div class="library-editor-table-wrap">
-          <table class="library-editor-table">
-            <thead><tr><th data-i18n="settings.outOfSync.colName">Name</th><th data-i18n="settings.outOfSync.colSource">Source</th><th data-i18n="settings.outOfSync.colLocation">Location</th></tr></thead>
-            <tbody class="library-editor-body"></tbody>
-          </table>
-        </div>
-        <div class="library-editor-foot">
-          <span class="library-editor-status" aria-live="polite"></span>
-          <button class="library-editor-sync" type="button" data-i18n="settings.outOfSync.resync">Resync out of sync tracks</button>
-        </div>
-        <div class="settings-section">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.exportLogs.title">Export logs</div>
-              <div class="settings-row-desc" data-i18n="settings.exportLogs.desc">Download every log file as a single zip — the thing to attach to a bug report. See the Logs tab for where they live.</div>
+            <div class="settings-row settings-row-stack">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.cookies.title">YouTube cookies</div>
+                <div class="settings-row-desc" data-i18n="settings.cookies.desc">Optional. Path to a cookies.txt file, used only when YouTube asks StemDeck to confirm it is not a bot. Leave this empty unless imports are failing.</div>
+              </div>
+              <input type="text" class="settings-text-input set-cookies-file" spellcheck="false" autocomplete="off" placeholder="Path to cookies.txt" data-i18n-placeholder="settings.cookies.placeholder" aria-label="YouTube cookies" data-i18n-aria-label="settings.cookies.title" />
+              <div class="cookies-file-msg" role="status" aria-live="polite"></div>
             </div>
-            <button class="settings-export-logs" type="button" data-i18n="settings.exportLogs.button">Export logs</button>
-          </div>
-        </div>
-        <div class="settings-section settings-danger-zone">
-          <div class="settings-subhead settings-danger-subhead" data-i18n="settings.dangerZone">Danger zone</div>
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.resetData.title">Reset app data</div>
-              <div class="settings-row-desc" data-i18n="settings.resetData.desc">Permanently deletes every track, job, and library entry. On a shared server this affects everyone who uses it. Cannot be undone.</div>
-            </div>
-            <button class="settings-reset-btn" type="button" data-i18n="settings.resetData.button">Reset app data…</button>
           </div>
         </div>
       </div>
-      <div class="settings-pane hidden" data-pane="details">
+      <div class="settings-pane hidden" data-pane="library" id="settings-pane-library" role="tabpanel" aria-labelledby="settings-tab-library">
+        <div class="settings-group settings-group-storage">
+          <h4 class="settings-group-title" data-i18n="settings.group.storage">Storage</h4>
+          <div class="settings-section">
+            <div class="settings-row settings-row-stack">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.stemsLocation.title">StemData location</div>
+              </div>
+              <div class="stems-location">
+                <code class="stems-location-path" title=""></code>
+                <span class="stems-location-size"></span>
+                <button class="settings-btn set-stems-location" type="button" data-i18n="settings.stemsLocation.change">Change…</button>
+              </div>
+              <div class="stems-location-msg" role="status" aria-live="polite"></div>
+            </div>
+            <div class="settings-row settings-row-stack exports-location-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.exportsLocation.title">Exports folder</div>
+                <div class="settings-row-desc" data-i18n="settings.exportsLocation.desc">Where audio goes when you drag a stem or a loop out of StemDeck. Nothing here is ever deleted automatically, because a project that references a dragged file needs it to stay put.</div>
+              </div>
+              <div class="stems-location">
+                <code class="exports-location-path" title=""></code>
+                <button class="settings-btn set-exports-location" type="button" data-i18n="settings.exportsLocation.change">Change…</button>
+              </div>
+              <div class="exports-location-msg" role="status" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h4 class="settings-group-title" data-i18n="settings.group.cleanup">Automatic cleanup</h4>
+          <div class="settings-section">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.autoDelete.title">Automatically delete finished tracks</div>
+                <div class="settings-row-desc" data-i18n="settings.autoDelete.desc">Off unless you turn it on. Separated tracks are kept forever by default. Deleting them cannot be undone.</div>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" class="auto-delete-input" aria-label="Automatically delete finished tracks" data-i18n-aria-label="settings.autoDelete.title" />
+                <span class="settings-switch-track"><span class="settings-switch-thumb"></span></span>
+              </label>
+            </div>
+            <div class="settings-row auto-delete-days-row disabled">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.autoDelete.daysTitle">Delete after</div>
+                <div class="settings-row-desc auto-delete-days-desc">Days a finished track is kept before it is deleted.</div>
+              </div>
+              ${unitField('<input type="text" class="settings-num-input set-auto-delete-days" inputmode="numeric" maxlength="3" aria-label="Days a track is kept" data-i18n-aria-label="settings.autoDelete.daysTitle" />', "settings.unit.days", "days")}
+            </div>
+          </div>
+        </div>
+        <div class="settings-group">
+          <div class="settings-section settings-section-table">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.outOfSync.subhead">Out of sync tracks</div>
+                <div class="settings-row-desc library-editor-status" aria-live="polite"></div>
+              </div>
+              <button class="settings-btn settings-btn-accent library-editor-sync" type="button" data-i18n="settings.outOfSync.resync">Resync out of sync tracks</button>
+            </div>
+            <div class="library-editor-table-wrap">
+              <table class="library-editor-table library-editor-sync-table">
+                <colgroup><col class="le-col-name" /><col class="le-col-source" /><col class="le-col-loc" /></colgroup>
+                <thead><tr><th data-i18n="settings.outOfSync.colName">Name</th><th data-i18n="settings.outOfSync.colSource">Source</th><th data-i18n="settings.outOfSync.colLocation">Location</th></tr></thead>
+                <tbody class="library-editor-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="settings-group settings-danger-zone">
+          <h4 class="settings-group-title settings-danger-subhead" data-i18n="settings.dangerZone">Danger zone</h4>
+          <p class="settings-group-desc" data-i18n="settings.dangerZone.desc">Actions here cannot be undone.</p>
+          <div class="settings-section">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.resetData.title">Reset app data</div>
+                <div class="settings-row-desc" data-i18n="settings.resetData.desc">Permanently deletes every track, job, and library entry. On a shared server this affects everyone who uses it. Cannot be undone.</div>
+              </div>
+              <button class="settings-reset-btn" type="button" data-i18n="settings.resetData.button">Reset app data…</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="settings-pane hidden" data-pane="details" id="settings-pane-details" role="tabpanel" aria-labelledby="settings-tab-details">
         <div class="settings-section">
           <div class="settings-row settings-row-stack acoustid-row">
             <div class="settings-row-text">
@@ -5005,7 +5123,61 @@ function openLibraryEditor() {
           </div>
         </div>
       </div>
-      <div class="settings-pane hidden" data-pane="network">
+      <div class="settings-pane hidden" data-pane="export" id="settings-pane-export" role="tabpanel" aria-labelledby="settings-tab-export">
+        <div class="settings-group">
+          <h4 class="settings-group-title" data-i18n="settings.group.audio">Audio</h4>
+          <div class="settings-section">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.export.sampleRate.title">Sample rate</div>
+                <div class="settings-row-desc" data-i18n="settings.export.sampleRate.desc">Sample rate for exported mixes and regions (WAV, FLAC, MP3). 44.1 kHz suits most DAWs and samplers; pick another if your hardware needs it.</div>
+              </div>
+              <select class="settings-select set-export-samplerate" aria-label="Export sample rate" data-i18n-aria-label="settings.export.sampleRate.title">
+                <option value="22050">22.05 kHz</option>
+                <option value="32000">32 kHz</option>
+                <option value="44100">44.1 kHz</option>
+                <option value="48000">48 kHz</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="settings-group">
+          <h4 class="settings-group-title" data-i18n="settings.group.video">Video</h4>
+          <div class="settings-section video-encoder-section">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.export.videoQuality.title">MP4 video quality</div>
+                <div class="settings-row-desc" data-i18n="settings.export.videoQuality.desc">Max resolution for MP4 export and YouTube video.</div>
+              </div>
+              <select class="settings-select set-video-height" aria-label="MP4 video quality" data-i18n-aria-label="settings.export.videoQuality.title">
+                <option value="360">360p</option>
+                <option value="480">480p</option>
+                <option value="720">720p</option>
+                <option value="1080">1080p</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.export.encoder.title">Video encoder</div>
+                <div class="settings-row-desc set-video-encoder-desc" data-i18n="settings.export.encoder.desc">Encoder for the Streamer MP4 export. Auto uses a GPU encoder that passed a test on this computer, else the CPU. A GPU file that fails its check is made again on the CPU.</div>
+              </div>
+              <select class="settings-select settings-select-wide set-video-encoder" aria-label="Video encoder" data-i18n-aria-label="settings.export.encoder.title">
+                <option value="auto" data-i18n="settings.export.encoder.auto">Auto</option>
+                <option value="cpu" data-i18n="settings.export.encoder.cpu">CPU only</option>
+              </select>
+            </div>
+            <div class="video-encoder-actions">
+              <button class="settings-btn settings-registry-refresh video-encoder-test" type="button" data-i18n="settings.export.encoder.test">Test encoders</button>
+              <button class="settings-btn settings-registry-refresh video-encoder-copy" type="button" data-i18n="settings.export.encoder.copy" hidden>Copy</button>
+              <span class="settings-row-desc video-encoder-status" role="status"></span>
+            </div>
+            <div class="library-editor-table-wrap video-encoder-table-wrap" hidden></div>
+          </div>
+        </div>
+      </div>
+      <!-- Filled by static/js/capture/recordingSettings.js the first time the tab opens. -->
+      <div class="settings-pane hidden" data-pane="recording" id="settings-pane-recording" role="tabpanel" aria-labelledby="settings-tab-recording"></div>
+      <div class="settings-pane hidden" data-pane="network" id="settings-pane-network" role="tabpanel" aria-labelledby="settings-tab-network">
         ${networkSettingsHtml()}
         <div class="settings-section">
           <div class="settings-row">
@@ -5017,143 +5189,120 @@ function openLibraryEditor() {
           </div>
         </div>
       </div>
-      <div class="settings-pane hidden" data-pane="export">
+      <div class="settings-pane hidden" data-pane="logs" id="settings-pane-logs" role="tabpanel" aria-labelledby="settings-tab-logs">
         <div class="settings-section">
           <div class="settings-row">
             <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.export.sampleRate.title">Sample rate</div>
-              <div class="settings-row-desc" data-i18n="settings.export.sampleRate.desc">Sample rate for exported mixes and regions (WAV, FLAC, MP3). 44.1 kHz suits most DAWs and samplers; pick another if your hardware needs it.</div>
+              <div class="settings-row-title" data-i18n="settings.exportLogs.title">Export logs</div>
+              <div class="settings-row-desc" data-i18n="settings.exportLogs.descLogs">Download every log file as one zip file, ready to attach to a bug report.</div>
             </div>
-            <select class="settings-select set-export-samplerate" aria-label="Export sample rate" data-i18n-aria-label="settings.export.sampleRate.title">
-              <option value="22050">22.05 kHz</option>
-              <option value="32000">32 kHz</option>
-              <option value="44100">44.1 kHz</option>
-              <option value="48000">48 kHz</option>
-            </select>
+            <button class="settings-btn settings-btn-accent settings-export-logs" type="button" data-i18n="settings.exportLogs.button">Export logs</button>
           </div>
         </div>
-        <div class="settings-section">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.export.videoQuality.title">MP4 video quality</div>
-              <div class="settings-row-desc" data-i18n="settings.export.videoQuality.desc">Max resolution for MP4 export and YouTube video.</div>
+        <div class="settings-section settings-section-fill">
+          <div class="settings-subtabs" role="tablist" aria-label="Logs" data-i18n-aria-label="settings.tab.logs">
+            <button class="settings-subtab active" type="button" data-sub="location" role="tab" aria-selected="true" data-i18n="settings.logs.locationTab">Location</button>
+            <button class="settings-subtab" type="button" data-sub="application" role="tab" aria-selected="false" data-i18n="settings.logs.applicationTab">Application log</button>
+            <button class="settings-subtab" type="button" data-sub="backend" role="tab" aria-selected="false" data-i18n="settings.logs.backendTab">Backend log</button>
+            <button class="settings-subtab" type="button" data-sub="setup" role="tab" aria-selected="false" data-i18n="settings.logs.setupTab">Setup log</button>
+          </div>
+          <div class="settings-subpane" data-subpane="location">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.logs.location.title">Log location</div>
+                <div class="settings-row-desc" data-i18n="settings.logs.location.desc">Where StemDeck writes its logs on this machine. Read-only. Open them in a file manager or use Export logs.</div>
+              </div>
+              <button class="settings-btn settings-logs-refresh" type="button" data-i18n="settings.logs.refresh">Refresh</button>
             </div>
-            <select class="settings-select set-video-height">
-              <option value="360">360p</option>
-              <option value="480">480p</option>
-              <option value="720">720p</option>
-              <option value="1080">1080p</option>
-            </select>
+            <div class="settings-logs-dir"><code class="settings-logs-path" data-i18n="settings.logs.loading">Loading…</code></div>
+            <div class="settings-logs-list" data-i18n="settings.logs.loading">Loading…</div>
           </div>
-        </div>
-        <div class="settings-section video-encoder-section">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.export.encoder.title">Video encoder</div>
-              <div class="settings-row-desc set-video-encoder-desc" data-i18n="settings.export.encoder.desc">Encoder for the Streamer MP4 export. Auto uses a GPU encoder that passed a test on this computer, else the CPU. A GPU file that fails its check is made again on the CPU.</div>
+          <div class="settings-subpane hidden" data-subpane="application">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.logs.application.title">Application log</div>
+                <div class="settings-row-desc" data-i18n="settings.logs.application.desc">The last hour from <code>stemdeck.log</code>: pipeline, API and job activity. Read-only.</div>
+              </div>
+              <button class="settings-btn settings-logtail-refresh" type="button" data-view="application" data-i18n="settings.logs.refresh">Refresh</button>
             </div>
-            <select class="settings-select settings-select-wide set-video-encoder" aria-label="Video encoder" data-i18n-aria-label="settings.export.encoder.title">
-              <option value="auto" data-i18n="settings.export.encoder.auto">Auto</option>
-              <option value="cpu" data-i18n="settings.export.encoder.cpu">CPU only</option>
-            </select>
+            <textarea class="settings-registry-view settings-logtail-view" data-view="application" readonly spellcheck="false" aria-label="Application log (read only)" data-i18n-aria-label="settings.logs.applicationAria" data-i18n="settings.logs.loading">Loading…</textarea>
           </div>
-          <div class="video-encoder-actions">
-            <button class="settings-registry-refresh video-encoder-test" type="button" data-i18n="settings.export.encoder.test">Test encoders</button>
-            <button class="settings-registry-refresh video-encoder-copy" type="button" data-i18n="settings.export.encoder.copy" hidden>Copy</button>
-            <span class="settings-row-desc video-encoder-status" role="status"></span>
+          <div class="settings-subpane hidden" data-subpane="backend">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.logs.backend.title">Backend log</div>
+                <div class="settings-row-desc" data-i18n="settings.logs.backend.desc">The last hour from <code>backend.log</code>: raw output of the bundled Python process, including anything that crashed it before the application log could record it. Desktop app only. Read-only.</div>
+              </div>
+              <button class="settings-btn settings-logtail-refresh" type="button" data-view="backend" data-i18n="settings.logs.refresh">Refresh</button>
+            </div>
+            <textarea class="settings-registry-view settings-logtail-view" data-view="backend" readonly spellcheck="false" aria-label="Backend log (read only)" data-i18n-aria-label="settings.logs.backendAria" data-i18n="settings.logs.loading">Loading…</textarea>
           </div>
-          <div class="library-editor-table-wrap video-encoder-table-wrap" hidden></div>
+          <div class="settings-subpane hidden" data-subpane="setup">
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.logs.setup.title">Setup log</div>
+                <div class="settings-row-desc" data-i18n="settings.logs.setup.desc">The last hour from <code>setup.log</code>: first-run setup and GPU runtime installation. Desktop app only. Read-only.</div>
+              </div>
+              <button class="settings-btn settings-logtail-refresh" type="button" data-view="setup" data-i18n="settings.logs.refresh">Refresh</button>
+            </div>
+            <textarea class="settings-registry-view settings-logtail-view" data-view="setup" readonly spellcheck="false" aria-label="Setup log (read only)" data-i18n-aria-label="settings.logs.setupAria" data-i18n="settings.logs.loading">Loading…</textarea>
+          </div>
         </div>
       </div>
-      <!-- Filled by static/js/capture/recordingSettings.js the first time the tab opens. -->
-      <div class="settings-pane hidden" data-pane="recording"></div>
-      <div class="settings-pane hidden" data-pane="logs">
-        <div class="settings-subtabs" role="tablist">
-          <button class="settings-subtab active" type="button" data-sub="location" role="tab" data-i18n="settings.logs.locationTab">Location</button>
-          <button class="settings-subtab" type="button" data-sub="application" role="tab" data-i18n="settings.logs.applicationTab">Application log</button>
-          <button class="settings-subtab" type="button" data-sub="backend" role="tab" data-i18n="settings.logs.backendTab">Backend log</button>
-          <button class="settings-subtab" type="button" data-sub="setup" role="tab" data-i18n="settings.logs.setupTab">Setup log</button>
-        </div>
-        <div class="settings-subpane" data-subpane="location">
+      <div class="settings-pane hidden" data-pane="registry" id="settings-pane-registry" role="tabpanel" aria-labelledby="settings-tab-registry">
+        <div class="settings-section settings-section-fill">
           <div class="settings-row">
             <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.logs.location.title">Log location</div>
-              <div class="settings-row-desc" data-i18n="settings.logs.location.desc">Where StemDeck writes its logs on this machine. Read-only — open them in a file manager or use Export logs.</div>
+              <div class="settings-row-title" data-i18n="settings.registry.title">Job registry</div>
+              <div class="settings-row-desc" data-i18n="settings.registry.desc">Read-only view of <code>registry.json</code>, the persisted list of completed jobs on disk.</div>
             </div>
-            <button class="settings-registry-refresh settings-logs-refresh" type="button" data-i18n="settings.logs.refresh">Refresh</button>
+            <button class="settings-btn settings-registry-reload" type="button" data-i18n="settings.logs.refresh">Refresh</button>
           </div>
-          <div class="settings-logs-dir"><code class="settings-logs-path" data-i18n="settings.logs.loading">Loading…</code></div>
-          <div class="settings-logs-list" data-i18n="settings.logs.loading">Loading…</div>
-        </div>
-        <div class="settings-subpane hidden" data-subpane="application">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.logs.application.title">Application log</div>
-              <div class="settings-row-desc" data-i18n="settings.logs.application.desc">The last hour from <code>stemdeck.log</code> — pipeline, API and job activity. Read-only.</div>
-            </div>
-            <button class="settings-registry-refresh settings-logtail-refresh" type="button" data-view="application" data-i18n="settings.logs.refresh">Refresh</button>
-          </div>
-          <textarea class="settings-registry-view settings-logtail-view" data-view="application" readonly spellcheck="false" aria-label="Application log (read only)" data-i18n-aria-label="settings.logs.applicationAria" data-i18n="settings.logs.loading">Loading…</textarea>
-        </div>
-        <div class="settings-subpane hidden" data-subpane="backend">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.logs.backend.title">Backend log</div>
-              <div class="settings-row-desc" data-i18n="settings.logs.backend.desc">The last hour from <code>backend.log</code> — raw output of the bundled Python process, including anything that crashed it before the application log could record it. Desktop app only. Read-only.</div>
-            </div>
-            <button class="settings-registry-refresh settings-logtail-refresh" type="button" data-view="backend" data-i18n="settings.logs.refresh">Refresh</button>
-          </div>
-          <textarea class="settings-registry-view settings-logtail-view" data-view="backend" readonly spellcheck="false" aria-label="Backend log (read only)" data-i18n-aria-label="settings.logs.backendAria" data-i18n="settings.logs.loading">Loading…</textarea>
-        </div>
-        <div class="settings-subpane hidden" data-subpane="setup">
-          <div class="settings-row">
-            <div class="settings-row-text">
-              <div class="settings-row-title" data-i18n="settings.logs.setup.title">Setup log</div>
-              <div class="settings-row-desc" data-i18n="settings.logs.setup.desc">The last hour from <code>setup.log</code> — first-run setup and GPU runtime installation. Desktop app only. Read-only.</div>
-            </div>
-            <button class="settings-registry-refresh settings-logtail-refresh" type="button" data-view="setup" data-i18n="settings.logs.refresh">Refresh</button>
-          </div>
-          <textarea class="settings-registry-view settings-logtail-view" data-view="setup" readonly spellcheck="false" aria-label="Setup log (read only)" data-i18n-aria-label="settings.logs.setupAria" data-i18n="settings.logs.loading">Loading…</textarea>
+          <textarea class="settings-registry-view" readonly spellcheck="false" aria-label="Job registry (read only)" data-i18n-aria-label="settings.registry.aria" data-i18n="settings.logs.loading">Loading…</textarea>
         </div>
       </div>
-      <div class="settings-pane hidden" data-pane="registry">
-        <div class="settings-row">
-          <div class="settings-row-text">
-            <div class="settings-row-title" data-i18n="settings.registry.title">Job registry</div>
-            <div class="settings-row-desc" data-i18n="settings.registry.desc">Read-only view of <code>registry.json</code> — the persisted list of completed jobs on disk.</div>
-          </div>
-          <button class="settings-registry-refresh" type="button" data-i18n="settings.logs.refresh">Refresh</button>
-        </div>
-        <textarea class="settings-registry-view" readonly spellcheck="false" aria-label="Job registry (read only)" data-i18n-aria-label="settings.registry.aria" data-i18n="settings.logs.loading">Loading…</textarea>
-      </div>
-      <div class="settings-foot">
-        <button class="settings-done" type="button" data-i18n="settings.done">Done</button>
-      </div>
+        <footer class="settings-foot">
+          <span class="settings-foot-note" data-i18n="settings.foot.note">Most changes save as soon as you make them.</span>
+          <button class="settings-done" type="button" data-i18n="settings.done">Done</button>
+        </footer>
+      </section>
     </div>
   `;
   applyTranslations(overlay);
+  renderInlineCode(overlay);
 
   renderLibraryRows(overlay.querySelector(".library-editor-body"));
 
-  overlay.querySelectorAll(".settings-tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      const name = tab.dataset.tab;
-      overlay.querySelectorAll(".settings-tab").forEach((t) => t.classList.toggle("active", t === tab));
-      overlay.querySelectorAll(".settings-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== name));
-      if (name === "registry") loadRegistryView(overlay);
-      if (name === "logs") loadLogsView(overlay);
-      // The Recording tab holds the microphone and camera open while it shows.
-      if (name === "recording") enterRecordingPane(overlay);
-      else recordingPane?.leave();
-    });
+  const dialog = overlay.querySelector(".library-editor");
+  const tabs = [...overlay.querySelectorAll(".settings-tab")];
+  tabs.forEach((tab) => {
+    // Deep links (openRecordingSettings, the Discogs note) click the tab, so
+    // the click is the one way into a section.
+    tab.addEventListener("click", () => selectSettingsTab(overlay, tab.dataset.tab));
   });
-  overlay.querySelector(".settings-registry-refresh:not(.settings-logs-refresh)")
+  overlay.querySelector(".settings-tabs")?.addEventListener("keydown", (e) => {
+    const at = tabs.indexOf(document.activeElement);
+    if (at < 0) return;
+    const next = nextTabIndex(at, e.key, tabs.length);
+    if (next === null) return;
+    e.preventDefault();
+    tabs[next].focus();
+    // Selection follows focus, except that the Recording section opens the
+    // microphone and camera: arrowing past it must not start them, so it
+    // waits until focus has rested on it for a moment.
+    selectSettingsTab(overlay, tabs[next].dataset.tab, { deferRecording: true });
+  });
+
+  overlay.querySelector('[data-pane="registry"] .settings-registry-reload')
     ?.addEventListener("click", () => loadRegistryView(overlay));
   overlay.querySelector(".settings-logs-refresh")?.addEventListener("click", () => loadLogsView(overlay));
   overlay.querySelectorAll(".settings-subtab").forEach((tab) => {
     tab.addEventListener("click", () => {
       const name = tab.dataset.sub;
-      overlay.querySelectorAll(".settings-subtab").forEach((t) => t.classList.toggle("active", t === tab));
+      overlay.querySelectorAll(".settings-subtab").forEach((t) => {
+        t.classList.toggle("active", t === tab);
+        t.setAttribute("aria-selected", String(t === tab));
+      });
       overlay.querySelectorAll(".settings-subpane").forEach((p) => p.classList.toggle("hidden", p.dataset.subpane !== name));
       if (name === "location") loadLogsView(overlay);
       else loadLogTail(overlay, name);
@@ -5163,27 +5312,64 @@ function openLibraryEditor() {
     b.addEventListener("click", () => loadLogTail(overlay, b.dataset.view)));
   overlay.querySelector(".settings-export-logs")?.addEventListener("click", (e) => exportLogs(e.currentTarget));
 
+  wireSettingsSearch(overlay);
+
   overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) closeLibraryEditor(); });
-  // (status summary is filled in after the overlay is in the DOM, below)
   overlay.querySelector(".library-editor-close")?.addEventListener("click", closeLibraryEditor);
   overlay.querySelector(".settings-done")?.addEventListener("click", closeLibraryEditor);
   overlay.querySelector(".library-editor-sync")?.addEventListener("click", () => resyncLibrary());
-  // Escape closes from anywhere (the overlay isn't focused, so listen on document).
-  libraryEditorOnKey = (e) => { if (e.code === "Escape") closeLibraryEditor(); };
+  // Escape closes from anywhere (the overlay isn't focused, so listen on
+  // document). The reset confirmation sits above Settings: Escape closes that
+  // one alone, and a search being typed is cleared before Settings closes.
+  libraryEditorOnKey = (e) => {
+    if (e.code !== "Escape") return;
+    if (resetConfirmOverlay) {
+      closeResetConfirm();
+      overlay.querySelector(".settings-reset-btn")?.focus();
+      return;
+    }
+    const search = overlay.querySelector(".settings-search-input");
+    if (e.target === search && search.value) {
+      e.preventDefault();
+      clearSettingsSearch(overlay);
+      return;
+    }
+    closeLibraryEditor();
+  };
   document.addEventListener("keydown", libraryEditorOnKey);
+  // Keep Tab inside the dialog while it is open.
+  dialog.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const items = settingsFocusables(dialog);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
 
   document.body.appendChild(overlay);
   libraryEditor = overlay;
   refreshLibrarySyncSummary();
+  selectSettingsTab(overlay, keepTab);
   const isDesktop = Boolean(window.__TAURI__?.core?.invoke);
   wireLanguageSetting(overlay);
   wireGeneralSettings(overlay);
   wireVideoEncoderSetting(overlay, showError);
   wireAcoustidSetting(overlay);
   wireDiscogsSetting(overlay);
-  wireStemsLocation(overlay);
-  wireExportsLocation(overlay);
-  wireNetworkSetting(overlay);
+  // A Storage card whose two rows both went (a server or a browser has
+  // neither) would be a heading over an empty box.
+  Promise.allSettled([wireStemsLocation(overlay), wireExportsLocation(overlay)]).then(() => {
+    const storage = overlay.querySelector(".settings-group-storage");
+    if (storage && !storage.querySelector(".settings-row")) storage.remove();
+  });
+  wireNetworkSetting(overlay).then(() => watchNetworkStatus(overlay));
   if (!isDesktop) {
     overlay.querySelector(".net-access-input")?.setAttribute("disabled", "");
     overlay.querySelector(".set-port")?.setAttribute("readonly", "");
@@ -5203,6 +5389,271 @@ function openLibraryEditor() {
   overlay.querySelector(".settings-reset-btn")?.addEventListener("click", () => {
     openResetConfirm();
   });
+
+  if (refocusLanguage) overlay.querySelector(".set-language")?.focus();
+  else overlay.querySelector(".settings-tab.active")?.focus();
+}
+
+// A few help lines name a file as <code>name</code> inside the translated
+// string, and applyTranslations writes text, so the tags showed as typed.
+// Rebuilt as elements here; the strings are the app's own, and the file name
+// still goes in as text.
+function renderInlineCode(root) {
+  for (const el of root.querySelectorAll(".settings-row-desc[data-i18n]")) {
+    const text = el.textContent;
+    if (!text.includes("<code>")) continue;
+    el.textContent = "";
+    for (const part of text.split(/(<code>.*?<\/code>)/)) {
+      const m = /^<code>(.*)<\/code>$/.exec(part);
+      if (m) {
+        const code = document.createElement("code");
+        code.textContent = m[1];
+        el.appendChild(code);
+      } else if (part) {
+        el.appendChild(document.createTextNode(part));
+      }
+    }
+  }
+}
+
+/** What Tab can reach in the dialog, in order. */
+function settingsFocusables(root) {
+  return [...root.querySelectorAll("button, [href], input, select, textarea, [tabindex]")].filter(
+    (el) => el.tabIndex >= 0 && !el.disabled && !el.closest("[hidden], .hidden") && el.getClientRects().length > 0,
+  );
+}
+
+/** Show one section: its tab, its pane, its title and description. */
+function selectSettingsTab(overlay, name, { deferRecording = false } = {}) {
+  const section = SETTINGS_SECTIONS.find((s) => s.id === name);
+  if (!section) return;
+  if (settingsSearching) clearSettingsSearch(overlay, { restore: false });
+  const changed = settingsActiveTab !== name;
+  settingsActiveTab = name;
+  overlay.querySelectorAll(".settings-tab").forEach((t) => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", String(on));
+    t.tabIndex = on ? 0 : -1;
+    // In a narrow window the sections are a row that scrolls sideways.
+    if (on && changed) t.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  overlay.querySelectorAll(".settings-pane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== name));
+  if (changed) {
+    const pane = overlay.querySelector(`.settings-pane[data-pane="${name}"]`);
+    if (pane) pane.scrollTop = 0;
+  }
+  setSettingsHead(overlay, i18nT(section.label), i18nT(section.desc));
+  if (name === "registry") loadRegistryView(overlay);
+  if (name === "logs") loadLogsView(overlay);
+  // The Recording tab holds the microphone and camera open while it shows.
+  if (name === "recording") {
+    if (!deferRecording) enterRecordingPane(overlay);
+    else {
+      setTimeout(() => {
+        if (libraryEditor === overlay && settingsActiveTab === "recording" && !settingsSearching) {
+          enterRecordingPane(overlay);
+        }
+      }, 450);
+    }
+  } else {
+    recordingPane?.leave();
+  }
+}
+
+function setSettingsHead(overlay, title, desc) {
+  const t = overlay.querySelector(".settings-main-title");
+  const d = overlay.querySelector(".settings-main-desc");
+  if (t) t.textContent = title;
+  if (d) d.textContent = desc;
+}
+
+// ── Settings search ──
+// Matches the label and help text of every setting, across all sections,
+// and lists the matches in place of the section. Picking one opens its
+// section with the setting scrolled to and briefly marked. The controls are
+// never moved or copied: each still lives, and is wired, in its own pane.
+
+function settingsSearchEntries(overlay) {
+  const entries = [];
+  for (const s of SETTINGS_SECTIONS) {
+    const pane = overlay.querySelector(`.settings-pane[data-pane="${s.id}"]`);
+    if (!pane) continue;
+    const section = i18nT(s.label);
+    const rows = [...pane.querySelectorAll(".settings-row")];
+    if (s.id === "recording" && !rows.length) {
+      for (const key of RECORDING_SEARCH_ROWS) {
+        entries.push({
+          pane: s.id, section, group: "", el: null,
+          title: i18nT(`settings.rec.${key}.title`),
+          desc: i18nT(`settings.rec.${key}.desc`),
+        });
+      }
+      continue;
+    }
+    for (const row of rows) {
+      const title = row.querySelector(".settings-row-title")?.textContent.trim();
+      if (!title) continue;
+      const desc = [...row.querySelectorAll(".settings-row-desc")]
+        .map((d) => d.textContent.trim())
+        .filter(Boolean)
+        .join(" ");
+      const group = row.closest(".settings-group")?.querySelector(".settings-group-title")?.textContent.trim() || "";
+      entries.push({ pane: s.id, section, group, title, desc, el: row });
+    }
+  }
+  return entries;
+}
+
+function appendHighlighted(parent, text, ranges) {
+  for (const part of highlightParts(text, ranges)) {
+    if (part.match) {
+      const mark = document.createElement("mark");
+      mark.textContent = part.text;
+      parent.appendChild(mark);
+    } else {
+      parent.appendChild(document.createTextNode(part.text));
+    }
+  }
+}
+
+function wireSettingsSearch(overlay) {
+  const input = overlay.querySelector(".settings-search-input");
+  const clearBtn = overlay.querySelector(".settings-search-clear");
+  const list = overlay.querySelector(".settings-results-list");
+  if (!input || !list) return;
+  input.addEventListener("input", () => runSettingsSearch(overlay, input.value));
+  input.addEventListener("keydown", (e) => {
+    const first = list.querySelector(".settings-result");
+    if (e.key === "ArrowDown" && first) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.key === "Enter" && first) {
+      e.preventDefault();
+      first.click();
+    }
+  });
+  clearBtn?.addEventListener("click", () => {
+    clearSettingsSearch(overlay);
+    input.focus();
+  });
+  list.addEventListener("keydown", (e) => {
+    const items = [...list.querySelectorAll(".settings-result")];
+    const at = items.indexOf(document.activeElement);
+    if (at < 0) return;
+    if (e.key === "ArrowDown" && at < items.length - 1) {
+      e.preventDefault();
+      items[at + 1].focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      (at > 0 ? items[at - 1] : input).focus();
+    }
+  });
+}
+
+function runSettingsSearch(overlay, query) {
+  const results = overlay.querySelector(".settings-results");
+  const list = overlay.querySelector(".settings-results-list");
+  const status = overlay.querySelector(".settings-results-status");
+  const clearBtn = overlay.querySelector(".settings-search-clear");
+  const q = String(query || "").trim();
+  if (!q) {
+    clearSettingsSearch(overlay);
+    return;
+  }
+  if (!settingsSearching) {
+    settingsSearching = true;
+    // Results replace the section: the Recording one lets go of the
+    // microphone and camera while it is out of sight.
+    recordingPane?.leave();
+    overlay.querySelectorAll(".settings-pane").forEach((p) => p.classList.add("hidden"));
+    results.hidden = false;
+    overlay.querySelector(".library-editor")?.classList.add("is-searching");
+  }
+  if (clearBtn) clearBtn.hidden = false;
+  const found = searchSettings(settingsSearchEntries(overlay), q);
+  const counts = countBySection(found);
+  overlay.querySelectorAll(".settings-tab").forEach((t) => {
+    t.classList.toggle("no-match", !counts[t.dataset.tab]);
+  });
+  setSettingsHead(overlay, i18nT("settings.search.title"), i18nT("settings.search.for", { query: q }));
+  list.textContent = "";
+  status.textContent = found.length ? "" : i18nT("settings.search.noResults", { query: q });
+  status.classList.toggle("is-empty", !found.length);
+  for (const { entry, titleRanges, descRanges } of found) {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "settings-result";
+    const path = document.createElement("span");
+    path.className = "settings-result-path";
+    path.textContent = entry.group ? `${entry.section} / ${entry.group}` : entry.section;
+    const title = document.createElement("span");
+    title.className = "settings-result-title";
+    appendHighlighted(title, entry.title, titleRanges);
+    btn.append(path, title);
+    if (entry.desc) {
+      const desc = document.createElement("span");
+      desc.className = "settings-result-desc";
+      appendHighlighted(desc, entry.desc, descRanges);
+      btn.append(desc);
+    }
+    btn.addEventListener("click", () => openSettingsResult(overlay, entry));
+    li.appendChild(btn);
+    list.appendChild(li);
+  }
+}
+
+function clearSettingsSearch(overlay, { restore = true } = {}) {
+  const input = overlay.querySelector(".settings-search-input");
+  if (input) input.value = "";
+  const clearBtn = overlay.querySelector(".settings-search-clear");
+  if (clearBtn) clearBtn.hidden = true;
+  overlay.querySelectorAll(".settings-tab.no-match").forEach((t) => t.classList.remove("no-match"));
+  if (!settingsSearching) return;
+  settingsSearching = false;
+  const results = overlay.querySelector(".settings-results");
+  if (results) results.hidden = true;
+  overlay.querySelector(".settings-results-list")?.replaceChildren();
+  overlay.querySelector(".library-editor")?.classList.remove("is-searching");
+  if (restore) selectSettingsTab(overlay, settingsActiveTab);
+}
+
+function openSettingsResult(overlay, entry) {
+  clearSettingsSearch(overlay, { restore: false });
+  selectSettingsTab(overlay, entry.pane);
+  const row = entry.el;
+  if (!row?.isConnected) {
+    overlay.querySelector(".settings-tab.active")?.focus();
+    return;
+  }
+  // A log row lives in one of the Logs sub-tabs.
+  const sub = row.closest(".settings-subpane")?.dataset.subpane;
+  if (sub) overlay.querySelector(`.settings-subtab[data-sub="${sub}"]`)?.click();
+  row.scrollIntoView({ block: "center" });
+  row.classList.remove("settings-row-flash");
+  void row.offsetWidth; // restart the mark if the same row is picked twice
+  row.classList.add("settings-row-flash");
+  setTimeout(() => row.classList.remove("settings-row-flash"), 1800);
+  const control = settingsFocusables(row).find((el) => !el.matches("a"));
+  (control || overlay.querySelector(".settings-tab.active"))?.focus({ preventScroll: true });
+}
+
+/** The dot on Network while the app is open to other devices. */
+function watchNetworkStatus(overlay) {
+  const input = overlay.querySelector(".net-access-input");
+  const net = overlay.querySelector(".settings-net");
+  const dot = overlay.querySelector('.settings-tab[data-tab="network"] .settings-tab-dot');
+  if (!input || !net || !dot) return;
+  const show = () => {
+    const on = input.checked;
+    dot.hidden = !on;
+    dot.title = on ? i18nT("settings.nav.networkOn") : "";
+  };
+  show();
+  // The switch settles after its POST answers, which ends by showing or
+  // hiding the addresses; follow that rather than the click.
+  new MutationObserver(show).observe(net, { attributes: true, attributeFilter: ["class"] });
 }
 
 // Poll a job until it reaches a terminal state, so auto-restores run one at a
