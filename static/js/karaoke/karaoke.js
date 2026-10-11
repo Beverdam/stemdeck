@@ -1,5 +1,5 @@
-// Karaoke Mode: a workspace view over the studio, entered from the rail's
-// Karaoke button (or the Mode menu), that shows the open song's lyrics big,
+// Karaoke Mode: a workspace view over the studio, entered from the Mode
+// menu (modeUi.js), that shows the open song's lyrics big,
 // a queue panel, and Key and Stems controls, plus a fullscreen stage.
 //
 // It is a view, not a second player. Every control reads and writes the
@@ -39,7 +39,6 @@ const SEEK_STEP = 5;
 
 let root = null; // the windowed view, #karaoke
 let fs = null; // the fullscreen stage, built on first use
-let railBtn = null;
 let open = false;
 let raf = 0;
 const listeners = new Set();
@@ -460,10 +459,6 @@ function relabel() {
     L.emptyBtn.textContent = t("karaoke.openLyrics");
   }
   relabelFullscreen();
-  if (railBtn) {
-    railBtn.title = t("karaoke.rail");
-    railBtn.setAttribute("aria-label", t("karaoke.rail"));
-  }
   // Text built per song (stems, queue, empty states) is rebuilt.
   for (const k of Object.keys(painted)) delete painted[k];
   if (ui.lyrics) ui.lyrics.phraseKey = null;
@@ -501,7 +496,6 @@ export function openKaraoke() {
   window.addEventListener("keydown", onKey, true);
   for (const k of Object.keys(painted)) delete painted[k];
   shownJob = null;
-  paintRail();
   loop();
   notify();
   repaintVoice();
@@ -521,13 +515,7 @@ export function closeKaraoke() {
   window.removeEventListener("keydown", onKey, true);
   cancelAnimationFrame(raf);
   raf = 0;
-  paintRail();
   notify();
-}
-
-export function toggleKaraoke() {
-  if (open) closeKaraoke();
-  else openKaraoke();
 }
 
 export function isKaraokeOpen() {
@@ -548,12 +536,6 @@ function notify() {
   }
 }
 
-function paintRail() {
-  if (!railBtn) return;
-  railBtn.classList.toggle("active", open);
-  railBtn.setAttribute("aria-pressed", String(open));
-}
-
 let noteTimer = 0;
 function flashNote(text) {
   let note = document.getElementById("karaokeNote");
@@ -565,7 +547,8 @@ function flashNote(text) {
   }
   note.textContent = text;
   note.hidden = false;
-  const r = railBtn?.getBoundingClientRect();
+  // Beside the Mode button, the way into Karaoke.
+  const r = document.getElementById("modeBtn")?.getBoundingClientRect();
   if (r) {
     note.style.left = `${Math.round(r.right + 8)}px`;
     note.style.top = `${Math.round(r.top)}px`;
@@ -1161,9 +1144,6 @@ function onKey(e) {
 // ── Init ──
 
 export function initKaraoke() {
-  railBtn = document.getElementById("karaokeBtn");
-  railBtn?.addEventListener("click", () => toggleKaraoke());
-  paintRail();
   // A song's mix loaded while Karaoke is open, or Karaoke's record replaced
   // another mode's: the voice goes off.
   document.addEventListener("stemdeck:mix-loaded", (e) => {
@@ -1186,8 +1166,4 @@ export function initKaraoke() {
   });
   document.addEventListener("fullscreenchange", onFullscreenChange);
   onLanguageChange(() => relabel());
-  if (railBtn) {
-    railBtn.title = t("karaoke.rail");
-    railBtn.setAttribute("aria-label", t("karaoke.rail"));
-  }
 }

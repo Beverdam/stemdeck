@@ -6,7 +6,7 @@
 // lyrics by the media clock; and fullscreen falling back to a layer.
 
 import { test, expect } from "@playwright/test";
-import { JOB_ID, SIBLING_JOB_ID, openStudio } from "./helpers.mjs";
+import { JOB_ID, SIBLING_JOB_ID, openStudio, chooseMode, leaveModeView } from "./helpers.mjs";
 
 const LRC = "[00:01.00] one two three\n[00:02.50] four five six\n[00:04.00] seven eight\n[00:05.00] nine ten";
 
@@ -60,9 +60,9 @@ const seek = (page, s) => ev(page, async (x) => (await import("/js/transport.js"
 const now = (page) => ev(page, async () => (await import("/js/transport.js")).transport().getCurrentTime());
 
 async function openKaraoke(page) {
-  await page.locator("#karaokeBtn").click();
+  await chooseMode(page, "karaoke");
   await expect(page.locator("#karaoke")).toBeVisible();
-  await expect(page.locator("#karaokeBtn")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('#modeMenu .mode-item[data-mode="karaoke"]')).toHaveAttribute("aria-checked", "true");
 }
 
 test.describe("Karaoke Mode", () => {
@@ -119,7 +119,7 @@ test.describe("Karaoke Mode", () => {
     await expect.poll(async () => (await savedMix(page, "karaoke"))?.__global?.speed).toBe(1.25);
 
     // Back out: Advanced is untouched by what was done in Karaoke.
-    await page.locator("#karaokeBtn").click();
+    await leaveModeView(page);
     await expect(page.locator("#karaoke")).toBeHidden();
     await expect.poll(async () => (await mixOf(page)).drums[0]).toBe("-");
     expect(await speedOf(page)).toBe(0.75);
@@ -133,7 +133,7 @@ test.describe("Karaoke Mode", () => {
     await expect.poll(async () => (await mixOf(page)).vocals[0]).toBe("M");
     expect((await mixOf(page)).drums[0]).toBe("-");
     expect(await speedOf(page)).toBe(1.25);
-    await page.locator("#karaokeBtn").click();
+    await leaveModeView(page);
 
     // And all of it comes back after a reload, mode by mode.
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -225,7 +225,7 @@ test.describe("Karaoke Mode", () => {
     await expect(kk(page, '.kk-stem[data-stem="vocals"]')).toHaveClass(/\boff\b/);
     await expect(kk(page, '.kk-stem[data-stem="drums"]')).toHaveCount(0);
 
-    await page.locator("#karaokeBtn").click();
+    await leaveModeView(page);
     await expect(page.locator("#karaoke")).toBeHidden();
     expect(await page.locator("#lanes").getAttribute("inert")).toBeNull();
     // Karaoke's changes are the view's: the mixer shows them while it is open.

@@ -96,6 +96,23 @@ test.describe("help mode", () => {
     }
   });
 
+  test("Karaoke and Performance explain themselves in the Mode menu", async ({ page }) => {
+    await openStudio(page);
+    await helpOn(page);
+    // The Mode button still opens its menu while Guide is on: the two modes
+    // are reached only there.
+    await page.locator("#modeBtn").click();
+    await expect(page.locator("#modeMenu")).toBeVisible();
+    await page.locator('#modeMenu .mode-item[data-mode="karaoke"]').hover();
+    await expect(tip(page)).toContainText("Karaoke Mode");
+    await page.locator('#modeMenu .mode-item[data-mode="streamer"]').hover();
+    await expect(tip(page)).toContainText("Performance Mode");
+    // Choosing is explained, not done.
+    await page.locator('#modeMenu .mode-item[data-mode="streamer"]').click();
+    await expect(page.locator("#streamer")).toBeHidden();
+    await expect(page.locator(".rail-karaoke, .rail-streamer")).toHaveCount(0);
+  });
+
   test("a click explains instead of acting", async ({ page }) => {
     await openStudio(page);
     await helpOn(page);

@@ -450,3 +450,20 @@ export async function stubImportQueue(page, jobId, title = "Importing") {
     settle: async () => { running = false; await read(); },
   };
 }
+
+/**
+ * Choose a mode from the Mode menu (the Mode button at the top of the rail),
+ * the only way into Karaoke ("karaoke") and Performance ("streamer"), as a
+ * person does: the button, then the item.
+ */
+export async function chooseMode(page, mode) {
+  await page.locator("#modeBtn").click();
+  await page.locator(`#modeMenu .mode-item[data-mode="${mode}"]`).click();
+}
+
+/** Leave Karaoke or Performance through the Mode menu: the studio's own mode
+ * (Practice or Advanced, whichever is in force) chosen again. */
+export async function leaveModeView(page) {
+  const mode = await page.evaluate(async () => (await import("/js/mode.js")).getMode());
+  await chooseMode(page, mode);
+}
