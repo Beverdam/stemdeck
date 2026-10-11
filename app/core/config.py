@@ -480,6 +480,14 @@ EXPORT_LIMIT_DBFS = -1.0
 # left -0.4 dBTP for MP3 and OGG and +0.4 dBFS (clipped) for AAC.
 EXPORT_LIMIT_LOSSY_DBTP = -1.5
 
+# Every loudness meter (ffmpeg's ebur128) is run with this framelog level.
+# Without one, ebur128 logs a line per 100 ms frame at "info". "verbose" moves
+# those lines below ffmpeg's default "info" level, so only the summary and any
+# printed metadata reach stderr. Not "quiet": ffmpeg 6.1 knows that value but
+# 5.1 (Debian 12) and 4.4 (Ubuntu 22.04) do not, and they reject the whole
+# filter graph, so nothing is measured at all.
+EBUR128_FRAMELOG = "verbose"
+
 # Reading an upload's tags (artist, title, album, lyrics) with ffprobe for the
 # Lyrics tab and the artist box (#699). Tags are a nicety, so a probe that
 # takes longer than this is abandoned and the upload goes ahead without them.

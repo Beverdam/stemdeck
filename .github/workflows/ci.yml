@@ -92,6 +92,10 @@ jobs:
       - run: uv sync --frozen --all-extras
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      # The backend under test is real, and finishing a recorded take renders
+      # it with ffmpeg (app/pipeline/take_render.py). The runner image has no
+      # ffmpeg, so without this the take specs get a 500 and time out.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npx playwright test --shard=${{ matrix.shard }}/3
       - if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

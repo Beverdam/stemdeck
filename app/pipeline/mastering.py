@@ -41,7 +41,12 @@ import re
 from collections import deque
 from dataclasses import asdict, dataclass
 
-from app.core.config import EXPORT_LIMIT_LOSSY_DBTP, TIMEOUT_FFMPEG, ffmpeg_executable
+from app.core.config import (
+    EBUR128_FRAMELOG,
+    EXPORT_LIMIT_LOSSY_DBTP,
+    TIMEOUT_FFMPEG,
+    ffmpeg_executable,
+)
 
 logger = logging.getLogger("stemdeck.mastering")
 
@@ -285,7 +290,7 @@ def meter_filter(rate: int) -> str:
     frame metadata, printed. The last values cover the whole signal."""
     return (
         f"asetnsamples=n={rate}:p=0,"
-        "ebur128=peak=true:metadata=1:framelog=quiet,"
+        f"ebur128=peak=true:metadata=1:framelog={EBUR128_FRAMELOG},"
         "ametadata=mode=print:key=lavfi.r128.I,"
         "ametadata=mode=print:key=lavfi.r128.LRA,"
         "ametadata=mode=print:key=lavfi.r128.true_peak"

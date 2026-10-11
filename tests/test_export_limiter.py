@@ -30,7 +30,12 @@ import pytest
 import soundfile as sf
 
 from app.api import stems as stems_mod
-from app.core.config import EXPORT_LIMIT_DBFS, EXPORT_LIMIT_LOSSY_DBTP, ffmpeg_executable
+from app.core.config import (
+    EBUR128_FRAMELOG,
+    EXPORT_LIMIT_DBFS,
+    EXPORT_LIMIT_LOSSY_DBTP,
+    ffmpeg_executable,
+)
 from app.core.models import Job
 from app.core.registry import _jobs
 from app.pipeline import take_render
@@ -116,7 +121,7 @@ def _measure(path: Path) -> dict[str, float]:
             str(path),
             "-vn",
             "-af",
-            "ebur128=peak=true:framelog=quiet",
+            f"ebur128=peak=true:framelog={EBUR128_FRAMELOG}",
             "-f",
             "null",
             "-",
