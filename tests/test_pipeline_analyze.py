@@ -276,6 +276,19 @@ def test_the_summary_parser_reads_ffmpegs_text():
     assert az.parse_ebur128_summary("nothing here") == (None, None)
 
 
+def test_every_loudness_meter_works_on_an_older_ffmpeg():
+    """framelog=quiet only exists in newer ffmpeg: 5.1 (Debian 12, the CI image)
+    rejects the whole graph and every loudness reads as None. A Windows host
+    with a newer bundled ffmpeg never sees it, so the source is checked."""
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    offenders = [
+        str(path.relative_to(app_dir))
+        for path in app_dir.rglob("*.py")
+        if "framelog=quiet" in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
+
+
 def test_dynamic_range_is_true_peak_over_loudness():
     assert az.dynamic_range_db(-9.5, 0.9) == 10.4
     assert az.dynamic_range_db(None, 0.9) is None

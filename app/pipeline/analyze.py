@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from app.core.config import JOBS_DIR, TIMEOUT_ANALYZE, ffmpeg_executable
+from app.core.config import EBUR128_FRAMELOG, JOBS_DIR, TIMEOUT_ANALYZE, ffmpeg_executable
 from app.core.models import LOUDNESS_VERSION, Job, JobCancelled, _set
 from app.pipeline.cancel import check_cancel, run_registered
 
@@ -272,7 +272,7 @@ def measure_loudness(
     cmd: list[str] = [ffmpeg_executable(), "-hide_banner", "-nostdin", "-vn"]
     for source in sources:
         cmd += ["-i", str(source)]
-    meter = "ebur128=peak=true:framelog=quiet"
+    meter = f"ebur128=peak=true:framelog={EBUR128_FRAMELOG}"
     if len(sources) == 1:
         cmd += ["-af", meter]
     else:

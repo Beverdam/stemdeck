@@ -1095,6 +1095,15 @@ _DECODE_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
 def _decoded_duration(path: Path) -> float:
+    """How long the first video stream runs: the end of its last packet.
+
+    Packet timestamps are read first because the decoder's "time=" is not the
+    same on every ffmpeg: 5.1 and 7.1 print the end of the last frame, 6.1
+    (Ubuntu 24.04) its start, one frame short, which cost a 5 s take its fifth
+    filmstrip frame. The decoder is only asked when no packet has a time."""
+    end = _last_packet_end(path)
+    if end > 0:
+        return end
     proc = subprocess.run(
         [ffmpeg_executable(), "-nostdin", "-i", str(path), "-map", "0:v:0", "-f", "null", "-"],
         capture_output=True,
@@ -1106,6 +1115,47 @@ def _decoded_duration(path: Path) -> float:
         return 0.0
     h, m, sec = times[-1]
     return int(h) * 3600 + int(m) * 60 + float(sec)
+
+
+def _last_packet_end(path: Path) -> float:
+    """The latest pts + duration over the first video stream's packets, in
+    seconds, or 0.0 when ffprobe fails or no packet carries both."""
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_executable(),
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=pts_time,duration_time",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_FILMSTRIP,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 0.0
+    if proc.returncode != 0:
+        return 0.0
+    end = 0.0
+    for line in (proc.stdout or "").splitlines():
+        parts = line.strip().split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            value = float(parts[0]) + float(parts[1])
+        except ValueError:
+            continue
+        if math.isfinite(value):
+            end = max(end, value)
+    # WebM keeps whole milliseconds, so 15 fps frames last 0.066 s and a 5 s
+    # take ends at 4.999: rounded to 10 ms, it ends at 5.0 again.
+    return round(end, 2)
 
 
 def build_filmstrip(camera: Path, folder: Path) -> dict[str, Any]:
