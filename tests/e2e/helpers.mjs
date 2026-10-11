@@ -279,10 +279,20 @@ export async function stubFavorites(page, serverFavorites = {}) {
   });
   await page.route(/\/api\/jobs(\?.*)?$/, async (route) => {
     if (route.request().method() !== "GET") return route.continue();
-    const res = await route.fetch();
+    let res;
+    try {
+      res = await route.fetch();
+    } catch (err) {
+      // The test ended with this library read still out (a short test, a
+      // background sync): nothing is waiting for the answer any more.
+      if (/Test ended|Target page, context or browser has been closed/.test(String(err))) return;
+      throw err;
+    }
     const jobs = await res.json();
     for (const j of jobs) j.favorite = serverFavorites[j.job_id] ?? null;
-    await route.fulfill({ response: res, json: jobs });
+    await route.fulfill({ response: res, json: jobs }).catch((err) => {
+      if (!/Test ended|Target page, context or browser has been closed/.test(String(err))) throw err;
+    });
   });
   return writes;
 }

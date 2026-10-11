@@ -2508,10 +2508,18 @@ input, textarea { font-family: inherit; }
 @container mxrow (max-height: 107px) {
   /* A track's arm and picker on the card's bottom line, low enough that the
      four lines fit the row. */
-  .track-lane .mx-card { row-gap: 2px; }
+  .track-lane .mx-card { row-gap: 2px; padding: 1px 0; }
   .track-lane .mx-faderline { height: 18px; }
+  /* The fader's box as tall as its line (its 18 px thumb still fits), not
+     reaching into the name's line above. */
+  .track-lane .mx-faderline .mx-fader-input { height: 18px; }
   .track-lane .mx-actions { height: 22px; }
   .track-lane .mx-actions > * { max-height: 22px; }
+  /* The picker and the menu at the arm button's 22 px: at their own 28 px
+     the four lines were taller than a 72 px row and spilled out of it
+     (the menu above the row, the picker below it). */
+  .track-lane .mx-actions .track-input { height: 22px; }
+  .lane-header.mx-row.track-lane .mx-head .take-menu-btn.mx-btn { height: 22px; }
 }
 
 /* ── Waveform panel (right) ── */

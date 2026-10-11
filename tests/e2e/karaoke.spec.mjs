@@ -79,7 +79,8 @@ test.describe("Karaoke Mode", () => {
     // Original on the left, the voice right after it, and no instrument cards.
     const names = (await cardsOf(page)).map((c) => c.split(":")[0]);
     expect(names).toEqual(["original", "vocals"]);
-    await expect(kk(page, ".kk-stem-row .kk-switch")).toHaveCount(1);
+    // Only the voice can be switched: the backing track's switch is hidden.
+    await expect(kk(page, ".kk-stem-row .kk-switch:visible")).toHaveCount(1);
     await expect(kk(page, '.kk-stem[data-stem="original"] .kk-stem-label')).toHaveText("Backing track");
     const mix = await mixOf(page);
     expect(mix.original).toBe("--");
@@ -110,10 +111,13 @@ test.describe("Karaoke Mode", () => {
     expect((await mixOf(page)).bass[0]).toBe("-");
     expect(await speedOf(page)).toBe(0.75);
 
-    // Karaoke: its own again: the voice off, the others on, speed 1x.
+    // Karaoke: its own again: the voice off, the backing track on, speed 1x.
+    // Karaoke's lanes are the voice and Original (every instrument folded into
+    // it, partChoice.js KARAOKE_LANES), so there is no Bass lane here.
     await openKaraoke(page);
     await expect.poll(async () => (await mixOf(page)).vocals[0]).toBe("M");
-    expect((await mixOf(page)).bass[0]).toBe("-");
+    expect(Object.keys(await mixOf(page)).sort()).toEqual(["original", "vocals"]);
+    expect((await mixOf(page)).original[0]).toBe("-");
     expect(await speedOf(page)).toBe(1);
     await ev(page, async () => (await import("/js/transport.js")).setSpeed(1.25));
     await expect.poll(async () => (await savedMix(page, "karaoke"))?.__global?.speed).toBe(1.25);
@@ -131,7 +135,7 @@ test.describe("Karaoke Mode", () => {
     await mute(page, "vocals", false);
     await openKaraoke(page);
     await expect.poll(async () => (await mixOf(page)).vocals[0]).toBe("M");
-    expect((await mixOf(page)).drums[0]).toBe("-");
+    expect((await mixOf(page)).original[0]).toBe("-");
     expect(await speedOf(page)).toBe(1.25);
     await leaveModeView(page);
 
@@ -154,8 +158,11 @@ test.describe("Karaoke Mode", () => {
     expect((await mixOf(page)).bass[0]).toBe("M");
     await setMode(page, "practice");
     expect((await mixOf(page)).bass[0]).toBe("M");
+    // Karaoke does not start from it: the voice is off and the backing track
+    // (Original, which holds the bass in Karaoke) plays.
     await openKaraoke(page);
-    await expect.poll(async () => (await mixOf(page)).bass[0]).toBe("-");
+    await expect.poll(async () => (await mixOf(page)).original?.[0]).toBe("-");
+    expect((await mixOf(page)).bass).toBeUndefined();
     // The old record is never written.
     expect(await ev(page, (id) => JSON.parse(localStorage.getItem(`stemdeck:mix:${id}`)).bass.muted, JOB_ID)).toBe(true);
   });
@@ -246,7 +253,9 @@ test.describe("Karaoke Mode", () => {
     await ev(page, async () => (await import("/js/transport.js")).setSpeed(1.25));
     expect(await ev(page, async () => (await import("/js/state.js")).playbackSpeed)).toBe(1.25);
     for (const id of ["#t-speed-05", "#t-speed-075", "#t-speed-1"]) await expect(page.locator(id)).not.toHaveClass(/active/);
-    await page.locator("#t-speed-1").click();
+    // Karaoke has no speed box, and the footer with the studio's speed
+    // buttons is hidden while it is open.
+    await expect(page.locator("#t-speed-1")).toBeHidden();
     await expect(kk(page, ".kk-speed")).toHaveCount(0);
 
     const pitch = await ev(page, async () => (await import("/js/transport.js")).getGlobalPitch());
@@ -254,7 +263,11 @@ test.describe("Karaoke Mode", () => {
     await kk(page, ".kk-key-btns .kk-sq").nth(1).click();
     await expect(page.locator("#t-pitch-value")).toHaveText("+1");
     await expect(kk(page, ".kk-badge")).toHaveText("+1");
-    await page.locator("#t-pitch-reset").click();
+    // The other way: the studio's key (its footer is hidden here) shows in Karaoke.
+    await ev(page, async () => (await import("/js/transport.js")).setGlobalPitch(-2));
+    await expect(kk(page, ".kk-badge")).toHaveText("\u22122");
+    await kk(page, ".kk-key-btns .kk-reset").click();
+    await expect(page.locator("#t-pitch-value")).toHaveText("0");
     await expect(kk(page, ".kk-badge")).toHaveText("0");
   });
 
@@ -317,7 +330,8 @@ test.describe("Karaoke Mode", () => {
     await kk(page, ".kk-fs-btn").click();
     await expect(page.locator(".kk-fs")).toBeVisible();
     await expect(page.locator(".kk-fs")).toHaveClass(/kk-fs-fallback/);
-    await expect(page.locator(".kk-fs .kk-pill")).toContainText("100%");
+    // The pill names the key and the voice (the speed left it with the speed box).
+    await expect(page.locator(".kk-fs .kk-pill")).toContainText("Vocals off");
     await page.keyboard.press("Escape");
     await expect(page.locator(".kk-fs")).toBeHidden();
     await expect(page.locator("#karaoke")).toBeVisible();

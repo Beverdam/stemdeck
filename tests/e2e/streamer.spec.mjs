@@ -8,11 +8,22 @@
 
 import { test, expect } from "@playwright/test";
 import { JOB_ID, SIBLING_JOB_ID, openStudio, chooseMode, leaveModeView } from "./helpers.mjs";
+import { removeTracks } from "./recording-helpers.mjs";
+
+// A take recorded here makes a Performance track on the shared e2e backend,
+// and a spec that runs next in the same shard then finds a track it did not
+// make ("the only track is armed by Record" no longer holds). Each test takes
+// its tracks and takes away again.
+test.afterEach(async ({ request }) => removeTracks(request));
 
 const ev = (page, fn, arg) => page.evaluate(fn, arg);
 const sm = (page, sel) => page.locator(`#streamer ${sel}`);
 const seek = (page, s) => ev(page, async (x) => (await import("/js/transport.js")).setPlayheadTime(x), s);
 const now = (page) => ev(page, async () => (await import("/js/transport.js")).transport().getCurrentTime());
+// The transport reports a duration (openStudio's signal) a moment before the
+// audio engine's ready resolves, and a seek before then does not hold: the
+// engine comes up at 0 (reloadPlace.js says the same).
+const engineReady = (page) => ev(page, async () => { await (await import("/js/state.js")).audioEngine?.ready; });
 const setMode = async (page, mode) => {
   await ev(page, async (m) => (await import("/js/mode.js")).setMode(m), mode);
   await page.waitForTimeout(700);
@@ -48,6 +59,7 @@ test.describe("Streamer Mode", () => {
 
   test("the Mode menu opens and closes it over the lanes, keeping the song and position", async ({ page }) => {
     await openStudio(page);
+    await engineReady(page);
     await seek(page, 3);
     await openStreamer(page);
     await expect(page.locator("html")).toHaveClass(/streamer-open/);
@@ -117,11 +129,13 @@ test.describe("Streamer Mode", () => {
     await expect.poll(() => mixOf(page)).toEqual(advanced);
     await setMode(page, "practice");
 
-    // Karaoke keeps its own mix too, with the voice off.
+    // Karaoke keeps its own mix too, with the voice off. Its lanes are the
+    // voice and Original (the bass is in it), and none of Streamer's muted bass.
     await chooseMode(page, "karaoke");
     await expect(page.locator("#karaoke")).toBeVisible();
     await expect.poll(async () => (await mixOf(page)).lanes.vocals).toBe("M-");
-    expect((await mixOf(page)).lanes.bass).toBe("--");
+    expect((await mixOf(page)).lanes.original).toBe("--");
+    expect((await mixOf(page)).lanes.bass).toBeUndefined();
     await leaveModeView(page);
 
     // Back in Streamer: its own record is still there.
@@ -283,6 +297,10 @@ test.describe("Streamer Mode: layers and timeline", () => {
 
   test("resize from a corner keeps the opposite corner", async ({ page }) => {
     await sm(page, '.sm-layer[data-layer="lyrics"] .sm-layer-pick').click();
+    // The selection box moves to the lyrics on the next drawn frame: until
+    // then its handle is still the previous layer's (Track Info's).
+    const f = await sceneBox(page);
+    await expect.poll(async () => Math.abs((await sm(page, ".sm-selbox").boundingBox()).x - (f.x + (494 / 716) * f.w))).toBeLessThan(4);
     const h = await sm(page, ".sm-handle-se").boundingBox();
     await dragMouse(page, [h.x + 4, h.y + 4], [h.x - 56, h.y - 36], { alt: true });
     await expect.poll(async () => (await layerOf(page, "lyrics"))?.frame.w).toBeLessThan(216 / 716 - 0.05);
@@ -385,12 +403,24 @@ test.describe("Streamer Mode: layers and timeline", () => {
   });
 
   test("zoom, Fit and the ruler", async ({ page }) => {
+    // Full zoom is 120 px a second (streamerModel.js ZOOM_MAX_PPS). The fixture
+    // song is 6 s long, so on a wide window the fitted view is already past
+    // that and zoom has nothing to add: a narrow window leaves it room.
+    await page.setViewportSize({ width: 1024, height: 900 });
     const widths = () => ev(page, () => {
       const s = document.querySelector("#streamer .sm-tl-scroll");
       return [s.clientWidth, s.scrollWidth];
     });
+    // Four steps of 10% widen the song past the view (about 67 px here); ten
+    // reach full zoom, where + is disabled. (The slider between - and + is
+    // hidden at this width.)
     for (let i = 0; i < 4; i++) await sm(page, ".sm-zoom-in").click();
-    await expect.poll(async () => { const [c, s] = await widths(); return s > c * 1.2; }).toBe(true);
+    await expect.poll(async () => { const [c, s] = await widths(); return s > c + 40; }).toBe(true);
+    const [, at40] = await widths();
+    for (let i = 0; i < 6; i++) await sm(page, ".sm-zoom-in").click();
+    await expect(sm(page, ".sm-zoom-track")).toHaveAttribute("aria-valuenow", "100");
+    await expect(sm(page, ".sm-zoom-in")).toBeDisabled();
+    await expect.poll(async () => (await widths())[1]).toBeGreaterThan(at40);
     await sm(page, ".sm-fit").click();
     await expect.poll(async () => { const [c, s] = await widths(); return s <= c + 1; }).toBe(true);
     const rb = await sm(page, ".sm-tl-ruler").boundingBox();
@@ -410,163 +440,6 @@ test.describe("Streamer Mode: layers and timeline", () => {
     await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
     await openStreamer(page);
     await expect.poll(async () => (await savedScene(page))?.trim).toEqual(saved);
-  });
-});
-
-// Phase 3: the camera, the input and the output settings, on Chromium's fake
-// camera and microphone.
-test.describe("Streamer Mode: devices and meter", () => {
-  test.use({ launchOptions: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio"] } });
-  const media = (page) => ev(page, async () => {
-    const m = (await import("/js/streamer/streamerDevices.js")).getStreamerMedia();
-    return { camera: Boolean(m.camera?.active), audio: Boolean(m.audio) };
-  });
-  const savedSettings = (page) => ev(page, async () => (await import("/js/utils.js")).storeGet("stemdeck:streamer:recording", null));
-
-  test.beforeEach(async ({ page }) => {
-    await page.setViewportSize({ width: 1800, height: 1020 });
-    await openStudio(page);
-    await openStreamer(page);
-    const allow = sm(page, ".sm-cam-act");
-    if (await allow.isVisible()) await allow.click();
-  });
-
-  test("the device lists fill and the live camera and the meter run", async ({ page }) => {
-    await expect.poll(() => page.locator("#streamerVideoSrc option").count()).toBeGreaterThan(2);
-    await expect.poll(() => page.locator("#streamerAudioSrc option").count()).toBeGreaterThan(2);
-    await expect.poll(async () => (await media(page)).camera).toBe(true);
-    await expect(sm(page, '.sm-layer[data-layer="camera"] .sm-layer-sub')).toContainText("×");
-    const meter = sm(page, ".sm-meter");
-    await expect(meter).toHaveAttribute("role", "meter");
-    await expect(meter).toHaveAttribute("aria-valuemin", "-60");
-    await expect.poll(async () => Number(await meter.getAttribute("aria-valuenow"))).toBeGreaterThan(-60);
-  });
-
-  test("closing Streamer stops the camera and the input", async ({ page }) => {
-    await expect.poll(async () => (await media(page)).camera).toBe(true);
-    await ev(page, async () => {
-      const m = (await import("/js/streamer/streamerDevices.js")).getStreamerMedia();
-      window.__tracks = [...m.camera.getTracks(), ...(m.audio?.getTracks() || [])];
-    });
-    await closeStreamer(page);
-    await expect.poll(() => ev(page, () => window.__tracks.every((tr) => tr.readyState === "ended"))).toBe(true);
-  });
-
-  test("hiding the Camera layer or choosing No camera releases it", async ({ page }) => {
-    await expect.poll(async () => (await media(page)).camera).toBe(true);
-    await sm(page, '.sm-layer[data-layer="camera"] [role=switch]').click();
-    await expect.poll(async () => (await media(page)).camera).toBe(false);
-    await sm(page, '.sm-layer[data-layer="camera"] [role=switch]').click();
-    await expect.poll(async () => (await media(page)).camera).toBe(true);
-    await page.locator("#streamerVideoSrc").selectOption("none");
-    await expect.poll(async () => (await media(page)).camera).toBe(false);
-  });
-
-  test("output settings are kept per user, 60 fps warns", async ({ page }) => {
-    await expect(sm(page, ".sm-heavy")).toBeHidden();
-    await page.locator("#streamerFps").selectOption("60");
-    await expect(sm(page, ".sm-heavy")).toBeVisible();
-    await page.locator("#streamerRes").selectOption("720");
-    await page.locator("#streamerFps").selectOption("24");
-    await expect(sm(page, ".sm-heavy")).toBeHidden();
-    // Two switches: mixed audio and auto-stop. No metronome click.
-    await expect(sm(page, ".sm-out-switches [data-setting]")).toHaveCount(2);
-    await expect(sm(page, '[data-setting="includeClick"]')).toHaveCount(0);
-    await sm(page, '[data-setting="autoStopAtEnd"]').click();
-    await expect.poll(async () => (await savedSettings(page))?.resolution).toBe("720");
-    expect((await savedSettings(page)).fps).toBe(24);
-    expect((await savedSettings(page)).autoStopAtEnd).toBe(false);
-    expect("includeClick" in (await savedSettings(page))).toBe(false);
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
-    await openStreamer(page);
-    await expect(page.locator("#streamerRes")).toHaveValue("720");
-    await expect(page.locator("#streamerFps")).toHaveValue("24");
-    await expect(sm(page, '[data-setting="autoStopAtEnd"]')).toHaveAttribute("aria-checked", "false");
-  });
-});
-
-test.describe("Streamer Mode: camera refused", () => {
-  test("a refusal shows the reason with Retry, in the preview and the panel", async ({ page }) => {
-    await page.setViewportSize({ width: 1800, height: 1020 });
-    await page.addInitScript(() => {
-      navigator.mediaDevices.getUserMedia = () => Promise.reject(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
-    });
-    await openStudio(page);
-    await openStreamer(page);
-    const act = sm(page, ".sm-cam-act");
-    await expect(act).toBeVisible();
-    await act.click();
-    await expect(sm(page, ".sm-cam-text")).toContainText("blocked");
-    await expect(act).toHaveText("Retry");
-    await expect(sm(page, ".sm-dev-state").first()).toContainText("blocked");
-  });
-});
-
-// Phase 4: recording the scene and exporting it through the server.
-test.describe("Streamer Mode: recording and export", () => {
-  test.use({ launchOptions: { args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--mute-audio", "--autoplay-policy=no-user-gesture-required"] } });
-  const recording = (page) => ev(page, () => document.querySelector("#streamer .sm-rec")?.classList.contains("recording"));
-
-  async function setUp(page, trim = { in: 1, out: 4 }) {
-    await page.setViewportSize({ width: 1800, height: 1020 });
-    await openStudio(page);
-    await ev(page, async ([id, tr]) => {
-      const m = await import("/js/streamer/streamerModel.js");
-      const { storeSet } = await import("/js/utils.js");
-      await storeSet(`stemdeck:streamer:scene:${id}`, m.serializeScene({ ...m.defaultScene("16:9"), trim: tr }));
-    }, [JOB_ID, trim]);
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
-    await page.waitForFunction(() => !/\/\s*00:00\s*$/.test(document.querySelector("#t-time")?.textContent || "00:00 / 00:00"));
-    await openStreamer(page);
-    const allow = sm(page, ".sm-cam-act");
-    if (await allow.isVisible()) await allow.click();
-  }
-
-  test("R records from the trim's start, auto-stops at its end, and the take is kept", async ({ page }) => {
-    await setUp(page);
-    await sm(page, ".sm-preview").focus();
-    await page.keyboard.press("r");
-    await expect.poll(() => recording(page)).toBe(true);
-    expect(Math.abs((await now(page)) - 1)).toBeLessThan(1);
-    await expect(sm(page, ".sm-add")).toBeDisabled();
-    await expect.poll(() => recording(page), { timeout: 20000 }).toBe(false);
-    await expect(sm(page, ".sm-export-go")).toBeVisible({ timeout: 30000 });
-    await expect(sm(page, ".sm-add")).toBeEnabled();
-  });
-
-  test("speed not 100% refuses recording with the reason", async ({ page }) => {
-    await setUp(page);
-    await ev(page, async () => (await import("/js/transport.js")).setSpeed(0.75));
-    await sm(page, ".sm-rec").click();
-    await expect(page.locator("#streamerNote")).toContainText("100%");
-    expect(await recording(page)).toBe(false);
-  });
-
-  test("export makes an MP4 named after the song", async ({ page }) => {
-    await setUp(page);
-    await sm(page, ".sm-rec").click();
-    await expect.poll(() => recording(page), { timeout: 20000 }).toBe(false);
-    await expect(sm(page, ".sm-export-go")).toBeEnabled({ timeout: 30000 });
-    const download = page.waitForEvent("download", { timeout: 120000 });
-    await sm(page, ".sm-export-go").click();
-    const file = await download;
-    expect(file.suggestedFilename()).toMatch(/\(Streamer\)\.mp4$/);
-    await expect(sm(page, ".sm-export-text")).toContainText("Saved");
-    // No desktop app here: Show in folder is not offered.
-    await expect(sm(page, ".sm-export-reveal")).toBeHidden();
-  });
-
-  test("Delete during a take does not trash the song", async ({ page }) => {
-    await setUp(page, { in: 0, out: 5 });
-    await sm(page, ".sm-rec").click();
-    await expect.poll(() => recording(page)).toBe(true);
-    await sm(page, ".sm-preview").focus();
-    await page.keyboard.press("Delete");
-    await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
-    await page.keyboard.press("r");
-    await expect.poll(() => recording(page)).toBe(false);
   });
 });
 
@@ -651,7 +524,8 @@ test.describe("Streamer Mode polish", () => {
     await expect(page.locator(".sm-props-remove")).toBeVisible();
     await page.locator(".sm-props-done").click();
     await expect(row.locator(".sm-layer-sub")).toHaveText("Your image");
-    expect((await savedScene(page))?.layers?.find((l) => l.id === "background")?.props?.imageKey).toMatch(new RegExp(`^${JOB_ID}:background:`));
+    // The scene is saved a moment after the edit.
+    await expect.poll(async () => (await savedScene(page))?.layers?.find((l) => l.id === "background")?.props?.imageKey ?? "").toMatch(new RegExp(`^${JOB_ID}:background:`));
     await sm(page, ".sm-undo").click();
     await expect(row.locator(".sm-layer-sub")).not.toHaveText("Your image");
   });
@@ -669,6 +543,9 @@ test.describe("Streamer Mode polish", () => {
     await openStudio(page);
     await openStreamer(page);
     const sel = page.locator("#streamerPart");
+    // The parts are listed once the song's stems are known: read them then,
+    // or the skip below fires on a list that is still empty.
+    await expect.poll(() => sel.locator("option").count()).toBeGreaterThan(1);
     const values = await sel.locator("option").evaluateAll((os) => os.map((o) => o.value));
     expect(values[0]).toBe("");
     // Keys and Voice, the instrument families, not the stem names Piano and Vocals.
@@ -685,7 +562,10 @@ test.describe("Streamer Mode polish", () => {
     await expect.poll(() => ev(page, async () => (await import("/js/player.js")).playbackExclusion().names.size)).toBe(0);
   });
 
+  // Wide enough that Recording & Output is a panel, not the drawer behind the
+  // Output button (under 1000 px of view, as at the default 1280 x 720).
   test("an export failure says why and offers Retry", async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
     await openStudio(page);
     await ev(page, (id) => localStorage.setItem(`stemdeck:streamer:take:${id}`, "fake-take"), JOB_ID);
     await page.route("**/takes/fake-take/render", (r) => r.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "ffmpeg exited with code 1" }) }));
@@ -703,6 +583,7 @@ test.describe("Streamer Mode polish", () => {
   });
 
   test("no audio input: the line says the take records the song only", async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
     await openStudio(page);
     await openStreamer(page);
     await page.selectOption("#streamerAudioSrc", "none");
@@ -771,7 +652,9 @@ test.describe("Streamer Mode fix pass", () => {
     await ev(page, async (id) => {
       const m = await import("/js/streamer/streamerModel.js");
       const { storeSet } = await import("/js/utils.js");
-      await storeSet(`stemdeck:streamer:scene:${id}`, m.serializeScene({ ...m.defaultScene("16:9"), trim: { in: 1, out: 4 } }));
+      // The whole 6 s song: every refusal below has to land while the take
+      // still records (a 3 s trim ended before the last one under load).
+      await storeSet(`stemdeck:streamer:scene:${id}`, m.serializeScene({ ...m.defaultScene("16:9"), trim: { in: 0, out: 6 } }));
     }, JOB_ID);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
@@ -805,17 +688,12 @@ test.describe("Streamer Mode input and take lane", () => {
     await page.setViewportSize({ width: 1800, height: 1020 });
   });
 
-  test("Audio Source lists the studio's inputs with their channels", async ({ page }) => {
-    await openStudio(page);
-    await openStreamer(page);
-    const opts = await page.locator("#streamerAudioSrc option").evaluateAll((os) => os.map((o) => o.textContent));
-    expect(opts[0]).toBe("No audio input");
-    expect(opts.some((o) => /Input 1/.test(o))).toBe(true);
-  });
+  // Audio Source with the studio's inputs needs a microphone: streamer-media.spec.mjs.
 
   test("the played part's lane is empty until a take, never the stem's wave", async ({ page }) => {
     await openStudio(page);
     await openStreamer(page);
+    await expect.poll(() => page.locator("#streamerPart option").count()).toBeGreaterThan(1);
     const values = await page.locator("#streamerPart option").evaluateAll((os) => os.map((o) => o.value));
     test.skip(!values.includes("drums"), "the test song has no drums stem");
     await page.locator("#streamerPart").selectOption("drums");
