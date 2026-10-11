@@ -15,18 +15,25 @@ const chipName = (el) => el.textContent.trim();
 /** The instrument a presence card measures, by its own name ("Drums"), not
  *  the card's heading ("Drum intensity"), so the sentence reads naturally. */
 const presenceName = (el) => t(`stem.${el.dataset.stem}`);
+/** A row of the Stems popover names its instrument ("Drums"). */
+const stemsRowName = (el) => el.closest(".stems-pop-row")?.querySelector(".stems-pop-name")?.textContent.trim() || "";
 
 // Order matters only where selectors overlap: the first match wins.
 const HELP = [
   ["#helpModeBtn", "help.helpMode"],
   [".daw-brand a", "help.website"],
   ["#uploadFileBtn", "help.upload"],
+  ["#fileClear", "help.fileClear"],
   ["#url", "help.search"],
   ["#stemAllBtn", "help.stemAll"],
   [".stem-choice[data-stem]", "help.stemChip", chipName],
+  ["#stemMoreBtn", "help.stemMore"],
   ['.vocal-mode-btn[data-mode="all"]', "help.vocalCombined"],
   ['.vocal-mode-btn[data-mode="split"]', "help.vocalSplit"],
-  // Karaoke and Performance are entered from the Mode menu (modeUi.js).
+  // The Mode menu (modeUi.js): Practice and Advanced, and the two views
+  // that are entered only from it, Karaoke and Performance.
+  ['.mode-item[data-mode="practice"]', "help.modePractice"],
+  ['.mode-item[data-mode="daw"]', "help.modeAdvanced"],
   ['.mode-item[data-mode="karaoke"]', "help.karaoke"],
   ['.mode-item[data-mode="streamer"]', "help.streamer"],
   ["#modeBtn", "help.mode"],
@@ -35,6 +42,7 @@ const HELP = [
   ['.daw-panel-toggle[data-panel="analysis"]', "help.analysisToggle"],
   ['.daw-panel-toggle[data-panel="sections"]', "help.sectionsToggle"],
   ["#submit", "help.extract"],
+  ["#job-cancel", "help.jobCancel"],
   ["#fav-btn", "help.favorite"],
   ["#np-details-btn", "help.songDetails"],
   ["#sidebarCollapseBtn", "help.toggleLibrary"],
@@ -43,18 +51,69 @@ const HELP = [
   [".rail-lyrics", "help.lyrics"],
   [".rail-trash", "help.trash"],
   [".rail-queue", "help.queue"],
+  // The notifications panel, before the bell it hangs from.
+  ["#notifReleaseDismiss", "help.notifDismiss"],
+  ["#notifReleaseCard", "help.notifRelease"],
+  ["#notifClearAll", "help.notifClear"],
+  [".daw-notif-close", "help.notifClose"],
   ["#notifBtn", "help.notifications"],
   ["#friendsBtn", "help.recommend"],
   ["#settingsBtn", "settings"],
   ["#aboutBtn", "help.about"],
-  ["#catalogSearch", "help.searchLibrary"],
+  ["#catalogSearch, #catalogToggle", "help.searchLibrary"],
   ["#newFolderBtn", "help.newFolder"],
+  ["#clearBinBtn", "help.emptyTrash"],
+  ["#catalogList .folder-head .f-subfolder", "help.folderSub"],
+  ["#catalogList .folder-head .f-del", "help.folderDelete"],
+  ["#catalogList .folder-head", "help.folder"],
+  ["#catalogList .cat-item .cat-del", "help.songTrash"],
+  ["#catalogList .cat-item .cat-extract", "help.songExtract"],
   ["#catalogList .cat-item.in-trash", "help.trashedSong"],
   ["#catalogList .cat-item", "help.song"],
+  // The Lyrics view of the sidebar (lyrics.js). Align and Sync lines come
+  // before the plain links, which share their class.
+  ["#lyricsPanel .lyrics-line", "help.lyricsLine"],
+  ["#lyricsPanel .lyrics-align-toggle", "help.lyricsAlign"],
+  ["#lyricsPanel .lyrics-sync-toggle", "help.lyricsSync"],
+  ["#lyricsPanel .lyrics-version", "help.lyricsVersion"],
+  ["#lyricsPanel .lyrics-link[aria-expanded]", "help.lyricsVersions"],
+  ["#lyricsPanel .lyrics-link", "help.lyricsLookUp"],
+  // The sections bar (sections.js): the lock and the cross sit inside a block.
   ["#sectionsAddBtn", "help.addSection"],
+  ["#sectionsClearBtn", "help.clearSections"],
+  [".section-block .section-lock", "help.sectionLock"],
+  [".section-block .section-del", "help.sectionDelete"],
+  [".section-block", "help.section"],
+  // The lyrics lane, shown while Sync lines is on (lyricsLane.js).
+  ["#lyricsLaneDone", "help.lyricsLaneDone"],
+  [".lyr-mark", "help.lyricsMark"],
+  // The Stems control in the mixer header and its popover (stemsControl.js).
+  ["#laneStemsBtn", "help.stemsButton"],
+  [".stems-pop-row", "help.stemsLane", stemsRowName],
+  ['.stems-pop-seg-btn[data-form="combined"]', "help.stemsVoiceCombined"],
+  ['.stems-pop-seg-btn[data-form="split"]', "help.stemsVoiceSplit"],
+  [".stems-pop-split", "help.stemsSplit"],
+  [".stems-pop-reset", "help.stemsReset"],
+  [".stems-pop-apply", "help.stemsApply"],
   ["#t-rec", "help.record"],
   ["#t-rec-opts", "help.recOptions"],
+  // The recording panel opened by the arrow beside Record (recordUi.js), and
+  // its video part (video/videoTake.js).
+  ["#recSettingsLink", "help.recSettingsLink"],
+  [".rec-check:has(#recMonitor)", "help.recMonitor"],
+  ["#recPanel .rec-mute", "help.recMute"],
+  ["#recKeep", "help.recKeep"],
+  ["#recDiscard", "help.recDiscard"],
+  [".vid-toggle", "help.vidCamera"],
+  [".vid-nudge", "help.vidDelay"],
+  [".vid-span", "help.vidSpan"],
+  [".vid-make", "help.vidMake"],
+  [".vid-stop", "help.vidStop"],
+  [".vid-download", "help.vidDownload"],
   ["#addTrackBtn", "help.addTrack"],
+  ["#addVideoTrackBtn", "help.addVideoTrack"],
+  [".track-tool.track-preview", "help.trackPreview", laneName],
+  [".track-tool.track-delete", "help.trackDelete", laneName],
   [".track-arm", "help.trackArm", laneName],
   [".track-input", "help.trackInput", laneName],
   [".track-lane .take-menu-btn", "help.trackMenu", laneName],
@@ -78,6 +137,7 @@ const HELP = [
   ["#ruler-time", "help.waves", null, "help.wavesTitle"],
   // The Master drawer (masterPanel.js). Its power button and its EQ reuse
   // the EQ panels' classes, so these come before the EQ entries.
+  [".master-close", "help.masterClose", null, "master.close"],
   [".master-power", "help.masterPower", null, "master.title"],
   [".master-presets", "help.masterPresets", null, "master.presetsAria"],
   [".master-target, .master-ceiling", "help.masterFields", null, "master.helpFieldsTitle"],
@@ -104,7 +164,20 @@ const HELP = [
   [".eq-voice-panel", "help.eqVoice", null, "eq.panel.voice"],
   // Inside .waves-column, so before it: a take lane is its own control.
   [".take-folder-lane", "help.takeLane", null, "rec.folder.play"],
+  [".loop-grip", "help.loopGrip", null, "loop.dragOut"],
   [".waves-column", "help.waves", null, "help.wavesTitle"],
+  // The beat grid editor's toolbar, opened by Grid in the click options
+  // (beatgridUi.js).
+  ["#bg-tool-move", "help.bgMove"],
+  ["#bg-tool-insert", "help.bgAdd"],
+  ["#bg-tool-delete", "help.bgDelete"],
+  ["#bg-tool-bar", "help.bgBar"],
+  [".bg-check:has(#bg-ripple)", "help.bgRipple"],
+  [".bg-check:has(#bg-snap)", "help.bgSnap"],
+  [".bg-meter", "help.bgBarLen", null, "beatgrid.barAria"],
+  ["#bg-undo, #bg-redo", "help.bgUndo", null, "help.eqUndoTitle"],
+  ["#bg-reset", "help.bgReset"],
+  ["#bg-done", "help.bgDone"],
   ["#t-stop", "help.stop"],
   ["#t-play", "help.play"],
   ["#t-loop", "help.loop"],
@@ -118,10 +191,25 @@ const HELP = [
   ["#t-pitch-reset", "help.keyReset"],
   ["#t-metro", "help.click"],
   ["#t-metro-vol-btn", "help.clickVolume"],
+  ["#t-metro-vol-panel", "help.clickVolume", null, "click.volumeAria"],
   ["#t-metro-more", "help.clickMore"],
+  // The click options: inline when they fit, else in the popover above.
+  ["#t-metro-countin", "help.clickCountIn"],
+  ["#t-metro-bar", "help.clickAccent"],
+  ["#t-metro-bar-custom", "help.clickBeats"],
+  ["#t-metro-group", "help.clickGroup"],
+  ["#t-metro-edit", "help.clickGrid", null, "click.editTitle"],
+  [".metro-mult", "help.clickRate", null, "click.rateAria"],
   ["#t-master-btn", "help.masterChip", null, "master.title"],
   ["#t-export-btn", "help.export"],
+  // The Export menu's parts.
+  [".export-format-toggle", "help.exportFormat", null, "export.formatAria"],
+  ["#t-export-click-wrap", "help.exportClick"],
+  ["#t-export-count-in-wrap", "help.exportCountIn"],
   ["#t-export-master", "help.masterExportRow", null, "master.title"],
+  ["#t-export-mix", "help.exportMix"],
+  ["#t-export-stems", "help.exportStems"],
+  ["#t-export-region", "help.exportRegion"],
   // Performance Mode's two windows (streamer.js): the live scene and the take
   // review, and the Live | Take switch shown when only one window fits.
   ["#streamer .sm-view-switch", "help.smViewSwitch"],
@@ -141,20 +229,23 @@ const HELP = [
   ['.sm-props-switch[data-part="waveform"]', "help.smPartWaveform"],
 ];
 
-// Every option in Settings, by tab: the tab and option names are the dialog's
-// own keys, the one-line descriptions are help.set.*.
+// Every option in Settings, by section, in the order of the dialog's own
+// navigation (SETTINGS_SECTIONS in catalog.js): the section and option names
+// are the dialog's own keys, the one-line descriptions are help.set.*.
 const SETTINGS = [
   ["settings.tab.general", [
     ["settings.language.title", "help.set.language"],
+    ["settings.device.title", "help.set.device"],
+    ["settings.quality.title", "help.set.quality"],
     ["settings.maxDuration.title", "help.set.maxDuration"],
     ["settings.playlistLimit.title", "help.set.playlistLimit"],
     ["settings.cookies.title", "help.set.cookies"],
+  ]],
+  ["settings.tab.library", [
     ["settings.stemsLocation.title", "help.set.stemsLocation"],
     ["settings.exportsLocation.title", "help.set.exportsLocation"],
     ["settings.autoDelete.title", "help.set.autoDelete"],
-    ["settings.device.title", "help.set.device"],
-    ["settings.quality.title", "help.set.quality"],
-    ["settings.exportLogs.title", "help.set.exportLogs"],
+    ["settings.outOfSync.subhead", "help.set.outOfSync"],
     ["settings.resetData.title", "help.set.resetData"],
   ]],
   ["settings.tab.songDetails", [
@@ -162,20 +253,25 @@ const SETTINGS = [
     ["settings.discogs.title", "help.set.discogs"],
     ["settings.transcribe.title", "help.set.transcribe"],
   ]],
+  ["settings.tab.export", [
+    ["settings.export.sampleRate.title", "help.set.sampleRate"],
+    ["settings.export.videoQuality.title", "help.set.videoQuality"],
+    ["settings.export.encoder.title", "help.set.encoder"],
+  ]],
+  ["settings.tab.recording", [
+    ["settings.rec.mic.title", "help.set.recMic"],
+    ["settings.rec.iface.title", "help.set.recIface"],
+    ["settings.rec.latency.title", "help.set.recLatency"],
+    ["settings.rec.camera.title", "help.set.recCamera"],
+  ]],
   ["settings.tab.network", [
     ["settings.network.allowTitle", "help.set.network"],
     ["settings.network.port.title", "help.set.port"],
   ]],
-  ["settings.tab.export", [
-    ["settings.export.sampleRate.title", "help.set.sampleRate"],
-    ["settings.export.videoQuality.title", "help.set.videoQuality"],
+  ["settings.tab.logs", [
+    ["settings.exportLogs.title", "help.set.exportLogs"],
+    [null, "help.set.logs"],
   ]],
-  ["settings.tab.recording", [
-    ["settings.rec.input.title", "help.set.recInput"],
-    ["settings.rec.latency.title", "help.set.recLatency"],
-    ["settings.rec.camera.title", "help.set.recCamera"],
-  ]],
-  ["settings.tab.logs", [[null, "help.set.logs"]]],
   ["settings.tab.registry", [[null, "help.set.registry"]]],
 ];
 
@@ -372,17 +468,19 @@ function onPointerOver(e) {
   else if (!tipEl.contains(e.target)) hide();
 }
 
-// Help mode takes every press except Guide itself and the Mode button, so
-// pointing around the studio can never act on it. The Mode button still opens
-// its menu (choosing in it is taken like any press), because Karaoke and
-// Performance are only reached there and their items explain themselves too.
-// A click shows that control's box, which is also how help mode works on a
-// touch screen.
-const PASS = "#helpModeBtn, #modeBtn";
+// Help mode takes every press except Guide itself and the buttons that only
+// open a menu or a popover, so pointing around the studio can never act on
+// it. Those buttons still open what they open (choosing in it is taken like
+// any press), so the parts inside explain themselves too: the Mode menu, the
+// Stems popover, the Export menu, the click volume and options, and the
+// notifications. The Record arrow is not among them: its panel opens the
+// microphone. A click shows that control's box, which is also how help mode
+// works on a touch screen.
+const PASS = "#helpModeBtn, #modeBtn, #laneStemsBtn, #t-export-btn, #t-metro-vol-btn, #t-metro-more, #notifBtn";
 
 function swallow(e) {
   if (e.target instanceof Element && e.target.closest(PASS)) {
-    if (e.type === "click" && e.target.closest("#modeBtn")) {
+    if (e.type === "click" && !e.target.closest("#helpModeBtn")) {
       const entry = findEntry(e.target);
       if (entry) show(entry);
     }

@@ -113,6 +113,34 @@ test.describe("help mode", () => {
     await expect(page.locator(".rail-karaoke, .rail-streamer")).toHaveCount(0);
   });
 
+  test("Practice and Advanced explain themselves in the Mode menu", async ({ page }) => {
+    await openStudio(page);
+    await helpOn(page);
+    await page.locator("#modeBtn").click();
+    await page.locator('#modeMenu .mode-item[data-mode="practice"]').hover();
+    await expect(tip(page)).toContainText("The simple studio");
+    await page.locator('#modeMenu .mode-item[data-mode="daw"]').hover();
+    await expect(tip(page)).toContainText("Everything in Practice");
+  });
+
+  test("the Stems popover and the Export menu open in Guide, and their parts explain themselves", async ({ page }) => {
+    await openStudio(page);
+    await helpOn(page);
+    await page.locator("#laneStemsBtn").click();
+    await expect(page.locator("#laneStemsPop")).toBeVisible();
+    await page.locator("#laneStemsPop .stems-pop-row").first().hover();
+    await expect(tip(page)).toContainText("gets its own lane");
+    await page.locator("#laneStemsBtn").click();
+
+    await page.locator("#t-export-btn").click();
+    await expect(page.locator("#t-export-panel")).toBeVisible();
+    await page.locator("#t-fmt-mp3").hover();
+    await expect(tip(page)).toContainText("The file type of the export");
+    // Choosing in the menu is explained, not done.
+    await page.locator("#t-fmt-mp3").click();
+    await expect(page.locator("#t-fmt-mp3")).toHaveAttribute("aria-checked", "false");
+  });
+
   test("a click explains instead of acting", async ({ page }) => {
     await openStudio(page);
     await helpOn(page);
@@ -132,7 +160,7 @@ test.describe("help mode", () => {
     await openStudio(page);
     await helpOn(page);
     await page.locator("#settingsBtn").hover();
-    for (const text of ["General", "Song details", "Network", "Export", "Logs", "Registry", "Port", "Compute device", "Make StemDeck available on your network"]) {
+    for (const text of ["General", "Library", "Song details", "Network", "Export", "Recording", "Logs", "Registry", "Port", "Compute device", "Make StemDeck available on your network", "Video encoder", "Microphone"]) {
       await expect(tip(page)).toContainText(text);
     }
   });
