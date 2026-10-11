@@ -2,19 +2,26 @@
 // renderMixerRow, capture/takeLanes.js buildRow), in muted Chromium on the
 // real backend.
 //
-// The controls were made large enough to read from across a room (a practice
-// screen seen from the drum stool), without making a row taller or the
-// 300px column wider: they sit on two lines beside the name, and the EQ tab
-// moved from the waveform lane into the header. These are measurements of
-// that, at the three window sizes the change was designed for:
+// The side-rail header (#776): a card on the left (the lane's swatch and name,
+// a short fader with its level, the meter under it; a recording track's menu
+// on the name's line and its arm button and input picker on the bottom line),
+// then two columns the full height of the row: the key (+, KEY, the offset,
+// minus) and the rail (M, S, the EQ tab, download), in the same place on
+// every row. Rows stay compact: at most 90 px, never under 72 px. These are
+// measurements of that, at the three window sizes the header was designed for:
 //
-// 1. K, M, S, download, arm, the track menu, the input picker and the EQ tab
-//    are at least 28px tall, their labels 13px bold; the name 15px.
-// 2. Nothing leaves its row or the column, nothing overlaps, no label is
-//    cut; rows keep --lane-h and the column keeps --daw-col-w.
-// 3. Rows and waveform lanes stay aligned within 1px (names within 2px of
-//    their waveform's centre line), with a take folder and an EQ panel open.
-// 4. The longest stem names of every language fit in two lines.
+// 1. The rail's cells are stacked M, S, EQ, download, share the row's height
+//    equally and sit at the same x on every row; the key's four cells are
+//    level with them. Their labels are 13px bold and never cut; the name is
+//    15px bold on one line.
+// 2. Nothing leaves its row or the column, nothing overlaps; rows keep
+//    --lane-h (72 to 90 px) and the column keeps --daw-col-w.
+// 3. Rows and waveform lanes stay aligned within 1px, with a take folder and
+//    an EQ panel open.
+// 4. The longest stem names of every language fit the name's line.
+//
+// This replaces the measurements of the previous header (controls on two
+// lines beside the name, 28px tall), which no longer exists.
 
 import { test, expect } from "@playwright/test";
 import { openStudio, JOB_ID } from "./helpers.mjs";
@@ -65,23 +72,28 @@ async function addTrackWithTakes(request) {
   return trackId;
 }
 
+// The rail, top to bottom, and the key column beside it.
+const RAIL = ["mute", "solo", "eq", "dl"];
+const KEY = ["keyUp", "keyLabel", "keyNum", "keyDown"];
+
 /** Every visible lane header, with the box, font and overflow of each control. */
 async function headers(page) {
   return page.evaluate(() => {
     const CONTROLS = {
-      eq: ".eq-tab",
-      keyDown: ".lane-key-step.down",
-      key: ".lane-key-value",
-      keyUp: ".lane-key-step.up",
-      mute: ".mute",
-      solo: ".solo",
-      dl: ".lane-dl:not(.track-dl-off)",
+      mute: ".mx-rail .mute",
+      solo: ".mx-rail .solo",
+      eq: ".mx-rail .eq-tab",
+      dl: ".mx-rail .lane-dl:not(.track-dl-off)",
+      keyUp: ".mx-keyrail .lane-key-step.up",
+      keyLabel: ".mx-keyrail .lane-key-label",
+      keyNum: ".mx-keyrail .lane-key-num",
+      keyDown: ".mx-keyrail .lane-key-step.down",
       arm: ".track-arm",
       menu: ".take-menu-btn",
       input: ".track-input",
       fader: ".mx-fader-input",
       val: ".mx-val",
-      name: ".lane-name-vu .mx-name",
+      name: ".mx-head .mx-name",
       folder: ".take-folder-toggle",
     };
     const box = (e) => { const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
@@ -95,7 +107,7 @@ async function headers(page) {
           const e = row.querySelector(sel);
           if (!e || e.getClientRects().length === 0) continue;
           const cs = getComputedStyle(e);
-          if (cs.visibility === "hidden") continue;
+          if (cs.visibility === "hidden" || cs.display === "none") continue;
           controls[k] = {
             ...box(e),
             font: parseFloat(cs.fontSize),
@@ -105,7 +117,8 @@ async function headers(page) {
           };
         }
         const svg = row.querySelector(".lane-dl svg");
-        return { stem: row.dataset.stem, track: !!row.dataset.take, row: box(row), controls, dlIcon: svg ? box(svg).w : 0 };
+        const rail = row.querySelector(".mx-rail");
+        return { stem: row.dataset.stem, track: !!row.dataset.take, row: box(row), rail: rail ? box(rail) : null, controls, dlIcon: svg ? box(svg).w : 0 };
       });
     return {
       rows,
@@ -116,7 +129,7 @@ async function headers(page) {
   });
 }
 
-/** Every visible row of both columns, top to bottom; names against their waveform. */
+/** Every visible row of both columns, top to bottom. */
 async function stack(page) {
   return page.evaluate(() => {
     const read = (sel) => [...document.querySelectorAll(sel)]
@@ -124,62 +137,82 @@ async function stack(page) {
       .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
     const mix = read(".mixer-column .lane-header");
     const wave = read(".stem-waveform-layer > .stem-waveform-row");
-    const mid = (e) => { const b = e.getBoundingClientRect(); return b.top + b.height / 2; };
     return {
-      mix: mix.map((e) => { const b = e.getBoundingClientRect(); const n = e.dataset.stem ? e.querySelector(".lane-name-vu .mx-name") : null; return { top: b.top, h: b.height, name: n ? mid(n) : null }; }),
-      wave: wave.map((e) => { const b = e.getBoundingClientRect(); return { top: b.top, h: b.height, mid: b.top + b.height / 2 }; }),
+      mix: mix.map((e) => { const b = e.getBoundingClientRect(); return { top: b.top, h: b.height }; }),
+      wave: wave.map((e) => { const b = e.getBoundingClientRect(); return { top: b.top, h: b.height }; }),
     };
   });
 }
 
 function expectAligned(s, label) {
   expect(s.mix.length, `${label}: rows`).toBe(s.wave.length);
-  let worstRow = 0;
-  let worstName = 0;
+  let worst = 0;
   s.mix.forEach((m, i) => {
-    worstRow = Math.max(worstRow, Math.abs(m.top - s.wave[i].top), Math.abs(m.h - s.wave[i].h));
-    if (m.name !== null) worstName = Math.max(worstName, Math.abs(m.name - s.wave[i].mid));
+    worst = Math.max(worst, Math.abs(m.top - s.wave[i].top), Math.abs(m.h - s.wave[i].h));
   });
-  expect(worstRow, `${label}: worst row drift ${worstRow.toFixed(2)} px`).toBeLessThanOrEqual(1);
-  expect(worstName, `${label}: worst name drift ${worstName.toFixed(2)} px`).toBeLessThanOrEqual(2);
+  expect(worst, `${label}: worst row drift ${worst.toFixed(2)} px`).toBeLessThanOrEqual(1);
 }
 
-/** Sizes, containment, overlap and cut labels of every header. */
+/** The rail and key columns, sizes, containment, overlap and cut labels of every header. */
 function expectHeaders(h, label) {
   expect(h.col.w, `${label}: column width`).toBeCloseTo(h.colVar, 0);
-  const sized = ["eq", "key", "mute", "solo", "dl", "arm", "menu", "input"];
-  const labelled = ["eq", "key", "mute", "solo", "val"];
+  expect(h.laneH, `${label}: --lane-h`).toBeGreaterThanOrEqual(72);
+  expect(h.laneH, `${label}: --lane-h`).toBeLessThanOrEqual(90);
+  const railX = new Set();
   for (const r of h.rows) {
     const at = `${label}, ${r.stem}`;
-    expect(Math.abs(r.row.h - h.laneH), `${at}: row height ${r.row.h} against --lane-h ${h.laneH}`).toBeLessThanOrEqual(1);
     const c = r.controls;
-    for (const k of sized) {
-      if (!c[k]) continue;
-      expect(c[k].h, `${at}: ${k} height`).toBeGreaterThanOrEqual(28);
+    expect(Math.abs(r.row.h - h.laneH), `${at}: row height ${r.row.h} against --lane-h ${h.laneH}`).toBeLessThanOrEqual(1);
+
+    // The rail: its cells stacked in order, the rail's width, equal heights
+    // filling it. A stem has all four; a recording track has download once
+    // it has a take to download.
+    const cells = RAIL.filter((k) => c[k]);
+    expect(cells, `${at}: rail cells`).toEqual(r.track && !c.dl ? ["mute", "solo", "eq"] : RAIL);
+    expect(r.rail, `${at}: rail`).toBeTruthy();
+    railX.add(Math.round(r.rail.l));
+    const each = r.rail.h / cells.length;
+    cells.forEach((k, i) => {
+      expect(c[k].w, `${at}: ${k} width`).toBeGreaterThanOrEqual(44);
+      expect(Math.abs(c[k].h - each), `${at}: ${k} height ${c[k].h} against ${each}`).toBeLessThanOrEqual(1);
+      expect(Math.abs(c[k].t - (r.rail.t + i * each)), `${at}: ${k} position`).toBeLessThanOrEqual(1);
+      // A quarter of the shortest row (72 px) and up.
+      expect(c[k].h, `${at}: ${k} height`).toBeGreaterThanOrEqual(17);
+    });
+
+    // The key: four cells, each level with the rail cell beside it.
+    if (!r.track) {
+      KEY.forEach((k, i) => {
+        expect(c[k], `${at}: ${k}`).toBeTruthy();
+        expect(Math.abs(c[k].t - c[RAIL[i]].t), `${at}: ${k} level with ${RAIL[i]}`).toBeLessThanOrEqual(1);
+        expect(Math.abs(c[k].h - c[RAIL[i]].h), `${at}: ${k} height`).toBeLessThanOrEqual(1);
+        expect(c[k].w, `${at}: ${k} width`).toBeGreaterThanOrEqual(32);
+      });
     }
-    for (const k of ["key", "mute", "solo", "dl", "arm", "menu"]) {
-      if (c[k]) expect(c[k].w, `${at}: ${k} width`).toBeGreaterThanOrEqual(28);
-    }
-    if (c.eq) expect(c.eq.w, `${at}: EQ tab width`).toBeGreaterThanOrEqual(44);
-    for (const k of ["keyDown", "keyUp"]) {
-      if (c[k]) {
-        expect(c[k].h, `${at}: ${k} height`).toBeGreaterThanOrEqual(28);
-        expect(c[k].w, `${at}: ${k} width`).toBeGreaterThanOrEqual(18);
-      }
-    }
-    for (const k of labelled) {
+
+    // The labels: 13px bold, never cut.
+    for (const k of ["mute", "solo", "eq", "keyNum", "val"]) {
       if (!c[k]) continue;
       expect(c[k].font, `${at}: ${k} font`).toBeGreaterThanOrEqual(13);
       expect(c[k].weight, `${at}: ${k} weight`).toBeGreaterThanOrEqual(700);
       expect(c[k].cut, `${at}: ${k} label cut`).toBe(false);
     }
-    if (c.input) expect(c.input.font, `${at}: input font`).toBeGreaterThanOrEqual(13);
+    // The name: 15px bold on one line.
     expect(c.name.font, `${at}: name font`).toBeGreaterThanOrEqual(15);
-    expect(c.name.weight, `${at}: name weight`).toBeGreaterThanOrEqual(600);
-    // Two lines at most: a long name wraps once, then ends in an ellipsis.
-    expect(c.name.h, `${at}: name lines`).toBeLessThanOrEqual(2 * c.name.lineH + 1);
+    expect(c.name.weight, `${at}: name weight`).toBeGreaterThanOrEqual(700);
+    expect(c.name.h, `${at}: name lines`).toBeLessThanOrEqual(c.name.lineH + 1);
     if (c.dl) expect(r.dlIcon, `${at}: download icon`).toBeGreaterThanOrEqual(16);
-    if (c.fader) expect(c.fader.w, `${at}: fader length`).toBeGreaterThanOrEqual(60);
+    expect(c.fader?.w, `${at}: fader length`).toBeGreaterThanOrEqual(60);
+    // A recording track's own controls.
+    if (r.track) {
+      for (const k of ["arm", "menu"]) {
+        expect(c[k], `${at}: ${k}`).toBeTruthy();
+        expect(c[k].w, `${at}: ${k} width`).toBeGreaterThanOrEqual(22);
+        expect(c[k].h, `${at}: ${k} height`).toBeGreaterThanOrEqual(22);
+      }
+      if (c.input) expect(c.input.font, `${at}: input font`).toBeGreaterThanOrEqual(13);
+    }
+
     // Inside the row and the column.
     for (const [k, b] of Object.entries(c)) {
       expect(b.t, `${at}: ${k} above its row`).toBeGreaterThanOrEqual(r.row.t - 0.5);
@@ -199,16 +232,18 @@ function expectHeaders(h, label) {
       }
     }
   }
+  // The rail is in the same place on every row.
+  expect([...railX], `${label}: rail x on every row`).toHaveLength(1);
 }
 
 for (const [w, hgt] of VIEWPORTS) {
-  test(`the header's controls are large, fit, and stay aligned at ${w}x${hgt}`, async ({ page, request }) => {
+  test(`the header's rail and key line up, fit, and stay aligned at ${w}x${hgt}`, async ({ page, request }) => {
     const errors = watchErrors(page);
     await page.setViewportSize({ width: w, height: hgt });
     const trackId = await addTrackWithTakes(request);
     await openStudio(page);
     await expect(page.locator(`.take-folder-row[data-folder-of="${trackId}"]`)).toHaveCount(2, { timeout: 20000 });
-    await expect(page.locator(`.eq-tab[data-eq-lane="${trackId}"]`)).toBeVisible();
+    await expect(page.locator(`.eq-tab[data-eq-lane="${trackId}"]`)).toBeAttached();
     await page.waitForTimeout(300);
 
     const h = await headers(page);
@@ -252,11 +287,14 @@ test("the longest stem names of every language fit the header", async ({ page, r
       const names = ["original", "vocals", "lead_vocals", "backing_vocals", "drums", "bass", "guitar", "piano", "other"]
         .map((s) => i18n.t(`stem.${s}`))
         .sort((a, b) => b.length - a.length);
-      const els = [...document.querySelectorAll(".mixer-column .lane-header[data-stem]:not(.hidden) .lane-name-vu .mx-name")];
+      const els = [...document.querySelectorAll(".mixer-column .lane-header[data-stem]:not(.hidden) .mx-head .mx-name")];
       els.forEach((e, i) => { e.textContent = names[i % names.length]; });
     }, code);
     await page.waitForTimeout(50);
-    expectHeaders(await headers(page), `language ${code}`);
+    const h = await headers(page);
+    expectHeaders(h, `language ${code}`);
+    // Whole on its line, not cut to an ellipsis.
+    for (const r of h.rows) expect(r.controls.name.cut, `language ${code}, ${r.stem}: name cut`).toBe(false);
   }
   expect(errors).toEqual([]);
 });

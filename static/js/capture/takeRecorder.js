@@ -224,7 +224,17 @@ export function startTake({
       return;
     }
     if (engine.getScheduleEpoch?.() !== epoch) {
-      onAutoStop?.("transport");
+      // An engine being destroyed can show a new epoch before the engine
+      // watch above runs (every 250 ms; a batch comes every few ms). That is
+      // the song reloading under the take, not a seek or a pause: it is
+      // reported as the engine going away, or the take stopped with no reason
+      // given and the new engine played on.
+      const gone = engineGone();
+      if (gone) {
+        clearInterval(engineWatch);
+        session.engineLost = true;
+      }
+      onAutoStop?.(gone ? "engine" : "transport");
       stop({ fromTransport: true });
     }
   };
