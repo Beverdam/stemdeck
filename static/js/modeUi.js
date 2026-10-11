@@ -1,8 +1,8 @@
 // The Mode control in the sidebar rail, above Favorites: a brain and the word
 // Mode. It opens a small menu of the modes (mode.js): Practice and Advanced to
 // choose from, Karaoke and Performance (id "streamer"; karaoke/karaoke.js,
-// streamer/streamer.js: the same views as the rail's Karaoke and Performance
-// buttons, over whichever of the two is in force).
+// streamer/streamer.js: views over whichever of the two is in force; this
+// menu is the only way into them).
 //
 // Keyboard: Enter or Space opens the menu with the current mode focused,
 // Up and Down move, Enter or Space chooses, Escape closes and returns focus.

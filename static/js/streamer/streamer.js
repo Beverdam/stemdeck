@@ -1,5 +1,5 @@
-// Streamer Mode: a workspace view over the studio, entered from the rail's
-// Streamer button (or the Mode menu), for building a performance video: a
+// Streamer Mode: a workspace view over the studio, entered from the Mode
+// menu (modeUi.js, "Performance"), for building a performance video: a
 // scene of layers (camera, Track Info: the song's title, artist, album art
 // and waveform in one card, lyrics, lower third, background, text, image)
 // drawn over the song as it plays, a take
@@ -22,7 +22,7 @@
 // recording (streamerRecord.js) and export (streamerExport.js).
 
 import { t, onLanguageChange } from "../i18n.js";
-import { currentJobId, mixerState, trackIndex, totalDuration } from "../state.js";
+import { currentJobId, mixerState, trackIndex, totalDuration, audioEngine, playbackSpeed } from "../state.js";
 import { transport, setPlayheadTime, togglePlayPause, stopTransport } from "../transport.js";
 import { reloadKeepingPlace } from "../reloadPlace.js";
 import { laneLabel, STEM_COLORS } from "../constants.js";
@@ -79,6 +79,7 @@ import { encoderNote } from "../videoEncoderNote.js";
 import { renderRequest, exportTake, cancelExport, saveRawRecording, rawRecordingType, canRevealSaved, revealSaved, forgetSaved } from "./streamerExport.js";
 import { shouldAutoStop, exportFileName, rawExtension, takeHoldStep, reviewStep } from "./recordModel.js";
 import { renderScene } from "./sceneRenderer.js";
+import { reviewTier, reviewView, reviewNote, showsTake, takeVideoTime, syncStep, compactShows, fitRatio } from "./reviewModel.js";
 
 const SAFE_KEY = "stemdeck.streamer.safeZones";
 const TAB_LABEL = { builder: "streamer.tabBuilder", templates: "streamer.tabTemplates" };
@@ -103,7 +104,6 @@ const ZOOM_STEP = 0.1;
 const PART_MODE = "streamer";
 
 let root = null;
-let railBtn = null;
 let open = false;
 let raf = 0;
 const listeners = new Set();
@@ -381,7 +381,10 @@ function buildHead() {
   const stop = button("sm-tp-btn sm-stop");
   stop.append(icon(ICONS.stop, { size: 14 }));
   tx(stop, "streamer.stop", "label");
-  stop.addEventListener("click", () => stopTransport());
+  stop.addEventListener("click", () => {
+    stopTransport();
+    stopReview();
+  });
   const play = button("sm-tp-btn sm-play");
   play.addEventListener("click", () => togglePlayPause());
   tport.append(stop, play);
@@ -465,14 +468,19 @@ function buildBuilder() {
   const clockDur = el("span", "sm-clock-dur", `/ ${clockTenths(0)}`);
   clock.append(clockNow, clockDur);
   strip.append(stripTitle, hist, clock);
-  col.append(preview, strip);
+  const rv = buildReview();
+  // The two windows side by side (or one, in a narrow workspace: the
+  // review takes the live window's place while a take plays).
+  const screens = el("div", "sm-screens");
+  screens.append(preview, rv.box, rv.switchBox);
+  col.append(screens, strip);
 
   const layers = buildLayersPanel();
   row.append(col, layers.panel);
 
   const timeline = buildTimeline();
   panel.append(row, timeline.card);
-  return { panel, preview, canvas, rec, recLabel: pill.querySelector(".sm-rec-label"), recTime, recLevel, selbox, camState, camText, camAct, clockNow, clockDur, undo, redo, layers, timeline };
+  return { panel, row, col, screens, review: rv, preview, canvas, rec, recLabel: pill.querySelector(".sm-rec-label"), recTime, recLevel, selbox, camState, camText, camAct, clockNow, clockDur, undo, redo, layers, timeline };
 }
 
 function buildLayersPanel() {
@@ -490,6 +498,42 @@ function buildLayersPanel() {
   tx(list, "streamer.layers", "aria-label");
   panel.append(head, list);
   return { panel, list, add, rows: new Map() };
+}
+
+/** The take review window (the recorded take, played with the transport)
+ * and, for a workspace with room for one window only, the Live | Take
+ * switch over it. */
+function buildReview() {
+  const box = el("div", "sm-review");
+  box.setAttribute("role", "img");
+  tx(box, "streamer.review.aria", "aria-label");
+  box.dataset.view = "none";
+  const canvas = el("canvas", "sm-review-canvas");
+  canvas.setAttribute("aria-hidden", "true");
+  const tag = tx(el("span", "sm-review-tag"), "streamer.review.tag");
+  const note = el("p", "sm-review-note");
+  note.setAttribute("aria-live", "polite");
+  box.append(canvas, tag, note);
+
+  const switchBox = el("div", "sm-view-switch");
+  switchBox.setAttribute("role", "group");
+  tx(switchBox, "streamer.review.switchAria", "aria-label");
+  switchBox.hidden = true;
+  const live = tx(button("sm-view-btn sm-view-live"), "streamer.review.live");
+  live.dataset.pick = "live";
+  const take = tx(button("sm-view-btn sm-view-take"), "streamer.review.take");
+  take.dataset.pick = "take";
+  for (const b of [live, take]) {
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      review.pick = b.dataset.pick;
+      painted.review = null;
+    });
+    b.addEventListener("pointerdown", (e) => e.stopPropagation());
+  }
+  switchBox.append(live, take);
+  return { box, canvas, ctx: canvas.getContext("2d"), tag, note, switchBox, live, take };
 }
 
 function buildTimeline() {
@@ -771,10 +815,6 @@ function buildSide() {
 
 function relabel() {
   for (const [node, key, attr] of texts) setText(node, key, attr);
-  if (railBtn) {
-    railBtn.title = t("streamer.rail");
-    railBtn.setAttribute("aria-label", t("streamer.rail"));
-  }
   if (!ui) return;
   closeMenu();
   closeProps();
@@ -1011,7 +1051,7 @@ async function loadLyrics() {
 export function openStreamer() {
   if (open) return true;
   if (isRecording()) {
-    flashNote(t("streamer.stopRecordingFirst"), railBtn);
+    flashNote(t("streamer.stopRecordingFirst"));
     return false;
   }
   if (!ui && !buildView()) return false;
@@ -1029,7 +1069,6 @@ export function openStreamer() {
   for (const k of Object.keys(painted)) delete painted[k];
   shownJob = undefined;
   startDevices().catch((err) => console.warn("[streamer] reading the devices failed:", err));
-  paintRail();
   loop();
   notify();
   // Focus goes into the view, and back to what opened it on close.
@@ -1064,6 +1103,9 @@ export function closeStreamer() {
   }
   window.removeEventListener("resize", placeLayer);
   layerObserver?.disconnect();
+  windowsObserver?.disconnect();
+  // The take's video and its source are let go.
+  releaseReview();
   window.removeEventListener("keydown", onKey, true);
   document.removeEventListener("pointerdown", onOutsidePointer, true);
   cancelAnimationFrame(raf);
@@ -1071,23 +1113,17 @@ export function closeStreamer() {
   // The camera light goes off, the input closes.
   stopDevices();
   flushScene(sceneJob);
-  paintRail();
   notify();
   // The whole song again (only playback changes; the choice stays saved).
   applyPart();
   const a = document.activeElement;
-  if (!a || a === document.body || root.contains(a)) {
-    const back = opener?.isConnected && opener.offsetParent ? opener : railBtn;
+  // Left through the Mode menu: its item hides with the menu, so focus
+  // goes back as if from the view itself.
+  if (!a || a === document.body || root.contains(a) || a.closest?.(".mode-menu")) {
+    const back = opener?.isConnected && opener.offsetParent && !opener.closest(".mode-menu") ? opener : modeBtn();
     back?.focus({ preventScroll: true });
   }
   opener = null;
-}
-
-export function toggleStreamer() {
-  if (open) {
-    if (refuseWhileTake(railBtn)) return;
-    closeStreamer();
-  } else openStreamer();
 }
 
 /** A Streamer take is open (starting, recording or stopping). */
@@ -1095,16 +1131,30 @@ export function isStreamerTakeOpen() {
   return takeOpen();
 }
 
-/** Leaving Streamer (the rail, another mode) waits for the take to stop:
- * true (and a note beside `anchor`) when it is refused. */
-export function refuseWhileTake(anchor) {
-  if (!open || !takeOpen()) return false;
-  flashNote(t("streamer.rec.stopFirst"), anchor || railBtn);
-  return true;
-}
-
 export function isStreamerOpen() {
   return open;
+}
+
+/** The take review as it is now (for the browser tests): the view, the
+ * layout tier, which picture the one window shows, and the video's time
+ * against the take time the playhead asks for. */
+export function reviewState() {
+  const take = open ? reviewSource().take : null;
+  const v = review.video;
+  const song = transport()?.getCurrentTime?.() ?? 0;
+  return {
+    view: review.view,
+    tier: review.tier,
+    win: review.win,
+    shows: ui?.builder.screens.dataset.shows || null,
+    src: review.src,
+    hasVideo: Boolean(v),
+    paused: v ? v.paused : true,
+    videoTime: v ? v.currentTime : null,
+    videoDuration: v && Number.isFinite(v.duration) ? v.duration : null,
+    takeTime: take && Number.isFinite(take.camera_start_sec) ? song - take.camera_start_sec : null,
+    cameraStart: take?.camera_start_sec ?? null,
+  };
 }
 
 /** Called with the new open state whenever it changes (the Mode menu). */
@@ -1121,14 +1171,13 @@ function notify() {
   }
 }
 
-function paintRail() {
-  if (!railBtn) return;
-  railBtn.classList.toggle("active", open);
-  railBtn.setAttribute("aria-pressed", String(open));
+/** The Mode button: the way into Performance, where its notes and focus go. */
+function modeBtn() {
+  return document.getElementById("modeBtn");
 }
 
 let noteTimer = 0;
-/** A short note beside `anchor` (the rail button when none), gone by itself. */
+/** A short note beside `anchor` (the Mode button when none), gone by itself. */
 function flashNote(text, anchor) {
   let note = document.getElementById("streamerNote");
   if (!note) {
@@ -1139,10 +1188,10 @@ function flashNote(text, anchor) {
   }
   note.textContent = text;
   note.hidden = false;
-  const r = (anchor || railBtn)?.getBoundingClientRect();
+  const r = (anchor || modeBtn())?.getBoundingClientRect();
   if (r) {
     const w = note.offsetWidth;
-    const beside = anchor === railBtn || !anchor;
+    const beside = !anchor;
     const left = beside ? r.right + 8 : Math.min(window.innerWidth - w - 8, Math.max(8, r.left + r.width / 2 - w / 2));
     const top = beside ? r.top : r.bottom + 8 + note.offsetHeight > window.innerHeight ? r.top - note.offsetHeight - 8 : r.bottom + 8;
     note.style.left = `${Math.round(left)}px`;
@@ -1156,7 +1205,11 @@ function flashNote(text, anchor) {
 // open): from the top of #lanes to the bottom of their column, as wide as #lanes.
 const layerObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => placeLayer()) : null;
 
+// The Scene Builder's size decides where the live and review windows go.
+const windowsObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => placeWindows()) : null;
+
 function observeLayout() {
+  if (ui?.builder.panel) windowsObserver?.observe(ui.builder.panel);
   if (!layerObserver) return;
   const lanes = document.getElementById("lanes");
   if (lanes) layerObserver.observe(lanes);
@@ -1207,6 +1260,8 @@ function frame() {
     painted.exp = null;
     if (job) checkLastTake(job);
     loadPart(job);
+    // Another song: the review starts again from its note.
+    releaseReview();
   }
   const hasTrack = Boolean(job && transport() && totalDuration > 0);
   if (painted.hasTrack !== hasTrack) {
@@ -1238,9 +1293,14 @@ function frame() {
   takeTick(tNow, data);
   feedLive(tNow);
   paintRecord();
-  if (tab !== "builder") return;
+  if (tab !== "builder") {
+    if (review.video && !review.video.paused) review.video.pause();
+    return;
+  }
   paintLayers(meta, lyrics);
-  paintPreview(tNow, meta, lyrics, data);
+  paintReview(hasTrack ? tNow : 0);
+  // One window (a narrow workspace) showing the take: the live scene is not drawn.
+  if (ui.builder.screens.dataset.shows !== "take") paintPreview(tNow, meta, lyrics, data);
   paintClock(tNow);
   paintTimeline(tNow);
   paintPart();
@@ -1446,6 +1506,204 @@ function paintSelBox(f) {
 // A drag in progress (the preview or a trim handle): a key that edits the
 // scene (Delete, undo) ends it first, put back where it began, so no
 // half-made step is left behind or undone twice.
+// ── Take review ──
+// The second window: the take on the Video lane, its recorded picture played
+// in step with the transport (reviewModel.js). Silent: the take's sound is
+// already in the mix. Its <video> is built on first use and let go when the
+// view closes.
+
+const review = { video: null, src: "", engaged: false, pick: null, tier: "c", win: 0, view: "none", wasPlaying: false };
+
+function reviewVideo() {
+  if (!review.video) {
+    const v = document.createElement("video");
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = "auto";
+    v.addEventListener("seeked", () => { painted.review = null; });
+    v.addEventListener("loadeddata", () => { painted.review = null; });
+    v.addEventListener("error", () => console.warn("[streamer] the take's video failed to load:", v.error?.message || v.error?.code));
+    review.video = v;
+  }
+  return review.video;
+}
+
+/** Let the video and its source go (closing the view, another song). */
+function releaseReview() {
+  const v = review.video;
+  if (v) {
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+  }
+  review.video = null;
+  review.src = "";
+  review.engaged = false;
+  review.pick = null;
+  // Playback already going (another song chosen while playing) waits for
+  // the next press of Play.
+  review.wasPlaying = Boolean(transport()?.isPlaying?.());
+  painted.review = null;
+}
+
+/** Stop: the review goes back to its note until Play (or a seek). */
+function stopReview() {
+  review.engaged = false;
+  review.pick = null;
+  painted.review = null;
+}
+
+/** A seek from this view (the ruler, a section, the arrow keys). */
+function seekTo(sec) {
+  setPlayheadTime(sec);
+  review.engaged = true;
+  painted.review = null;
+}
+
+/** Which windows show, from the Scene Builder's size (reviewModel.reviewTier). */
+function placeWindows() {
+  if (!ui || !open) return;
+  const { panel, row, screens } = ui.builder;
+  if (!panel.clientWidth || !panel.clientHeight) return;
+  const cs = getComputedStyle(panel);
+  const px = (name, fallback) => {
+    const v = parseFloat(cs.getPropertyValue(name));
+    return Number.isFinite(v) ? v : fallback;
+  };
+  const stacked = getComputedStyle(row).flexDirection === "column";
+  const { tier, win } = reviewTier({
+    width: panel.clientWidth,
+    height: panel.clientHeight,
+    layersW: px("--sm-layers-w", 320),
+    rowGap: parseFloat(getComputedStyle(row).columnGap) || 12,
+    colGap: px("--sm-col-gap", 12),
+    stripH: px("--sm-strip-h", 40),
+    gap: px("--sm-gap", 8),
+    tlMin: px("--sm-tl-min", 217),
+    stacked,
+  });
+  if (review.tier === tier && review.win === win) return;
+  review.tier = tier;
+  review.win = win;
+  screens.dataset.tier = tier;
+  panel.dataset.tier = tier;
+  // The narrow band's own CSS sizes the column (layers under the preview).
+  if (stacked) panel.style.removeProperty("--sm-win-w");
+  else panel.style.setProperty("--sm-win-w", `${win}px`);
+  painted.review = null;
+  painted.scene = null;
+}
+
+/** The take the review shows: the Video lane's (the last take, as the song's
+ * lanes loaded it). { hasTake, pending, take } */
+function reviewSource() {
+  const lane = takeLane();
+  if (lane.state !== "saved") return { hasTake: false, pending: false, take: null };
+  const take = serverTake(lane.take);
+  return { hasTake: true, pending: !take, take };
+}
+
+function paintReview(tNow) {
+  const r = ui.builder.review;
+  const playing = Boolean(transport()?.isPlaying?.());
+  const recording = takeOpen();
+  const src = reviewSource();
+  const take = src.take;
+  const hasVideo = Boolean(take?.has_camera && take.camera_url && Number.isFinite(take.camera_start_sec));
+  // Play pressed (the transport starting) engages the review; playback that
+  // was already going when the song changed does not (releaseReview).
+  if (recording) review.engaged = false;
+  else if (playing && !review.wasPlaying && src.hasTake) review.engaged = true;
+  review.wasPlaying = playing;
+  const view = reviewView({ hasTake: src.hasTake, pending: src.pending, hasVideo, recording, playing: playing && review.engaged, engaged: review.engaged });
+  if (!showsTake(view)) review.pick = null;
+  review.view = view;
+  const shows = compactShows({ tier: review.tier, view, pick: review.pick });
+  const viewSig = `${view}|${shows}|${review.tier}|${reviewNote(view) ? t(reviewNote(view)) : ""}`;
+  if (painted.reviewView !== viewSig) {
+    painted.reviewView = viewSig;
+    r.box.dataset.view = view;
+    ui.builder.screens.dataset.shows = shows;
+    const key = reviewNote(view);
+    r.note.hidden = !key;
+    r.note.textContent = key ? t(key) : "";
+    r.switchBox.hidden = review.tier !== "c" || !showsTake(view);
+    for (const b of [r.live, r.take]) b.setAttribute("aria-pressed", String(b.dataset.pick === shows));
+    painted.review = null;
+    painted.scene = null;
+  }
+  const v = review.video;
+  if (!showsTake(view) || !hasVideo) {
+    if (v && !v.paused) v.pause();
+    if (painted.review !== "blank") {
+      painted.review = "blank";
+      clearReviewCanvas();
+    }
+    return;
+  }
+  const video = reviewVideo();
+  if (review.src !== take.camera_url) {
+    review.src = take.camera_url;
+    video.src = take.camera_url;
+    painted.review = null;
+  }
+  const filmDur = films.get(take.camera_url)?.loaded?.meta?.duration;
+  const dur = Number.isFinite(video.duration) ? video.duration : Number.isFinite(filmDur) ? filmDur : Infinity;
+  const { at, edge } = takeVideoTime(tNow, take.camera_start_sec, dur);
+  if (video.readyState >= 1) {
+    const step = syncStep({ playing, inTake: edge === "in", current: video.currentTime, target: at, paused: video.paused, speed: playbackSpeed });
+    if (Math.abs(video.playbackRate - step.rate) > 1e-3) video.playbackRate = step.rate;
+    if (step.seek != null && !video.seeking) video.currentTime = step.seek;
+    if (step.pause) video.pause();
+    if (step.play) video.play().catch(() => {});
+  }
+  if (shows === "live") return;
+  drawReview(video, edge);
+}
+
+function clearReviewCanvas() {
+  const { canvas, ctx, box } = ui.builder.review;
+  const cw = box.clientWidth;
+  const ch = box.clientHeight;
+  if (!cw || !ch) return;
+  sizeCanvas(canvas, cw, ch);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function sizeCanvas(canvas, cw, ch) {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.round(cw * dpr);
+  const h = Math.round(ch * dpr);
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  return dpr;
+}
+
+/** The take's frame, letterboxed at its own aspect (what the export renders);
+ * outside the take the first or last frame, dimmed. Only on a new frame. */
+function drawReview(video, edge) {
+  const { canvas, ctx, box } = ui.builder.review;
+  const cw = box.clientWidth;
+  const ch = box.clientHeight;
+  if (!cw || !ch || video.readyState < 2) return;
+  const sig = `${cw}|${ch}|${edge}|${video.currentTime}|${video.videoWidth}x${video.videoHeight}`;
+  if (painted.review === sig) return;
+  painted.review = sig;
+  const dpr = sizeCanvas(canvas, cw, ch);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, cw, ch);
+  const f = fitRatio(cw, ch, video.videoWidth / video.videoHeight);
+  ctx.drawImage(video, f.x, f.y, f.w, f.h);
+  if (edge !== "in") {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.fillRect(f.x, f.y, f.w, f.h);
+  }
+}
+
 let liveDrag = null;
 function cancelLiveDrag() {
   const d = liveDrag;
@@ -2860,7 +3118,7 @@ function wireRuler(ruler) {
     const { dur, pps } = timelineScale();
     if (!dur || !pps) return;
     const r = ruler.getBoundingClientRect();
-    setPlayheadTime(Math.max(0, Math.min(dur, (clientX - r.left) / pps)));
+    seekTo(Math.max(0, Math.min(dur, (clientX - r.left) / pps)));
   };
   ruler.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
@@ -2881,7 +3139,7 @@ function wireRuler(ruler) {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
     e.stopPropagation();
-    setPlayheadTime(now() + (e.key === "ArrowLeft" ? -5 : 5));
+    seekTo(now() + (e.key === "ArrowLeft" ? -5 : 5));
   });
 }
 
@@ -3045,7 +3303,7 @@ function paintTimeline(tNow) {
       const label = el("span", "sm-marker-text");
       label.append(el("span", "sm-marker-name", name), el("span", "sm-marker-time", at));
       b.append(el("span", "sm-marker-pin"), label);
-      b.addEventListener("click", () => setPlayheadTime(s.start));
+      b.addEventListener("click", () => seekTo(s.start));
       const stem = el("span", "sm-marker-stem");
       stem.style.left = `${x(s.start)}px`;
       stem.style.setProperty("--sm-sec", s.color || "#4a7fff");
@@ -3347,10 +3605,7 @@ function onKey(e) {
 // ── Init ──
 
 export function initStreamer() {
-  railBtn = document.getElementById("streamerBtn");
-  railBtn?.addEventListener("click", () => toggleStreamer());
-  paintRail();
-  // Karaoke opened (its rail button, the Mode menu): one view at a time.
+  // Karaoke opened (the Mode menu): one view at a time.
   document.addEventListener("stemdeck:karaoke-changed", (e) => {
     if (e.detail?.open && open) closeStreamer();
   });
@@ -3376,8 +3631,4 @@ export function initStreamer() {
   onLanguageChange(() => relabel());
   onPictureLoaded(() => { painted.scene = null; });
   document.addEventListener("visibilitychange", onVisibility);
-  if (railBtn) {
-    railBtn.title = t("streamer.rail");
-    railBtn.setAttribute("aria-label", t("streamer.rail"));
-  }
 }

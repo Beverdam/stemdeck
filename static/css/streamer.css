@@ -243,9 +243,24 @@ html.streamer-open .daw-footer { display: none !important; }
   flex-direction: column;
   gap: var(--sm-col-gap);
 }
+/* Room for the live window and the take review side by side (tiers a and
+   b, reviewModel.reviewTier, set from the Scene Builder's size): the column
+   holds two windows of --sm-win-w. Tier c keeps one window, sized as above. */
+.sm-builder:is([data-tier="a"], [data-tier="b"]) .sm-preview-col { width: calc(2 * var(--sm-win-w, 360px) + 12px); }
+/* Scene Layers sits at the right edge of the column, whatever room is left. */
+.sm-layers { margin-left: auto; }
+
+/* The windows: live (the scene as it is now) and review (the recorded take). */
+.sm-screens { position: relative; display: flex; gap: 12px; }
+.sm-screens > .sm-preview, .sm-screens > .sm-review { flex: 1 1 0; min-width: 0; }
+/* One window: the review only while it shows the take, in the live one's place. */
+.sm-screens[data-tier="c"] > .sm-review,
+.sm-screens:not([data-tier]) > .sm-review { display: none; }
+.sm-screens[data-tier="c"][data-shows="take"] > .sm-review { display: block; }
+.sm-screens[data-tier="c"][data-shows="take"] > .sm-preview { display: none; }
 
 /* The preview: 16:9 on screen whatever the scene's aspect (pillarboxed). */
-.sm-preview {
+.sm-preview, .sm-review {
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -255,7 +270,75 @@ html.streamer-open .daw-footer { display: none !important; }
   overflow: hidden;
   background: #000;
 }
-.sm-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.sm-canvas, .sm-review-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* The take review: a calm dark frame with a note until Play, then the take. */
+.sm-review:not([data-view="play"], [data-view="still"]) { background: var(--sm-panel); border-style: dashed; border-color: var(--sm-line); }
+.sm-review-tag {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 1;
+  max-width: calc(100% - 20px);
+  box-sizing: border-box;
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 6px;
+  background: rgba(10, 12, 16, .78);
+  color: var(--sm-text-2);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sm-review-note {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px 16px;
+  box-sizing: border-box;
+  text-align: center;
+  color: var(--sm-muted);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.sm-review-note[hidden] { display: none; }
+
+/* Live | Take: which picture the one window shows (tier c, while a take plays). */
+/* Top centre: the corners carry the REC badge or the review tag, and a
+   scene's default Track Info (top right). */
+.sm-view-switch {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 7px;
+  background: rgba(10, 12, 16, .82);
+}
+.sm-view-switch[hidden] { display: none; }
+.sm-view-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--sm-text-2);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sm-view-btn[aria-pressed="true"] { background: var(--sm-yellow); color: #1b2430; }
+.sm-view-btn:hover:not([aria-pressed="true"]) { background: rgba(255, 255, 255, .08); }
 
 /* REC badge: the editor's, never in the video. */
 .sm-rec {
@@ -1200,7 +1283,7 @@ html.streamer-open .daw-footer { display: none !important; }
   /* cqw is the Scene Builder's width here. */
   .sm-preview-col { width: clamp(480px, min(100cqw, 716px), 716px); }
   /* Five rows in view, the rest scroll. */
-  .sm-layers { flex: none; max-width: none; contain: none; }
+  .sm-layers { flex: none; max-width: none; contain: none; margin-left: 0; }
   .sm-layer-list { flex: none; max-height: calc(5 * 62px + 4 * 5px); }
   .sm-tl { flex: none; height: 217px; }
 }

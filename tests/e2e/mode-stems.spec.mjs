@@ -4,7 +4,7 @@
 // drums, bass, other) and no lead/backing split, so the split itself is not
 // covered here (scratchpad ms3.mjs ran it against a real song).
 import { test, expect } from "@playwright/test";
-import { openStudio, JOB_ID } from "./helpers.mjs";
+import { openStudio, JOB_ID, chooseMode } from "./helpers.mjs";
 
 const lanes = (page) =>
   page.evaluate(async () => Object.keys((await import("/js/state.js")).trackIndex).filter((n) => !/^t[kr]_/.test(n)).sort().join(","));
@@ -57,7 +57,7 @@ test.describe("stem choice per mode", () => {
 
   test("Karaoke shows the voice toggle and keeps the voice off", async ({ page }) => {
     await openStudio(page);
-    await page.locator("#karaokeBtn").click();
+    await chooseMode(page, "karaoke");
     await expect(page.locator("#karaoke .kk-voice")).toBeVisible();
     await expect(page.locator('#karaoke .kk-voice-btn[data-form="combined"]')).toHaveAttribute("aria-checked", "true");
     // Karaoke's lanes are the voice only; the instruments are in Original.

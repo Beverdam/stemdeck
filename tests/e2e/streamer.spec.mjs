@@ -1,5 +1,5 @@
 // Streamer Mode (static/js/streamer/): a view over the workspace. These pin
-// the phase 1 contract: entering and leaving from the rail and the Mode menu
+// the phase 1 contract: entering and leaving from the Mode menu
 // keeps the song and its position; a saved mix of its own for every song,
 // apart from Practice's, Advanced's and Karaoke's (mixer.js, mixMode.js); the
 // footer hidden while open (as in Karaoke) and back after, with Streamer's
@@ -7,7 +7,7 @@
 // zones switch; and one workspace view at a time with Karaoke.
 
 import { test, expect } from "@playwright/test";
-import { JOB_ID, SIBLING_JOB_ID, openStudio } from "./helpers.mjs";
+import { JOB_ID, SIBLING_JOB_ID, openStudio, chooseMode, leaveModeView } from "./helpers.mjs";
 
 const ev = (page, fn, arg) => page.evaluate(fn, arg);
 const sm = (page, sel) => page.locator(`#streamer ${sel}`);
@@ -27,16 +27,18 @@ const toggleMute = (page, name) => ev(page, async (n) => (await import("/js/mixe
 const savedMix = (page, mode) => ev(page, async ([id, m]) => (await import("/js/utils.js")).storeGet(`stemdeck:mix:${id}:${m}`, null), [JOB_ID, mode]);
 const savedScene = (page, id = JOB_ID) => ev(page, async (jid) => (await import("/js/utils.js")).storeGet(`stemdeck:streamer:scene:${jid}`, null), id);
 
+// Performance is entered and left through the Mode menu (there is no rail
+// button for it).
 async function openStreamer(page) {
-  await page.locator("#streamerBtn").click();
+  await chooseMode(page, "streamer");
   await expect(page.locator("#streamer")).toBeVisible();
-  await expect(page.locator("#streamerBtn")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('#modeMenu .mode-item[data-mode="streamer"]')).toHaveAttribute("aria-checked", "true");
 }
 
 async function closeStreamer(page) {
-  await page.locator("#streamerBtn").click();
+  await leaveModeView(page);
   await expect(page.locator("#streamer")).toBeHidden();
-  await expect(page.locator("#streamerBtn")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator('#modeMenu .mode-item[data-mode="streamer"]')).toHaveAttribute("aria-checked", "false");
 }
 
 test.describe("Streamer Mode", () => {
@@ -44,7 +46,7 @@ test.describe("Streamer Mode", () => {
     await page.setViewportSize({ width: 1800, height: 1020 });
   });
 
-  test("the rail item opens and closes it over the lanes, keeping the song and position", async ({ page }) => {
+  test("the Mode menu opens and closes it over the lanes, keeping the song and position", async ({ page }) => {
     await openStudio(page);
     await seek(page, 3);
     await openStreamer(page);
@@ -83,9 +85,9 @@ test.describe("Streamer Mode", () => {
     await expect(footer).toBeVisible();
     // Karaoke and back: the footer follows whichever view is open.
     await openStreamer(page);
-    await page.locator("#karaokeBtn").click();
+    await chooseMode(page, "karaoke");
     await expect(footer).toBeHidden();
-    await page.locator("#karaokeBtn").click();
+    await leaveModeView(page);
     await expect(footer).toBeVisible();
   });
 
@@ -116,11 +118,11 @@ test.describe("Streamer Mode", () => {
     await setMode(page, "practice");
 
     // Karaoke keeps its own mix too, with the voice off.
-    await page.locator("#karaokeBtn").click();
+    await chooseMode(page, "karaoke");
     await expect(page.locator("#karaoke")).toBeVisible();
     await expect.poll(async () => (await mixOf(page)).lanes.vocals).toBe("M-");
     expect((await mixOf(page)).lanes.bass).toBe("--");
-    await page.locator("#karaokeBtn").click();
+    await leaveModeView(page);
 
     // Back in Streamer: its own record is still there.
     await openStreamer(page);
@@ -131,11 +133,11 @@ test.describe("Streamer Mode", () => {
   test("one view at a time with Karaoke", async ({ page }) => {
     await openStudio(page);
     await openStreamer(page);
-    await page.locator("#karaokeBtn").click();
+    await chooseMode(page, "karaoke");
     await expect(page.locator("#karaoke")).toBeVisible();
     await expect(page.locator("#streamer")).toBeHidden();
     await expect(page.locator("#lanes")).toHaveAttribute("inert", "");
-    await page.locator("#streamerBtn").click();
+    await chooseMode(page, "streamer");
     await expect(page.locator("#streamer")).toBeVisible();
     await expect(page.locator("#karaoke")).toBeHidden();
     await closeStreamer(page);
@@ -720,7 +722,7 @@ test.describe("Streamer Mode fix pass", () => {
     await openStreamer(page);
     // Focus moved into the view on open.
     expect(await ev(page, () => document.getElementById("streamer").contains(document.activeElement))).toBe(true);
-    for (const target of ["#streamerBtn", `#catalogList .cat-item[data-id="${JOB_ID}"]`]) {
+    for (const target of ["#modeBtn", `#catalogList .cat-item[data-id="${JOB_ID}"]`]) {
       await page.locator(target).first().focus();
       await page.keyboard.press("Delete");
       await page.keyboard.press("Backspace");
@@ -728,8 +730,9 @@ test.describe("Streamer Mode fix pass", () => {
     await page.waitForTimeout(400);
     await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
     await closeStreamer(page);
-    // Focus is back on what opened it.
-    await expect(page.locator("#streamerBtn")).toBeFocused();
+    // Focus is back on what opened it: the Mode menu's item is gone with the
+    // menu, so the Mode button.
+    await expect(page.locator("#modeBtn")).toBeFocused();
   });
 
   test("no 4K: 720p and 1080p only, and settings saved at 4K open as 1080p", async ({ page }) => {
@@ -777,10 +780,14 @@ test.describe("Streamer Mode fix pass", () => {
     await expect(sm(page, ".sm-rec")).toHaveClass(/recording/, { timeout: 15000 });
     await expect(sm(page, ".sm-undo")).toBeDisabled();
     await expect(page.locator("#streamerAudioSrc")).toBeDisabled();
-    // Karaoke and the rail are refused while it records.
-    await page.locator("#karaokeBtn").click();
+    // Karaoke, and leaving for Practice or Advanced, are refused while it
+    // records, with the reason in the Mode menu.
+    await chooseMode(page, "karaoke");
     await expect(page.locator("#karaokeNote")).toContainText("Stop recording first");
-    await page.locator("#streamerBtn").click();
+    await expect(page.locator("#modeMenu .mode-note")).toContainText("Stop recording first");
+    await page.locator('#modeMenu .mode-item[data-mode="practice"]').click();
+    await expect(page.locator("#modeMenu .mode-note")).toContainText("Stop the Performance take first");
+    await page.keyboard.press("Escape");
     await expect(page.locator("html")).toHaveClass(/streamer-open/);
     await expect(sm(page, ".sm-rec")).toHaveClass(/recording/);
     // It stops at the trim's end; the scene then goes 9:16; the export says
@@ -856,5 +863,79 @@ test.describe("Streamer Mode: a version 1 scene", () => {
     expect(ti[0].frame).toEqual({ x: 0.05, y: 0.6, w: 0.4, h: 0.25 });
     expect(ti[0].props).toEqual({ art: true, title: true, waveform: false, showArtist: true, bars: 34 });
     expect(saved.layers.map((l) => l.id)).toEqual(["background", "camera", "lowerThird", "lyrics", "trackInfo"]);
+  });
+});
+
+// The take review window (streamer.js, reviewModel.js): the recorded take
+// played beside the live preview in step with the transport, a note when
+// there is nothing to play, and one window in place of two when there is no
+// room for both.
+test.describe("Streamer Mode take review", () => {
+  const review = (page) => ev(page, async () => (await import("/js/streamer/streamer.js")).reviewState());
+  const box = (page, sel) => sm(page, sel).evaluate((e) => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height, right: r.right }; });
+
+  test("two windows side by side when there is room, one when there is not", async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+    await openStudio(page);
+    await page.locator("#sidebarCollapseBtn").click();
+    await openStreamer(page);
+    await expect.poll(async () => (await review(page)).tier).toMatch(/^[ab]$/);
+    await expect(sm(page, ".sm-review")).toBeVisible();
+    const live = await box(page, ".sm-preview");
+    const rv = await box(page, ".sm-review");
+    expect(Math.abs(live.w - rv.w)).toBeLessThanOrEqual(1);
+    expect(Math.abs(live.h - rv.h)).toBeLessThanOrEqual(1);
+    expect(live.w).toBeGreaterThanOrEqual(360);
+    // Scene Layers at the right edge of the Scene Builder.
+    const builder = await box(page, ".sm-builder");
+    const layers = await box(page, ".sm-layers");
+    expect(Math.abs(builder.right - layers.right)).toBeLessThanOrEqual(1);
+    // No take yet: the note says how to get one.
+    await expect(sm(page, ".sm-review-note")).toHaveText("Record a take to review it here");
+    // A small window: one window, the live preview, and the review hidden.
+    await page.locator("#sidebarCollapseBtn").click();
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await expect.poll(async () => (await review(page)).tier).toBe("c");
+    await expect(sm(page, ".sm-preview")).toBeVisible();
+    await expect(sm(page, ".sm-review")).toBeHidden();
+    await expect(sm(page, ".sm-view-switch")).toBeHidden();
+  });
+
+  test("a take plays in the review window in step with the song, and Stop brings the note back", async ({ page }) => {
+    await page.setViewportSize({ width: 1800, height: 1020 });
+    await openStudio(page);
+    await ev(page, async (id) => {
+      const m = await import("/js/streamer/streamerModel.js");
+      const { storeSet } = await import("/js/utils.js");
+      await storeSet(`stemdeck:streamer:scene:${id}`, m.serializeScene({ ...m.defaultScene("16:9"), trim: { in: 1, out: 4 } }));
+    }, JOB_ID);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(`.cat-item[data-id="${JOB_ID}"]`).first().click();
+    await page.locator("#sidebarCollapseBtn").click();
+    await openStreamer(page);
+    await sm(page, ".sm-rec").click();
+    await expect(sm(page, ".sm-rec")).toHaveClass(/recording/, { timeout: 15000 });
+    // While a new take records, the review waits.
+    await expect.poll(async () => (await review(page)).view).toBe("recording");
+    expect((await review(page)).paused).toBe(true);
+    await expect(sm(page, ".sm-export-go")).toBeEnabled({ timeout: 30000 });
+    // Saved: the note until Play.
+    await expect.poll(async () => (await review(page)).view, { timeout: 20000 }).toBe("idle");
+    await expect(sm(page, ".sm-review-note")).toHaveText("Press Play to review your take");
+    await seek(page, 1.5);
+    await sm(page, ".sm-play").click();
+    await expect.poll(async () => (await review(page)).view).toBe("play");
+    await expect.poll(async () => (await review(page)).paused, { timeout: 10000 }).toBe(false);
+    await page.waitForTimeout(600);
+    // The picture is the take's at the playhead, as the export places it.
+    const s = await review(page);
+    expect(s.src).toMatch(/\/takes\/[^/]+\/camera$/);
+    expect(Math.abs(s.videoTime - s.takeTime)).toBeLessThan(0.15);
+    await sm(page, ".sm-stop").click();
+    await expect.poll(async () => (await review(page)).view).toBe("idle");
+    await expect(sm(page, ".sm-review-note")).toBeVisible();
+    // Closing the mode lets the video go.
+    await closeStreamer(page);
+    expect((await review(page)).hasVideo).toBe(false);
   });
 });

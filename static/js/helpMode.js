@@ -26,6 +26,9 @@ const HELP = [
   [".stem-choice[data-stem]", "help.stemChip", chipName],
   ['.vocal-mode-btn[data-mode="all"]', "help.vocalCombined"],
   ['.vocal-mode-btn[data-mode="split"]', "help.vocalSplit"],
+  // Karaoke and Performance are entered from the Mode menu (modeUi.js).
+  ['.mode-item[data-mode="karaoke"]', "help.karaoke"],
+  ['.mode-item[data-mode="streamer"]', "help.streamer"],
   ["#modeBtn", "help.mode"],
   ["#autoSectionsBtn", "help.detectStructure"],
   ["#autoLyricsBtn", "help.detectLyrics"],
@@ -38,8 +41,6 @@ const HELP = [
   [".rail-favorites", "help.favorites"],
   [".rail-library", "help.library"],
   [".rail-lyrics", "help.lyrics"],
-  [".rail-karaoke", "help.karaoke"],
-  [".rail-streamer", "help.streamer"],
   [".rail-trash", "help.trash"],
   [".rail-queue", "help.queue"],
   ["#notifBtn", "help.notifications"],
@@ -121,6 +122,11 @@ const HELP = [
   ["#t-master-btn", "help.masterChip", null, "master.title"],
   ["#t-export-btn", "help.export"],
   ["#t-export-master", "help.masterExportRow", null, "master.title"],
+  // Performance Mode's two windows (streamer.js): the live scene and the take
+  // review, and the Live | Take switch shown when only one window fits.
+  ["#streamer .sm-view-switch", "help.smViewSwitch"],
+  ["#streamer .sm-review", "help.smReview"],
+  ["#streamer .sm-preview", "help.smPreview"],
   // Performance Mode's Scene Layers panel (streamer.js). The Track Info row
   // comes before the other rows; its part switches are in Edit properties.
   ['#streamer .sm-layer[data-type="trackInfo"] .sm-layer-pick', "help.smTrackInfo"],
@@ -366,11 +372,22 @@ function onPointerOver(e) {
   else if (!tipEl.contains(e.target)) hide();
 }
 
-// Help mode takes every press except Guide itself, so pointing around the
-// studio can never act on it. A click shows that control's box, which is also
-// how help mode works on a touch screen.
+// Help mode takes every press except Guide itself and the Mode button, so
+// pointing around the studio can never act on it. The Mode button still opens
+// its menu (choosing in it is taken like any press), because Karaoke and
+// Performance are only reached there and their items explain themselves too.
+// A click shows that control's box, which is also how help mode works on a
+// touch screen.
+const PASS = "#helpModeBtn, #modeBtn";
+
 function swallow(e) {
-  if (e.target instanceof Element && e.target.closest("#helpModeBtn")) return;
+  if (e.target instanceof Element && e.target.closest(PASS)) {
+    if (e.type === "click" && e.target.closest("#modeBtn")) {
+      const entry = findEntry(e.target);
+      if (entry) show(entry);
+    }
+    return;
+  }
   e.preventDefault();
   e.stopPropagation();
   if (e.type === "click") {
