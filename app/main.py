@@ -468,6 +468,8 @@ async def update_settings(request: Request) -> dict[str, object]:
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        body = {}
     if "allow_network" in body:
         set_allow_network(bool(body["allow_network"]))
     if "auto_delete_jobs" in body:
@@ -635,6 +637,8 @@ async def set_stems_location(request: Request) -> dict[str, object]:
     try:
         body = await request.json()
     except Exception:
+        body = {}
+    if not isinstance(body, dict):
         body = {}
     raw = body.get("path")
     if not isinstance(raw, str):
