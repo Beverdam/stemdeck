@@ -256,3 +256,109 @@ def test_the_render_rebuilds_original_without_the_removed_stem(jobs_dir):
     lanes, _ = stems_mod._expand_render_lanes(JOB, names, [1.0, 0.8], [0, 0], frozenset({"vocals"}))
     assert all(lane.name != "vocals" for lane in lanes)
     assert all(lane.path.name != "vocals.wav" for lane in lanes)
+
+
+# ─── Errors from the builder, for the backing and the rest ──────────────────
+#
+# Both endpoints map what the builder raises to a status and a sentence that
+# never names a path. Each case is driven through the real endpoint with the
+# builder replaced, because a timeout or a disk error cannot be produced on
+# demand by real stems.
+
+_URLS = {
+    "backing": f"/api/jobs/{JOB}/backing/bass.wav",
+    "rest": f"/api/jobs/{JOB}/rest/drums-other.wav",
+}
+_BUILDERS = {"backing": "ensure_backing", "rest": "ensure_rest"}
+
+
+def _builder(monkeypatch, which, fn):
+    from app.api import backing as backing_api
+
+    monkeypatch.setattr(backing_api, _BUILDERS[which], fn)
+
+
+@pytest.mark.parametrize("which", ["backing", "rest"])
+async def test_a_registered_job_without_its_folder_is_a_404(jobs_dir, client, which):
+    _jobs[JOB] = Job(id=JOB, status="done")
+    assert not (jobs_dir / JOB).exists()
+    async with client as c:
+        r = await c.get(_URLS[which])
+    assert r.status_code == 404 and r.json()["detail"] == "job not found"
+
+
+@pytest.mark.parametrize("which", ["backing", "rest"])
+async def test_a_disk_error_while_mixing_is_a_500_without_a_path(
+    jobs_dir, client, monkeypatch, which
+):
+    _make_job(jobs_dir, names=("drums",))
+
+    def broken(*_a):
+        raise PermissionError(13, "denied", str(jobs_dir / JOB / "secret"))
+
+    _builder(monkeypatch, which, broken)
+    async with client as c:
+        r = await c.get(_URLS[which])
+    assert r.status_code == 500
+    assert "could not be made" in r.json()["detail"]
+    assert str(jobs_dir) not in r.text
+
+
+@pytest.mark.parametrize("which", ["backing", "rest"])
+async def test_a_mix_that_takes_too_long_is_a_500(jobs_dir, client, monkeypatch, which):
+    import time
+
+    from app.api import backing as backing_api
+
+    _make_job(jobs_dir, names=("drums",))
+    monkeypatch.setattr(backing_api, "TIMEOUT_BACKING", 0.05)
+
+    def slow(*_a):
+        time.sleep(0.5)
+        raise AssertionError("the endpoint must not wait for this")
+
+    _builder(monkeypatch, which, slow)
+    async with client as c:
+        r = await c.get(_URLS[which])
+    assert r.status_code == 500
+    assert "took too long" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("which", ["backing", "rest"])
+async def test_a_built_file_outside_the_library_is_never_served(
+    jobs_dir, client, monkeypatch, tmp_path, which
+):
+    _make_job(jobs_dir, names=("drums",))
+    outside = tmp_path / "elsewhere.wav"
+    outside.write_bytes(b"RIFF")
+    _builder(monkeypatch, which, lambda *_a: (outside, True))
+    async with client as c:
+        r = await c.get(_URLS[which])
+    assert r.status_code == 404
+    assert r.content != b"RIFF"
+
+
+async def test_rest_refuses_a_set_spelled_two_ways(jobs_dir, client):
+    _make_job(jobs_dir)
+    async with client as c:
+        unsorted = await c.get(f"/api/jobs/{JOB}/rest/other-drums.wav")
+        unknown = await c.get(f"/api/jobs/{JOB}/rest/drums-kazoo.wav")
+        bad_id = await c.get("/api/jobs/not-a-job/rest/drums.wav")
+    assert unsorted.status_code == unknown.status_code == 422
+    assert bad_id.status_code == 404
+
+
+async def test_rest_of_a_job_still_processing_is_a_404(jobs_dir, client):
+    _make_job(jobs_dir, status="processing")
+    async with client as c:
+        r = await c.get(f"/api/jobs/{JOB}/rest/drums.wav")
+    assert r.status_code == 404 and "not ready" in r.json()["detail"]
+
+
+async def test_rest_without_its_stems_says_so(jobs_dir, client):
+    _make_job(jobs_dir, names=("vocals",))
+    async with client as c:
+        r = await c.get(f"/api/jobs/{JOB}/rest/drums-other.wav")
+    assert r.status_code == 404
+    assert "missing" in r.json()["detail"]
+    assert str(jobs_dir) not in r.text
