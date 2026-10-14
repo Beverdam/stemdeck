@@ -97,11 +97,13 @@ class TakeRenderError(RuntimeError):
 
     `code` says how, for the GPU fallback's reason: "exit" (ffmpeg failed),
     "timeout", "stall" (no progress), or "invalid-<check>" (the file failed
-    video_encoder.validate_output)."""
+    video_encoder.validate_output). `stderr` is ffmpeg's last lines, for
+    video_encoder.blames_encoder (#791)."""
 
-    def __init__(self, message: str, code: str = "exit") -> None:
+    def __init__(self, message: str, code: str = "exit", stderr: str = "") -> None:
         super().__init__(message)
         self.code = code
+        self.stderr = stderr
 
 
 def write_float_wav_header(fh, data_bytes: int, rate: int, channels: int) -> None:
@@ -540,6 +542,10 @@ def run_video_render(
     TakeRenderError "invalid-<check>") and `stall_timeout`: a render whose
     progress has not moved for that long is killed ("stall"). The CPU render
     passes neither and runs exactly as before."""
+    # A cancel that came before (during the encoder test, between a GPU
+    # failure and the CPU render) starts nothing (#790).
+    if cancelled():
+        raise RenderCancelled()
     tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.tmp.mp4")
     full = [*cmd, "-progress", "pipe:1", "-nostats", "-f", "mp4", "-y", str(tmp)]
     proc = subprocess.Popen(  # noqa: S603 -- list args, no shell, trusted ffmpeg
@@ -599,6 +605,7 @@ def run_video_render(
             raise TakeRenderError(
                 f"video render exit {proc.returncode}: " + " | ".join(list(stderr_tail)[-8:]),
                 killed_for[0] if killed_for else "exit",
+                stderr="\n".join(stderr_tail),
             )
         if check is not None:
             try:
