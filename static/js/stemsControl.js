@@ -16,7 +16,7 @@ import { onModeChange } from "./mode.js";
 import {
   layoutState, changeLayout, requestSplit, onLayoutChange, setLayoutBusyCheck,
 } from "./modeStems.js";
-import { BASE_STEMS, sameNames } from "./partChoice.js";
+import { BASE_STEMS, sameNames, stemsReasonKey } from "./partChoice.js";
 import { isRecording } from "./capture/recordUi.js";
 import { isStreamerTakeOpen } from "./streamer/streamer.js";
 
@@ -39,10 +39,8 @@ function modeName(mode) {
 }
 
 function blockedText(reason) {
-  if (reason === "recording") return t("stems.blockedRecording");
-  if (reason === "noSong") return t("stems.noSong");
-  if (reason === "failed") return t("stems.splitFailed");
-  return "";
+  const key = stemsReasonKey(reason);
+  return key ? t(key) : "";
 }
 
 function build() {
@@ -66,6 +64,8 @@ function build() {
       if (!draft) return;
       if (box.checked) draft.lanes.add(name);
       else draft.lanes.delete(name);
+      // A message about the last Apply no longer describes the ticks.
+      setStatus("");
       paint();
     });
     const dot = el("span", "stems-pop-dot");
@@ -117,6 +117,12 @@ function build() {
   pop.addEventListener("click", (e) => e.stopPropagation());
   document.body.append(pop);
   ui = { title, hint, rows, voice, voiceLabel, voiceBtns, seg, splitBtn, splitNote, holds, status, reset, applyBtn };
+}
+
+/** The song has this stem: its file, or Vocals as the Lead + Backing pair. */
+function hasStem(present, name) {
+  const have = new Set(present);
+  return have.has(name) || (name === "vocals" && have.has("lead_vocals") && have.has("backing_vocals"));
 }
 
 function draftFrom(state) {
@@ -194,6 +200,13 @@ async function apply(patch) {
   // following today's rule (the pair whenever the split exists).
   const voiceNow = before.voice || (before.shown.split ? "split" : "combined");
   const next = patch || { lanes: [...draft.lanes], ...(draft.voice !== voiceNow ? { voice: draft.voice } : {}) };
+  // A stem the song does not have stays ticked out of sight (its box is
+  // disabled), so an empty list is not the only empty choice: with no stem
+  // of this song ticked, say so and save nothing (#793).
+  if (next.lanes && !next.lanes.some((n) => hasStem(before.present, n))) {
+    setStatus(blockedText("empty"));
+    return;
+  }
   busy = true;
   paint();
   const why = await changeLayout(next);

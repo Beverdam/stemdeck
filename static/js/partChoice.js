@@ -232,3 +232,21 @@ export function timelineLanes(remove, present) {
     part: remove && have.has(remove) ? remove : null,
   };
 }
+
+// Why a stem choice was not applied (modeStems.js changeLayout, requestSplit,
+// extractIntoOpenSong) mapped to the i18n key the Stems popover and the
+// Extract button show. "" (applied) has no refusal text; a reason not listed
+// here still says nothing changed, never that it did (#793).
+const REASON_KEYS = Object.freeze({
+  recording: "stems.blockedRecording",
+  noSong: "stems.noSong",
+  failed: "stems.splitFailed",
+  empty: "stems.empty",
+  mode: "stems.noLanes",
+});
+
+/** The i18n key for a refused stem change, "" when `reason` is "". */
+export function stemsReasonKey(reason) {
+  if (!reason) return "";
+  return REASON_KEYS[reason] || "stems.notChanged";
+}

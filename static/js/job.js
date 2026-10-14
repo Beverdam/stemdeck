@@ -7,6 +7,7 @@ import {
 } from "./state.js";
 import { destroyPlayer, wireUpAudio, setWaveformLoading, updateFooterTrack } from "./player.js";
 import { prepareLayout, extractIntoOpenSong } from "./modeStems.js";
+import { stemsReasonKey } from "./partChoice.js";
 import { getMode } from "./mode.js";
 import { showTrackNote } from "./capture/takeLanes.js";
 import { notifyFailure, dismissFailuresByJobId } from "./notifications.js";
@@ -785,10 +786,9 @@ export function wireJobForm() {
       );
       if (res.handled) {
         setSubmitProcessing(false);
-        showTrackNote(res.reason === "recording"
-          ? t("stems.blockedRecording")
-          : res.reason === "failed" ? t("stems.splitFailed")
-          : t("stems.extractApplied", { mode: t(`mode.${res.mode}`) }));
+        // Success is said only for a change that was made (#793).
+        const refused = stemsReasonKey(res.reason);
+        showTrackNote(refused ? t(refused) : t("stems.extractApplied", { mode: t(`mode.${res.mode}`) }));
         return;
       }
     }
