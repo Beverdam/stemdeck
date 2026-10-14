@@ -4,8 +4,9 @@
 import {
   BASE_STEMS, parseChoice, serializeChoice, mergeChoice, modeLayout, layoutLanes, baseLanes,
   restSetName, originalSource, jobOriginalSet, layoutSignature, songDefaultLanes, splitFreezePatches,
-  isSongDefault, choiceKey, STEM_MODES,
+  isSongDefault, choiceKey, STEM_MODES, stemsReasonKey,
 } from "../../static/js/partChoice.js";
+import { TRANSLATIONS } from "../../static/js/i18n.js";
 import { buildPlaybackStems, sumPeaks } from "../../static/js/playbackStems.js";
 import { buildRenderRequest } from "../../static/js/streamer/recordModel.js";
 
@@ -113,6 +114,22 @@ const body = buildRenderRequest({ mix: { names: ["original", "vocals"], gains: [
 check("render body: lanes sent with the mixed audio", eq(body.lanes, ["vocals", "drums"]));
 check("render body: no lanes without the mixed audio", buildRenderRequest({ mix: { names: ["vocals"], gains: [1], lanes: ["vocals"] }, mixedAudio: false }).lanes === undefined);
 check("render body: an old mix without lanes sends none", buildRenderRequest({ mix: { names: ["vocals"], gains: [1] } }).lanes === undefined);
+
+// ── What Apply and Extract say (#793) ──
+// Each refusal has its own sentence; success is said only for "", and an
+// unknown refusal never reads as success.
+const reasons = ["recording", "noSong", "failed", "empty", "mode"];
+const reasonKeys = reasons.map(stemsReasonKey);
+check("success has no refusal text", stemsReasonKey("") === "");
+check("every refusal has a key", reasonKeys.every((k) => k.startsWith("stems.")), JSON.stringify(reasonKeys));
+check("every refusal has its own key", new Set(reasonKeys).size === reasons.length, JSON.stringify(reasonKeys));
+check("no refusal reads as applied", [...reasonKeys, stemsReasonKey("whatever")].every((k) => k && k !== "stems.applied" && k !== "stems.extractApplied"));
+const tables = Object.entries(TRANSLATIONS).filter(([code]) => code !== "pt-PT");
+const missingText = [];
+for (const k of [...reasonKeys, stemsReasonKey("whatever")]) {
+  for (const [code, table] of tables) if (!table[k]) missingText.push(`${code}:${k}`);
+}
+check("every refusal text is in all ten tables", tables.length === 10 && !missingText.length, missingText.join(" "));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

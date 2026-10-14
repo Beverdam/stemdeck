@@ -130,6 +130,9 @@ test.describe("help mode", () => {
     await expect(page.locator("#laneStemsPop")).toBeVisible();
     await page.locator("#laneStemsPop .stems-pop-row").first().hover();
     await expect(tip(page)).toContainText("gets its own lane");
+    // Apply names the one rule it refuses on (#793).
+    await page.locator("#laneStemsPop .stems-pop-apply").hover();
+    await expect(tip(page)).toContainText("At least one stem must be ticked.");
     await page.locator("#laneStemsBtn").click();
 
     await page.locator("#t-export-btn").click();

@@ -88,4 +88,28 @@ test.describe("stem choice per mode", () => {
     await expect.poll(() => lanes(page), { timeout: 15000 }).toBe("original,vocals");
     expect(posts.filter((u) => /\/resplit$|\/api\/jobs$/.test(u))).toEqual([]);
   });
+
+  test("Apply with no stem ticked says so and changes nothing (#793)", async ({ page }) => {
+    await openStudio(page);
+    await expect.poll(() => lanes(page)).toBe("bass,drums,other,vocals");
+    await chooseStems(page, []);
+    await expect(page.locator("#laneStemsPop .stems-pop-status")).toHaveText(
+      "Tick at least one stem to give it its own lane. Nothing was changed.",
+    );
+    const stored = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("stemdeck:stems:")));
+    expect(stored).toEqual([]);
+    expect(await lanes(page)).toBe("bass,drums,other,vocals");
+  });
+
+  test("Extract that is refused says why, never that the lanes changed (#793)", async ({ page }) => {
+    await openStudio(page);
+    // A refusal the Stems control did not know before: the song is not the
+    // open one any more by the time the change would be saved.
+    await page.evaluate(async () => (await import("/js/modeStems.js")).setLayoutBusyCheck(() => "noSong"));
+    await page.locator("#stemAllBtn").click(); // all off
+    await page.locator('.stem-choice[data-stem="vocals"]').click();
+    await page.locator("#submit").click();
+    await expect(page.locator("#trackNote")).toHaveText("Open a song first.");
+    expect(await lanes(page)).toBe("bass,drums,other,vocals");
+  });
 });
