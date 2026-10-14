@@ -163,6 +163,69 @@ async def test_a_trim_outside_the_take_gets_422(jobs_dir, client, tmp_path, monk
         assert (JOB, tid) not in takes_mod._renders
 
 
+async def test_a_refused_render_keeps_the_earlier_video(jobs_dir, client, tmp_path, monkeypatch):
+    # Issue #789: the 422 for a trim outside the take came after the earlier
+    # finished render.mp4 had been deleted, leaving no video at all.
+    skip_without_ffmpeg()
+    _make_job(jobs_dir)
+    monkeypatch.setattr(takes_mod, "libx264_available", lambda: True)
+    monkeypatch.setattr(takes_mod, "aac_available", lambda: True)
+    old = b"\x00\x00\x00\x18ftypmp42old"
+    async with client as c:
+        tid = await _take_with_camera(c, tmp_path)
+        folder = jobs_dir / JOB / "takes" / tid
+        (folder / "render.mp4").write_bytes(old)
+        url = f"/api/jobs/{JOB}/takes/{tid}/render"
+        r = await c.post(
+            url, json={"fit": "fill", "span": "range", "range_in": 200.0, "range_out": 201.0}
+        )
+        assert r.status_code == 422
+        assert (folder / "render.mp4").read_bytes() == old, "the earlier video is still there"
+        view = (await c.get(url)).json()
+        assert view["status"] == "done" and view["url"] is not None
+        assert (await c.get(f"{url}.mp4")).content == old
+    assert list(folder.glob(".render.mp4.*")) == [], "no set-aside copy is left behind"
+
+
+async def test_a_cancel_while_prepared_never_brings_back_the_old_video(
+    jobs_dir, client, tmp_path, monkeypatch
+):
+    # The other half of #789: the earlier video is kept only for a refusal.
+    # A cancel during the preparation still reports "none", never the old file.
+    skip_without_ffmpeg()
+    _make_job(jobs_dir)
+    monkeypatch.setattr(takes_mod, "libx264_available", lambda: True)
+    monkeypatch.setattr(takes_mod, "aac_available", lambda: True)
+    real_prepare = takes_mod._prepare_render
+
+    async def slow_prepare(*a, **k):
+        await asyncio.sleep(0.4)
+        return await real_prepare(*a, **k)
+
+    async def fake_task(run, job, cmd, dest, duration, retry=None):
+        raise AssertionError("nothing renders after a cancel")
+
+    monkeypatch.setattr(takes_mod, "_prepare_render", slow_prepare)
+    monkeypatch.setattr(takes_mod, "_render_task", fake_task)
+    async with client as c:
+        tid = await _take_with_camera(c, tmp_path)
+        folder = jobs_dir / JOB / "takes" / tid
+        (folder / "render.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42old")
+        url = f"/api/jobs/{JOB}/takes/{tid}/render"
+
+        async def cancel_soon():
+            await asyncio.sleep(0.1)
+            return await c.post(f"{url}/cancel")
+
+        posted, cancelled = await asyncio.gather(c.post(url, json={}), cancel_soon())
+        assert posted.status_code == 202
+        assert cancelled.json()["status"] == "none", "a cancel never reports the old file"
+        await asyncio.sleep(0.1)
+        assert (await c.get(url)).json()["status"] == "none"
+    assert not (folder / "render.mp4").exists()
+    assert list(folder.glob(".render.mp4.*")) == []
+
+
 async def test_an_over_long_download_name_is_refused(jobs_dir, client, tmp_path):
     skip_without_ffmpeg()
     _make_job(jobs_dir)

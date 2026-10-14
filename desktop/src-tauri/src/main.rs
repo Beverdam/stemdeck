@@ -1,3 +1,4 @@
+mod backendjob;
 mod certs;
 mod dragout;
 mod dropin;
@@ -146,6 +147,10 @@ const DEFAULT_LINUX_FFMPEG_SHA256: &str =
 struct BackendHandles {
     child: Child,
     url: String,
+    /// Windows: the kill-on-close job the backend runs in. Dropping it (the
+    /// backend stopped, or StemDeck gone) ends every process the backend
+    /// started, ffmpeg renders included (#790). Always None elsewhere.
+    _job: Option<backendjob::KillOnCloseJob>,
 }
 
 #[derive(Default)]
@@ -1887,15 +1892,9 @@ fn start_backend(
         #[cfg(unix)]
         spawn_fpcalc_setup(data_dir.clone());
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let mut child = cmd
-            .spawn()
+        // On Windows also without a console window, and inside a job that
+        // ends the whole backend tree with StemDeck (see backendjob.rs).
+        let (mut child, job) = backendjob::spawn_backend_process(&mut cmd)
             .map_err(|e| format!("failed to start backend: {e}"))?;
         // Release the reserved ports immediately after spawn so uvicorn can
         // bind them. Both, or the companion listener finds its own port held.
@@ -1914,17 +1913,18 @@ fn start_backend(
             return Err(err);
         }
 
-        Ok((child, url))
+        Ok((child, url, job))
     })();
 
     // Atomically update state: clear starting flag whether spawn succeeded or failed.
     let mut inner = state.inner.lock().map_err(|e| e.to_string())?;
     inner.starting = false;
     match spawn_result {
-        Ok((child, url)) => {
+        Ok((child, url, job)) => {
             inner.handles = Some(BackendHandles {
                 child,
                 url: url.clone(),
+                _job: job,
             });
             Ok(BackendStarted { url })
         }
@@ -3801,6 +3801,9 @@ fn stop_backend(state: &BackendState) {
                 thread::sleep(Duration::from_millis(100));
             }
         }
+        // Windows has no graceful stop: the kill is hard, and the backend's
+        // own shutdown (which stops video renders) does not run. Dropping
+        // `handles` closes its job, which ends what it started (#790).
         let _ = handles.child.kill();
         let _ = handles.child.wait();
     });

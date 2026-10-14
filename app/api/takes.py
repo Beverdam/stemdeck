@@ -1579,10 +1579,12 @@ async def _render_task(
             run.encoder = VIDEO_CPU_ENCODER
             if gpu is not None:
                 # May run a 2 s test encode (cached afterwards, see
-                # video_encoder.probe); never raises.
+                # video_encoder.probe); never raises. A cancel stops it (#790).
                 choice = await asyncio.to_thread(
-                    video_encoder.choose, gpu.width, gpu.height, gpu.fps
+                    video_encoder.choose, gpu.width, gpu.height, gpu.fps, cancelled
                 )
+                if cancelled():
+                    raise RenderCancelled()
                 run.encoder, run.variant = choice.encoder, choice.variant
                 logger.info(
                     "[%s] video render encoder %s%s",
@@ -1640,7 +1642,12 @@ async def _render_task(
                             exc.code,
                             exc,
                         )
-                        await asyncio.to_thread(video_encoder.record_failure, encoder, exc.code)
+                        # Only the encoder's own faults count toward turning
+                        # it off: never a full disk or a missing file (#791).
+                        if video_encoder.blames_encoder(encoder, exc.code, exc.stderr):
+                            await asyncio.to_thread(video_encoder.record_failure, encoder, exc.code)
+                        else:
+                            logger.info("[%s] %s not held against the encoder", job.id, exc.code)
                         run.encoder, run.fallback = VIDEO_CPU_ENCODER, exc.code
                         run.progress = 0.0
                 if trim == 0.0 and not alt:
@@ -1800,9 +1807,11 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
         job, folder, entry = _finished_or_404(job_id, take_id)
         if _render_busy(job_id, take_id):
             raise HTTPException(status_code=409, detail="video render already running")
-        # The last render goes first: a cancel then reports "none", never
-        # "done" with an older file, and the new file has its name free.
-        if not await asyncio.to_thread(_drop_old_render, folder):
+        # The last render is set aside first: a cancel then reports "none",
+        # never "done" with an older file, and the new file has its name free.
+        # It is only deleted once the new render is accepted (#789).
+        kept = await asyncio.to_thread(_set_aside_old_render, folder)
+        if kept is False:
             raise HTTPException(
                 status_code=409,
                 detail="the last video is still being saved: try again when it ends",
@@ -1815,9 +1824,17 @@ async def start_render(job_id: str, take_id: str, request: Request) -> JSONRespo
             job_id, take_id, folder, body, camera, audio
         )
     except BaseException:
+        # Refused (or failed) before anything rendered: the earlier video
+        # comes back, unless a cancel, a delete or an edit took the run.
         if _renders.get(key) is run:
+            if kept is not None and not run.cancel.is_set():
+                await asyncio.to_thread(_restore_old_render, kept, folder)
             _renders.pop(key, None)
+        elif kept is not None:
+            await asyncio.to_thread(_discard_old_render, kept)
         raise
+    if kept is not None:
+        await asyncio.to_thread(_discard_old_render, kept)
     if run.cancel.is_set():
         # Cancelled while it was being prepared.
         return JSONResponse(_render_view(job_id, take_id, folder), status_code=202)
@@ -1848,14 +1865,38 @@ def _range_outside_take(
     return float(range_out or 0.0) <= t_start or float(range_in or 0.0) >= t_start + t_len
 
 
-def _drop_old_render(folder: Path) -> bool:
-    """Remove the take's last render. False when it cannot go (Windows: a
-    download of it still has it open)."""
+def _set_aside_old_render(folder: Path) -> Path | None | Literal[False]:
+    """Move the take's last render out of its name, to a temp name the
+    startup sweep removes. The new path, None when there was none, False
+    when it cannot move (Windows: a download of it still has it open)."""
+    src = folder / _RENDER_FILE
+    kept = folder / f".{_RENDER_FILE}.{uuid.uuid4().hex}.tmp.mp4"
     try:
-        (folder / _RENDER_FILE).unlink(missing_ok=True)
+        os.replace(src, kept)
+    except FileNotFoundError:
+        return None
     except PermissionError:
         return False
-    return True
+    return kept
+
+
+def _restore_old_render(kept: Path, folder: Path) -> None:
+    """Put a set-aside render back under its name (the new render was
+    refused before it started)."""
+    try:
+        os.replace(kept, folder / _RENDER_FILE)
+    except OSError:
+        logger.warning("earlier video not restored: %s", kept.name)
+        _discard_old_render(kept)
+
+
+def _discard_old_render(kept: Path) -> None:
+    """Delete a set-aside render (the new one was accepted, or cancelled).
+    One that cannot go now is removed by the startup sweep."""
+    try:
+        kept.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("earlier video not removed: %s", kept.name)
 
 
 @router.get("/{job_id}/takes/{take_id}/render")

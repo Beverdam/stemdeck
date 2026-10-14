@@ -347,7 +347,8 @@ class ProbeResult:
     fps: int
     ok: bool
     # "" when ok; else missing (not in this ffmpeg), nodevice, failed, busy,
-    # timeout, error (could not start), disabled, budget (Test ran out of time).
+    # timeout, error (could not start), disabled, budget (Test ran out of time),
+    # cancelled (the render that asked was cancelled: never cached).
     reason: str = ""
     detail: str = ""  # ffmpeg's error line, cleaned (no addresses, no paths)
     speed: float | None = None  # x realtime of the test encode
@@ -411,6 +412,41 @@ def classify_failure(stderr: str) -> tuple[str, bool]:
     return "failed", False
 
 
+# A render that failed over its files, not its encoder: ffmpeg prints the
+# system's own words for these (a full disk, a missing or unreadable file, a
+# failing drive), the same whichever encoder runs.
+_FILES_RE = re.compile(
+    r"no space left on device|disk quota exceeded|file too large|no such file or directory|"
+    r"permission denied|input/output error|read-only file system|error opening input",
+    re.IGNORECASE,
+)
+
+
+def blames_encoder(encoder: str, code: str, stderr: str) -> bool:
+    """Whether a failed GPU render counts toward VIDEO_ENCODER_MAX_FAILURES
+    (#791). A stall, the timeout and a file that fails the check
+    ("invalid-<check>") count, as before.
+
+    An ffmpeg exit counts only when the encoder itself said so: a line logged
+    by it ("[h264_nvenc @ ...]", or ffmpeg's encoder task "[enc:h264_nvenc @
+    ...]"), on a failure that is neither about the files nor a busy device
+    (classify_failure). Anything else does not count: only NVENC on Windows
+    has been seen failing, other vendors' words are unknown, and a wrong
+    count turns the encoder off until a restart while a missed one costs a
+    single quick GPU attempt before the CPU render."""
+    if code != "exit":
+        return True
+    if _FILES_RE.search(stderr):
+        return False
+    reason, transient = classify_failure(stderr)
+    if transient:
+        return False
+    if reason == "missing":
+        return True
+    own = re.compile(rf"\[(?:enc:)?{re.escape(encoder)} @", re.IGNORECASE)
+    return own.search(stderr) is not None
+
+
 def probe_cmd(encoder: str, width: int, height: int, fps: int, variant: int = 0) -> list[str]:
     """A real encode of a moving test picture at the render's geometry, thrown
     away (-f null), with -progress so the frames that came out are counted."""
@@ -439,7 +475,23 @@ def probe_cmd(encoder: str, width: int, height: int, fps: int, variant: int = 0)
     ]
 
 
-def _run_probe_once(encoder: str, width: int, height: int, fps: int, variant: int) -> ProbeResult:
+def _never() -> bool:
+    return False
+
+
+# How often a probe, or a render waiting for the probe lock, looks at its
+# cancel flag (#790).
+_CANCEL_POLL_SEC = 0.25
+
+
+def _run_probe_once(
+    encoder: str,
+    width: int,
+    height: int,
+    fps: int,
+    variant: int,
+    cancelled: Callable[[], bool] = _never,
+) -> ProbeResult:
     now = time.time()
     base = {"encoder": encoder, "width": width, "height": height, "fps": fps}
     base["variant"] = variant
@@ -466,12 +518,30 @@ def _run_probe_once(encoder: str, width: int, height: int, fps: int, variant: in
             checked_at=now,
             transient=True,
         )
+    stop = threading.Event()
+    stopped: list[bool] = []
+
+    def watchdog() -> None:
+        # A cancel of the render that asked kills the test encode at once.
+        while not stop.wait(_CANCEL_POLL_SEC):
+            if cancelled():
+                stopped.append(True)
+                if proc.poll() is None:
+                    proc.kill()
+                return
+
+    guard = threading.Thread(target=watchdog, daemon=True)
+    guard.start()
     try:
         out, err = proc.communicate(timeout=TIMEOUT_VIDEO_ENCODER_PROBE)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
         return ProbeResult(**base, ok=False, reason="timeout", checked_at=now, transient=True)
+    finally:
+        stop.set()
+    if stopped:
+        return ProbeResult(**base, ok=False, reason="cancelled", checked_at=now, transient=True)
     wall = max(time.monotonic() - start, 1e-3)
     if proc.returncode != 0:
         reason, transient = classify_failure(err)
@@ -496,15 +566,18 @@ def _run_probe_once(encoder: str, width: int, height: int, fps: int, variant: in
     return ProbeResult(**base, ok=True, speed=round(frames[-1] / fps / wall, 2), checked_at=now)
 
 
-def run_probe(encoder: str, width: int, height: int, fps: int) -> ProbeResult:
+def run_probe(
+    encoder: str, width: int, height: int, fps: int, cancelled: Callable[[], bool] = _never
+) -> ProbeResult:
     """Probe every argument variant of `encoder` in order; the first that
     passes wins. The last failure is the answer when none does."""
-    result = _run_probe_once(encoder, width, height, fps, 0)
+    result = _run_probe_once(encoder, width, height, fps, 0, cancelled)
     for variant in range(1, variant_count(encoder)):
-        # A missing encoder, no device, a timeout: another variant cannot help.
-        if result.ok or result.reason in ("missing", "nodevice", "timeout", "error"):
+        # A missing encoder, no device, a timeout, a cancel: another variant
+        # cannot help.
+        if result.ok or result.reason in ("missing", "nodevice", "timeout", "error", "cancelled"):
             break
-        result = _run_probe_once(encoder, width, height, fps, variant)
+        result = _run_probe_once(encoder, width, height, fps, variant, cancelled)
     return result
 
 
@@ -585,9 +658,20 @@ def _save_cache(ident: str) -> None:
         logger.warning("video encoder cache not written", exc_info=True)
 
 
-def probe(encoder: str, width: int, height: int, fps: int, force: bool = False) -> ProbeResult:
+def probe(
+    encoder: str,
+    width: int,
+    height: int,
+    fps: int,
+    force: bool = False,
+    cancelled: Callable[[], bool] = _never,
+) -> ProbeResult:
     """The cached probe result for this encoder and geometry, probing when
-    there is none, it expired, or `force`. Never raises."""
+    there is none, it expired, or `force`. Never raises.
+
+    `cancelled` (a render's cancel flag) is looked at while waiting for the
+    probe lock and during the test encode; a cancelled probe answers
+    "cancelled" and is never cached."""
     if encoder not in VIDEO_GPU_ENCODERS:
         raise ValueError(f"not a GPU encoder: {encoder}")
     ident, _version = ffmpeg_identity()
@@ -603,13 +687,37 @@ def probe(encoder: str, width: int, height: int, fps: int, force: bool = False) 
             transient=True,
         )
     key = _key(ident, encoder, width, height, fps)
-    with _probe_lock:
-        _load_cache(ident)
-        with _cache_lock:
-            hit = _cache.get(key)
-        if hit is not None and not force and hit.expires_at() > time.time():
+
+    def gave_up() -> ProbeResult:
+        return ProbeResult(
+            encoder,
+            width,
+            height,
+            fps,
+            ok=False,
+            reason="cancelled",
+            checked_at=time.time(),
+            transient=True,
+        )
+
+    if not force:
+        # A cached answer needs no probe lock, which another probe (Settings'
+        # Test encoders) can hold for minutes (#791).
+        hit = _valid_hit(ident, key)
+        if hit is not None:
             return hit
-        result = run_probe(encoder, width, height, fps)
+    while not _probe_lock.acquire(timeout=_CANCEL_POLL_SEC):
+        if cancelled():
+            return gave_up()
+    try:
+        hit = _valid_hit(ident, key)
+        if hit is not None and not force:
+            return hit
+        if cancelled():
+            return gave_up()
+        result = run_probe(encoder, width, height, fps, cancelled)
+        if result.reason == "cancelled":
+            return result
         logger.info(
             "video encoder probe %s %dx%d@%d: %s%s",
             encoder,
@@ -619,10 +727,27 @@ def probe(encoder: str, width: int, height: int, fps: int, force: bool = False) 
             "ok" if result.ok else result.reason,
             f" ({result.detail})" if result.detail else "",
         )
+        if hit is not None and hit.ok and not result.ok and result.transient:
+            # A forced probe (Test encoders) that only met a busy card, a
+            # timeout: the pass stands for renders; the test still reports
+            # what it saw (#791).
+            return result
         with _cache_lock:
             _cache[key] = result
         _save_cache(ident)
         return result
+    finally:
+        _probe_lock.release()
+
+
+def _valid_hit(ident: str, key: str) -> ProbeResult | None:
+    """The cached result for `key` while it is still trusted, else None."""
+    _load_cache(ident)
+    with _cache_lock:
+        hit = _cache.get(key)
+    if hit is not None and hit.expires_at() > time.time():
+        return hit
+    return None
 
 
 def cached_results() -> list[ProbeResult]:
@@ -630,13 +755,11 @@ def cached_results() -> list[ProbeResult]:
     ident, _version = ffmpeg_identity()
     if not ident:
         return []
-    with _probe_lock:
-        _load_cache(ident)
-        with _cache_lock:
-            now = time.time()
-            return [
-                r for k, r in _cache.items() if k.startswith(f"{ident}|") and r.expires_at() > now
-            ]
+    # Only the cache: no probe lock, so a running Test never holds it (#791).
+    _load_cache(ident)
+    with _cache_lock:
+        now = time.time()
+        return [r for k, r in _cache.items() if k.startswith(f"{ident}|") and r.expires_at() > now]
 
 
 # ---------------------------------------------------------------------------
@@ -714,20 +837,25 @@ class Choice:
     reason: str = ""
 
 
-def choose(width: int, height: int, fps: int) -> Choice:
-    """The encoder for a render of this geometry. Blocking (may probe)."""
+def choose(width: int, height: int, fps: int, cancelled: Callable[[], bool] = _never) -> Choice:
+    """The encoder for a render of this geometry. Blocking (may probe).
+    Gives up with reason "cancelled" as soon as `cancelled()` is true."""
     value, _source = policy()
     if value == "cpu":
         return Choice(CPU, reason="policy")
     order = (value,) if value in VIDEO_GPU_ENCODERS else candidates()
     reason = "none"
     for encoder in order:
+        if cancelled():
+            return Choice(CPU, reason="cancelled")
         if encoder in disabled():
             reason = "disabled"
             continue
-        result = probe(encoder, width, height, fps)
+        result = probe(encoder, width, height, fps, cancelled=cancelled)
         if result.ok:
             return Choice(encoder, result.variant)
+        if result.reason == "cancelled":
+            return Choice(CPU, reason="cancelled")
         reason = result.reason or "failed"
     return Choice(CPU, reason=reason)
 

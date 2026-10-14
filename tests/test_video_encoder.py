@@ -97,6 +97,35 @@ GOOD_PROBE = {
 }
 
 
+# What a failed render prints. "noinput" and "nvenc" are ffmpeg 8.1's own
+# words on Windows with an NVIDIA card (run by hand for #791); "full" is put
+# together from the same ffmpeg's muxer messages and the system's text for a
+# full disk, which was not reproduced.
+RENDER_ERRORS = {
+    "noinput": (
+        "[in#1 @ 00000197cb4959c0] Error opening input: No such file or directory\n"
+        "Error opening input file D:/x/stems/drums.wav.\n"
+        "Error opening input files: No such file or directory\n"
+    ),
+    "full": (
+        "[out#0/mp4 @ 0000016b35eacf00] Error muxing a packet\n"
+        "[vost#0:0/h264_nvenc @ 0000016b35f3ae00] Error submitting a packet to the muxer: "
+        "No space left on device\n"
+        "[out#0/mp4 @ 0000016b35eacf00] Error writing trailer: No space left on device\n"
+    ),
+    "nvenc": (
+        "[h264_nvenc @ 0000016b35f3b080] No capable devices found\n"
+        "[vost#0:0/h264_nvenc @ 0000016b35f3ae00] [enc:h264_nvenc @ 0000016b35f34b80] "
+        "Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, "
+        "width or height.\n"
+        "[vf#0:0 @ 0000016b35f55f40] Error sending frames to consumers: Generic error in an "
+        "external library\n"
+    ),
+    "busy": "[h264_nvenc @ 0x5] OpenEncodeSessionEx failed: out of memory (10)\n",
+    "unknown": "[vf#0:0 @ 0x1] Something nobody has seen before\n",
+}
+
+
 class FakeFfmpeg:
     """Answers by what the command is: -version, a probe (testsrc2), ffprobe,
     the decode check (-f null on a file), or a render (-movflags)."""
@@ -160,6 +189,8 @@ class FakeFfmpeg:
                     cmd, rc=1, err="[h264_nvenc @ 0x5] OpenEncodeSessionEx failed: out of memory\n"
                 ),
                 "timeout": lambda: FakeProc(cmd, hang=True, timeout_now=True),
+                # Runs until killed (a slow first test of a card).
+                "hang": lambda: FakeProc(cmd, hang=True),
             }[how]()
         else:  # render
             how = self.render.get(self.encoder(cmd), "ok")
@@ -171,6 +202,8 @@ class FakeFfmpeg:
                 )
             elif how == "fail":
                 proc = FakeProc(cmd, rc=1, err="[h264_nvenc @ 0x1] Error submitting frame\n")
+            elif how in RENDER_ERRORS:
+                proc = FakeProc(cmd, rc=1, err=RENDER_ERRORS[how])
             elif how == "stall":
                 dest.write_bytes(b"\0" * 100)
                 proc = FakeProc(cmd, out="out_time_us=1000000\n", hang=True)
@@ -738,6 +771,103 @@ async def test_two_failed_renders_disable_the_encoder(fake, tmp_path, monkeypatc
     assert _renders(fake) == ["h264_nvenc", "libx264", "h264_nvenc", "libx264", "libx264"]
 
 
+@pytest.mark.parametrize(
+    ("code", "err", "blamed"),
+    [
+        ("exit", RENDER_ERRORS["nvenc"], True),
+        ("exit", "[h264_nvenc @ 0x1] Error submitting frame\n", True),
+        ("exit", RENDER_ERRORS["noinput"], False),
+        ("exit", RENDER_ERRORS["full"], False),
+        # Constructed: the encoder complains too, but the disk is full.
+        (
+            "exit",
+            "[h264_nvenc @ 0x1] Error submitting frame\n"
+            "[out#0/mp4 @ 0x2] Error writing trailer: No space left on device\n",
+            False,
+        ),
+        ("exit", RENDER_ERRORS["busy"], False),
+        # Unknown words, from no encoder: not held against it (#791).
+        ("exit", RENDER_ERRORS["unknown"], False),
+        ("exit", "", False),
+        # Another encoder's line says nothing about this one.
+        ("exit", "[h264_qsv @ 0x1] Error creating a MFX session: -9.\n", False),
+        # The file was made but is wrong, or the encoder hung: as before.
+        ("stall", "", True),
+        ("timeout", "", True),
+        ("invalid-size", "", True),
+        ("invalid-decode", "", True),
+    ],
+)
+def test_only_encoder_faults_are_held_against_the_encoder(code, err, blamed):
+    assert ve.blames_encoder("h264_nvenc", code, err) is blamed
+
+
+@pytest.mark.parametrize("how", ["full", "noinput", "busy", "unknown"])
+async def test_a_disk_or_input_fault_never_disables_the_encoder(fake, tmp_path, monkeypatch, how):
+    # Issue #791: a full disk or a missing lane file failed two GPU renders,
+    # and the encoder was off until StemDeck restarted.
+    fake.probe = {"h264_nvenc": "ok"}
+    fake.render = {"h264_nvenc": how}
+    for _ in range(3):
+        run, _dest = await _render(tmp_path, monkeypatch)
+        assert run.encoder == "libx264" and run.fallback == "exit"
+    assert ve.failure_count("h264_nvenc") == 0
+    assert ve.disabled() == []
+    assert _renders(fake) == ["h264_nvenc", "libx264"] * 3, "the GPU is still tried"
+
+
+def test_a_transient_test_failure_keeps_the_earlier_pass(fake):
+    # Issue #791: Test encoders while the card is busy replaced a week-long
+    # pass with "out of memory" for ten minutes.
+    fake.probe = {"h264_nvenc": "ok"}
+    assert ve.probe("h264_nvenc", 1920, 1080, 30).ok
+    fake.probe = {"h264_nvenc": "busy"}
+    busy = ve.probe("h264_nvenc", 1920, 1080, 30, force=True)
+    assert busy.reason == "busy" and busy.transient, "the test reports what it saw"
+    probes = fake.count("probe")
+    assert ve.probe("h264_nvenc", 1920, 1080, 30).ok, "renders still use the pass"
+    assert fake.count("probe") == probes, "no new probe for the render"
+    ve._cache.clear()
+    ve._cache_loaded_for = None
+    assert ve.probe("h264_nvenc", 1920, 1080, 30).ok, "the pass is kept on disk too"
+    assert ve.cached_results()[0].ok
+    fake.probe = {"h264_nvenc": "timeout"}
+    assert ve.probe("h264_nvenc", 1920, 1080, 30, force=True).reason == "timeout"
+    assert ve.probe("h264_nvenc", 1920, 1080, 30).ok
+
+
+def test_a_lasting_test_failure_still_replaces_a_pass(fake):
+    # A driver removed since the pass: Test encoders must be able to say so.
+    fake.probe = {"h264_nvenc": "ok"}
+    ve.probe("h264_nvenc", 1920, 1080, 30)
+    fake.probe = {"h264_nvenc": "fail"}
+    assert not ve.probe("h264_nvenc", 1920, 1080, 30, force=True).ok
+    assert ve.probe("h264_nvenc", 1920, 1080, 30).reason == "failed"
+
+
+def test_a_cached_pass_does_not_wait_for_a_running_test(fake):
+    # Issue #791: Test encoders holds the probe lock for minutes; a render
+    # (or the Settings page) that only reads the cache must not wait for it.
+    fake.probe = {"h264_nvenc": "ok"}
+    ve.probe("h264_nvenc", 1920, 1080, 30)
+    ve._probe_lock.acquire()
+    try:
+        out: list = []
+        reader = threading.Thread(
+            target=lambda: out.append(
+                (ve.probe("h264_nvenc", 1920, 1080, 30), ve.cached_results())
+            ),
+            daemon=True,
+        )
+        reader.start()
+        reader.join(2)
+        assert out, "the cached answer came while the lock was held"
+        assert out[0][0].ok and out[0][1][0].ok
+    finally:
+        ve._probe_lock.release()
+    assert fake.count("probe") == 1
+
+
 async def test_a_stalled_gpu_render_falls_back(fake, tmp_path, monkeypatch):
     fake.probe = {"h264_nvenc": "ok"}
     fake.render = {"h264_nvenc": "stall"}
@@ -766,6 +896,79 @@ async def test_cancel_during_a_gpu_render_kills_it_and_does_not_fall_back(
     assert gpu_proc.killed
     assert _renders(fake) == ["h264_nvenc"], "no CPU render after a cancel"
     assert ve.failure_count("h264_nvenc") == 0 and not dest.exists()
+
+
+async def _cancel_after(run, delay=0.3):
+    await asyncio.sleep(delay)
+    takes_mod._stop_run(run)
+
+
+async def test_cancel_during_the_encoder_test_stops_the_render(fake, tmp_path, monkeypatch):
+    # Issue #790 (1): the encoder test before a render ran to its end (up to
+    # about two minutes) before a cancel was seen.
+    fake.probe = {"h264_nvenc": "hang"}
+    started = time.monotonic()
+    job = SimpleNamespace(id="abcdefabcdef")
+    monkeypatch.setattr(takes_mod, "registry_get", lambda jid: job)
+    run = takes_mod._RenderRun()
+    run.gpu = takes_mod._GpuPlan(_build, 1920, 1080, 30)
+    dest = tmp_path / "render.mp4"
+    task = asyncio.create_task(
+        takes_mod._render_task(run, job, _build(0.0, False, "libx264", 0), dest, 10.0)
+    )
+    await _cancel_after(run)
+    try:
+        await asyncio.wait_for(task, 5)
+    finally:
+        for proc in fake.procs:
+            proc.kill()
+    assert time.monotonic() - started < 5
+    assert run.status == "none"
+    probe = fake.procs[[fake.kind(c) for c in fake.calls].index("probe")]
+    assert probe.killed, "the test encode is stopped"
+    assert _renders(fake) == [], "nothing renders after a cancel"
+    assert ve._cache == {}, "a stopped test says nothing about the card: not cached"
+
+
+async def test_cancel_while_waiting_for_the_encoder_test_lock(fake, tmp_path, monkeypatch):
+    # Issue #790 (1): Test encoders in Settings holds the probe lock for up
+    # to about three minutes; a render waiting for it must still see a cancel.
+    fake.probe = {"h264_nvenc": "ok"}
+    job = SimpleNamespace(id="abcdefabcdef")
+    monkeypatch.setattr(takes_mod, "registry_get", lambda jid: job)
+    run = takes_mod._RenderRun()
+    run.gpu = takes_mod._GpuPlan(_build, 1920, 1080, 30)
+    ve._probe_lock.acquire()
+    try:
+        task = asyncio.create_task(
+            takes_mod._render_task(
+                run, job, _build(0.0, False, "libx264", 0), tmp_path / "render.mp4", 10.0
+            )
+        )
+        await _cancel_after(run)
+        done, _pending = await asyncio.wait({task}, timeout=5)
+        assert done, "the cancel was seen while the lock was held"
+    finally:
+        ve._probe_lock.release()
+    await asyncio.wait_for(task, 5)
+    assert run.status == "none" and _renders(fake) == []
+    assert fake.count("probe") == 0
+
+
+def test_a_cancelled_render_never_starts_ffmpeg(fake, tmp_path):
+    # Issue #790 (2): run_video_render started ffmpeg before its first check.
+    with pytest.raises(take_render.RenderCancelled):
+        take_render.run_video_render(
+            _build(0.0, False, "libx264", 0),
+            tmp_path / "render.mp4",
+            10.0,
+            cancelled=lambda: True,
+            report=lambda share: None,
+            on_proc=lambda proc: None,
+            timeout=60,
+        )
+    assert _renders(fake) == [], "no ffmpeg process was started"
+    assert not list(tmp_path.glob("*render.mp4*"))
 
 
 async def test_master_retry_uses_the_encoder_that_held(fake, tmp_path, monkeypatch):
@@ -928,7 +1131,7 @@ async def test_real_ffmpeg_fallback_produces_a_valid_mp4(tmp_path, monkeypatch, 
     monkeypatch.setattr(stems_mod, "_MIXDOWN_CACHE_DIR", tmp_path / "cache" / "mixdown")
     _make_job(config.JOBS_DIR)
     monkeypatch.setattr(ve, "VIDEO_ENCODER_OVERRIDE", "")
-    monkeypatch.setattr(ve, "choose", lambda w, h, f: ve.Choice("h264_nvenc"))
+    monkeypatch.setattr(ve, "choose", lambda w, h, f, *a: ve.Choice("h264_nvenc"))
     monkeypatch.setattr(ve, "encoder_args", lambda *a, **k: list(gpu_args))
     from app.main import app
 
