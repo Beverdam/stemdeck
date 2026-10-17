@@ -103,7 +103,7 @@ test("a waiting import's row says where it is in line, without a bar", async ({ 
   await queue.set({ running: job(A, "First", { status: "separating", progress: 0.1 }), queued: [job(JOB_ID, "Mine")] });
   const el = row(page, JOB_ID);
   await expect(el).toHaveClass(/queue-waiting/);
-  await expect(el.locator(".cat-queue-label")).toHaveText("Queued - 2nd in line");
+  await expect(el.locator(".cat-queue-label")).toHaveText("Queued - #2 in line");
   await expect(el.locator(".cat-progress")).toHaveCount(0);
 });
 
