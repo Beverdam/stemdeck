@@ -83,10 +83,23 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Full history, so the base branch is there to diff against.
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "20"
           cache: npm
+      # A pull request to main and every push run the whole suite. A pull
+      # request to any other branch runs the specs it changes, a smoke set and
+      # the specs tests/e2e/spec-map.json maps to its changed files, or the
+      # whole suite when a change is shared or unmapped. Empty output means
+      # everything. The refs go through env, never into the script text.
+      - name: select specs
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: node scripts/ci/select-e2e.mjs --event "$EVENT" --base "$BASE_REF" > "$RUNNER_TEMP/e2e-specs.txt"
       - run: curl -LsSf https://astral.sh/uv/install.sh | sh
       - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: uv sync --frozen --all-extras
@@ -96,7 +109,9 @@ jobs:
       # it with ffmpeg (app/pipeline/take_render.py). The runner image has no
       # ffmpeg, so without this the take specs get a 500 and time out.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-      - run: npx playwright test --shard=${{ matrix.shard }}/3
+      # A reduced set can leave a shard with nothing to run, which must pass.
+      # The spec list is unquoted on purpose: one argument per path.
+      - run: npx playwright test --shard=${{ matrix.shard }}/3 --pass-with-no-tests $(cat "$RUNNER_TEMP/e2e-specs.txt")
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
