@@ -622,41 +622,141 @@ def test_an_unexpected_error_while_moving_is_a_500_that_reopens_the_door(
     assert settings_mod.get_jobs_dir() is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known gap, decision pending: move_library skips our registry.json when the "
-    "target has one, so moving into another StemDeck library drops our job records",
-)
-def test_moving_into_another_stemdeck_library_keeps_both_registries_records(tmp_path):
-    """Validation accepts a folder StemDeck already uses. When that folder has
-    its own registry.json, the move skips ours as "already at the target", and
-    our favourites, Trash and delete records stay behind in the old folder."""
+def _write_registry(folder: Path, job: Job) -> str:
     import json
 
+    text = json.dumps({"version": 1, "jobs": [job.to_record()]})
+    (folder / "registry.json").write_text(text, encoding="utf-8")
+    return text
+
+
+def test_moving_into_another_stemdeck_library_keeps_both_registries_records(tmp_path):
+    """move_library skips an entry already at the target, so moving into a
+    folder with its own registry.json would leave ours behind and drop our
+    favourites, Trash and tags (#798). The move is refused before anything
+    moves, and both libraries stay exactly as they were."""
     from app.core import registry as _registry
     from app.core.registry import _jobs as jobs
 
     current = tmp_path / "old"
     _job_dir(current, "aaaaaaaaaaaa")
-    mine = Job(id="aaaaaaaaaaaa", status="done", title="Mine", favorite=True)
-    (current / "registry.json").write_text(
-        json.dumps({"version": 1, "jobs": [mine.to_record()]}), encoding="utf-8"
+    mine = _write_registry(
+        current, Job(id="aaaaaaaaaaaa", status="done", title="Mine", favorite=True)
     )
     target = tmp_path / "other-library"
     _job_dir(target, "cccccccccccc")
-    theirs = Job(id="cccccccccccc", status="done", title="Theirs")
-    (target / "registry.json").write_text(
-        json.dumps({"version": 1, "jobs": [theirs.to_record()]}), encoding="utf-8"
-    )
+    theirs = _write_registry(target, Job(id="cccccccccccc", status="done", title="Theirs"))
 
-    validate_target(target, current)
-    move_library(current, target)
+    with pytest.raises(StemsLocationError, match="already holds another StemDeck library"):
+        validate_target(target, current)
+
+    assert (current / "registry.json").read_text(encoding="utf-8") == mine
+    assert (target / "registry.json").read_text(encoding="utf-8") == theirs
+    assert (current / "aaaaaaaaaaaa" / "stems" / "vocals.wav").is_file()
+    assert (target / "cccccccccccc" / "stems" / "vocals.wav").is_file()
+    assert not (target / "aaaaaaaaaaaa").exists()
     jobs.clear()
-    _registry.restore(target)
-
+    _registry.restore(current)
     restored = _registry.get("aaaaaaaaaaaa")
     assert restored is not None
-    assert restored.favorite is True, "our favourite was left behind in the old registry"
+    assert restored.favorite is True, "our favourite must still be where it was"
+
+
+def test_another_librarys_user_data_store_is_refused_too(tmp_path):
+    """user-data.json (#403) holds the desktop shell's records, and the move
+    would skip ours the same way."""
+    current = tmp_path / "old"
+    _job_dir(current, "aaaaaaaaaaaa")
+    (current / "user-data.json").write_text('{"mine": 1}', encoding="utf-8")
+    target = tmp_path / "other-library"
+    _job_dir(target, "cccccccccccc")
+    (target / "user-data.json").write_text('{"theirs": 1}', encoding="utf-8")
+
+    with pytest.raises(StemsLocationError, match="already holds another StemDeck library"):
+        validate_target(target, current)
+
+
+def test_a_linked_registry_in_the_target_is_refused(tmp_path):
+    """A link could point at our own registry and look identical; it is never
+    taken as our own progress."""
+    current = tmp_path / "old"
+    _job_dir(current, "aaaaaaaaaaaa")
+    (current / "registry.json").write_text('{"jobs": []}', encoding="utf-8")
+    target = tmp_path / "new"
+    target.mkdir()
+    try:
+        (target / "registry.json").symlink_to(current / "registry.json")
+    except OSError:
+        pytest.skip("symlinks are not available here")
+
+    with pytest.raises(StemsLocationError, match="already holds another StemDeck library"):
+        validate_target(target, current)
+
+
+def test_a_registry_copied_but_not_yet_removed_is_our_own_progress(tmp_path):
+    """A cross-device move copies, then deletes the source. Interrupted between
+    the two, both folders hold the same registry, and the retry must go on."""
+    current = tmp_path / "old"
+    _job_dir(current, "aaaaaaaaaaaa")
+    text = _write_registry(current, Job(id="aaaaaaaaaaaa", status="done"))
+    target = tmp_path / "new"
+    _job_dir(target, "aaaaaaaaaaaa")
+    (target / "registry.json").write_text(text, encoding="utf-8")
+
+    assert validate_target(target, current) == target.resolve()
+
+
+def test_a_folder_holding_another_library_is_refused_by_the_endpoint(client, tmp_path):
+    import app.core.settings as settings_mod
+    from app.core import stems_location
+
+    _job_dir(client.jobs_dir, "aaaaaaaaaaaa")
+    mine = _write_registry(client.jobs_dir, Job(id="aaaaaaaaaaaa", status="done"))
+    other = tmp_path / "other-library"
+    _job_dir(other, "cccccccccccc")
+    theirs = _write_registry(other, Job(id="cccccccccccc", status="done"))
+
+    r = client.post("/api/settings/stems-location", json={"path": str(other)})
+
+    assert r.status_code == 422
+    assert r.json() == {
+        "detail": "That folder already holds another StemDeck library. "
+        "Pick an empty folder instead."
+    }
+    assert (client.jobs_dir / "registry.json").read_text(encoding="utf-8") == mine
+    assert (other / "registry.json").read_text(encoding="utf-8") == theirs
+    assert (client.jobs_dir / "aaaaaaaaaaaa").is_dir()
+    assert not (other / "aaaaaaaaaaaa").exists()
+    assert settings_mod.get_jobs_dir() is None
+    assert stems_location.is_relocating() is False
+
+
+def test_a_move_that_failed_after_the_registry_can_still_be_finished(client, tmp_path, monkeypatch):
+    """The registry moves before user-data.json, so a move that stops on the
+    last entry leaves our registry.json in the target. That is this library's
+    own progress, not another library, and the retry must finish the move."""
+    import app.core.settings as settings_mod
+
+    _job_dir(client.jobs_dir, "aaaaaaaaaaaa")
+    mine = _write_registry(client.jobs_dir, Job(id="aaaaaaaaaaaa", status="done"))
+    (client.jobs_dir / "user-data.json").write_text('{"mine": 1}', encoding="utf-8")
+    target = tmp_path / "elsewhere"
+    disk = _fail_on(monkeypatch, "user-data.json")
+    assert (
+        client.post("/api/settings/stems-location", json={"path": str(target)}).status_code == 500
+    )
+    assert (target / "registry.json").is_file()
+    assert not (client.jobs_dir / "registry.json").exists()
+    disk["fail"] = False
+
+    r = client.post("/api/settings/stems-location", json={"path": str(target)})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["moved_entries"] == 1
+    assert (target / "registry.json").read_text(encoding="utf-8") == mine
+    assert (target / "user-data.json").read_text(encoding="utf-8") == '{"mine": 1}'
+    assert list(client.jobs_dir.iterdir()) == []
+    assert settings_mod.get_jobs_dir() == str(target.resolve())
 
 
 def test_a_destination_inside_the_library_is_refused_and_nothing_moves(client):
