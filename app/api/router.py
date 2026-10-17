@@ -4,7 +4,6 @@ from fastapi import APIRouter
 
 from app.api.backing import router as backing_router
 from app.api.config import router as config_router
-from app.api.cover import router as cover_router
 from app.api.discogs import router as discogs_router
 from app.api.events import router as events_router
 from app.api.jobs import router as jobs_router
@@ -21,7 +20,6 @@ router = APIRouter()
 router.include_router(config_router, tags=["config"])
 router.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 router.include_router(takes_router, prefix="/jobs", tags=["takes"])
-router.include_router(cover_router, prefix="/jobs", tags=["jobs"])
 router.include_router(backing_router, prefix="/jobs", tags=["jobs"])
 router.include_router(events_router, tags=["events"])
 router.include_router(stems_router, tags=["stems"])

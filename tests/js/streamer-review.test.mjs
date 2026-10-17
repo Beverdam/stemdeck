@@ -15,47 +15,48 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 
 // ── Tiers ──
 // The defaults are the stylesheet's (--sm-col-gap 12, --sm-strip-h 40,
-// --sm-gap 8, --sm-tl-min 217).
-const base = { rowGap: 12, colGap: 12, stripH: 40, gap: 8, tlMin: 217 };
+// --sm-gap 8, --sm-tl-min 217, 12 px between the two windows). Nothing sits
+// beside the windows any more (no layers panel): they have the whole width.
+const base = { pairGap: 12, colGap: 12, stripH: 40, gap: 8, tlMin: 217 };
 // A wide, short builder: two windows of the full height fit with room left.
-let r = reviewTier({ ...base, width: 1860, height: 670, layersW: 320 });
+let r = reviewTier({ ...base, width: 1500, height: 670 });
 const byH = (670 - 12 - 40 - 8 - 217) * 16 / 9;
 check("wide: both windows at full size (tier a)", r.tier === "a" && r.win === Math.floor(byH), JSON.stringify(r));
-check("tier a leaves room for the layers", 2 * r.win + 12 + 12 + 320 <= 1860);
+check("tier a fits the two windows and their gap", 2 * r.win + 12 <= 1500);
+check("a layers width from an older caller changes nothing", reviewTier({ ...base, width: 1500, height: 670, layersW: 320 }).tier === "a");
 // Not quite room for two full windows: they share the width (tier b).
-r = reviewTier({ ...base, width: 1300, height: 670, layersW: 290 });
-check("medium: two equal windows sharing the width (tier b)", r.tier === "b" && r.win === Math.floor((1300 - 290 - 12 - 12) / 2), JSON.stringify(r));
+r = reviewTier({ ...base, width: 1300, height: 670 });
+check("medium: two equal windows sharing the width (tier b)", r.tier === "b" && r.win === Math.floor((1300 - 12) / 2), JSON.stringify(r));
 check("tier b windows are at least the minimum", r.win >= MIN_WINDOW_W);
 check("tier b windows are smaller than the height allows", r.win < byH);
-// Too narrow for two windows of 360: one window (tier c), today's size.
-r = reviewTier({ ...base, width: 1000, height: 670, layersW: 320 });
+// Too narrow for two windows of 360: one window (tier c).
+r = reviewTier({ ...base, width: 700, height: 670 });
 check("narrow: one window (tier c)", r.tier === "c", JSON.stringify(r));
-check("tier c window is the single preview's size", r.win === Math.floor(Math.min(1000 - 320 - 12, byH)), JSON.stringify(r));
+check("tier c window takes the width or the height, whichever is less", r.win === Math.floor(Math.min(700, byH)), JSON.stringify(r));
 // The boundary between b and c: two minimum windows (here more than 55% of
 // the one window: the height allows 600 px, 615 - 277 = 338 px of 16:9).
-const edge = 2 * MIN_WINDOW_W + 12 + 320 + 12;
-check("exactly two minimum windows: tier b", reviewTier({ ...base, width: edge, height: 615, layersW: 320 }).tier === "b", JSON.stringify(reviewTier({ ...base, width: edge, height: 615, layersW: 320 })));
-check("one pixel less: tier c", reviewTier({ ...base, width: edge - 1, height: 615, layersW: 320 }).tier === "c");
+const edge = 2 * MIN_WINDOW_W + 12;
+check("exactly two minimum windows: tier b", reviewTier({ ...base, width: edge, height: 615 }).tier === "b", JSON.stringify(reviewTier({ ...base, width: edge, height: 615 })));
+check("one pixel less: tier c", reviewTier({ ...base, width: edge - 1, height: 615 }).tier === "c");
 // Two windows of 360 or more, but under 55% of the one window: one window.
-// (The library open at 1800 x 1020: a 760 px preview would become two of 374.)
-r = reviewTier({ ...base, width: 1100, height: 950, layersW: 320 });
-check("two windows under 55% of one: tier c (one large window)", r.tier === "c" && r.win === 1100 - 320 - 12, JSON.stringify(r));
+r = reviewTier({ ...base, width: 780, height: 950 });
+check("two windows under 55% of one: tier c (one large window)", r.tier === "c" && r.win === 780, JSON.stringify(r));
 check("PAIR_MIN_SHARE is 0.55", PAIR_MIN_SHARE === 0.55);
-// The maintainer's window (1920 x 1080, library folded): a 1003 px preview
-// alone, or two of 596 side by side (0.59 of it): side by side.
-r = reviewTier({ ...base, width: 1536, height: 841, layersW: 320 });
-check("1920 x 1080 with the library folded: tier b, two of 596", r.tier === "b" && r.win === 596, JSON.stringify(r));
+// The maintainer's window (1920 x 1080, library folded): the builder is
+// 1536 x 841, and the windows get the width the layers panel had: two of 762.
+r = reviewTier({ ...base, width: 1536, height: 841 });
+check("1920 x 1080 with the library folded: tier b, two of 762", r.tier === "b" && r.win === 762, JSON.stringify(r));
 // A short window caps the height-limited width under the minimum: never b.
-r = reviewTier({ ...base, width: 1900, height: 450, layersW: 320 });
+r = reviewTier({ ...base, width: 1900, height: 450 });
 check("too short for a 360 px window: tier c at the minimum", r.tier === "c" && r.win === MIN_WINDOW_W, JSON.stringify(r));
-check("layers under the preview (stacked): always tier c", reviewTier({ ...base, width: 1900, height: 900, layersW: 320, stacked: true }).tier === "c");
-check("no size yet: tier c", reviewTier({ ...base, width: 0, height: 0, layersW: 320 }).tier === "c");
+check("a narrow workspace (stacked): always tier c", reviewTier({ ...base, width: 1900, height: 900, stacked: true }).tier === "c");
+check("no size yet: tier c", reviewTier({ ...base, width: 0, height: 0 }).tier === "c");
 // Monotonic: a wider builder never drops a tier.
 const rank = { c: 0, b: 1, a: 2 };
 let prev = -1;
 let mono = true;
 for (let w = 600; w <= 2400; w += 10) {
-  const k = rank[reviewTier({ ...base, width: w, height: 700, layersW: 320 }).tier];
+  const k = rank[reviewTier({ ...base, width: w, height: 700 }).tier];
   if (k < prev) mono = false;
   prev = k;
 }

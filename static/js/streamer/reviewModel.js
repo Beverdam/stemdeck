@@ -5,10 +5,10 @@
 // how its <video> is kept on the song's clock.
 //
 // What the review shows is the take's own picture: a Performance take films
-// the composed scene (the camera and every visible layer, drawn by the one
-// scene renderer without the editor's overlays), and the export renders that
-// picture as it is (app/api/takes.py, fit "fill"). So nothing is drawn over
-// it here: the layers are already in it, exactly as the MP4 will have them.
+// the camera at the output's shape (drawn by the one stage renderer without
+// the live window's guides), and the export renders that picture as it is
+// (app/api/takes.py, fit "fill"). So nothing is drawn over it here: it is
+// exactly the picture the MP4 will have.
 
 /** No window (live or review) is ever narrower than this, in CSS pixels. */
 export const MIN_WINDOW_W = 360;
@@ -38,28 +38,29 @@ export const NUDGE_GAIN = 2;
 export const SEEK_LEAD = 0.03;
 
 /**
- * Where the windows go. The Scene Builder is `width` x `height` CSS pixels;
- * the Scene Layers panel takes `layersW` plus a `rowGap` beside the windows;
- * under the windows sit the strip (`colGap` + `stripH`), the gap and the
- * timeline at its least (`gap` + `tlMin`). A window is 16:9.
+ * Where the windows go. The view's centre (the windows, the strip and the
+ * timeline) is `width` x `height` CSS pixels; the two windows, when side by
+ * side, are `pairGap` apart; under the windows sit the strip (`colGap` +
+ * `stripH`), the gap and the timeline at its least (`gap` + `tlMin`). A
+ * window is 16:9.
  *
  * - "a": live and review side by side, each as large as the height allows,
- *   and room to spare: the layers panel goes to the right edge.
+ *   with room to spare across.
  * - "b": side by side, sharing the width as two equal windows (each smaller
  *   than the height would allow), both at least MIN_WINDOW_W and at least
  *   PAIR_MIN_SHARE of the one window's size.
- * - "c": one window (today's size); the review takes the live window's place
- *   while a take plays.
- * `stacked` (the layers under the preview, a narrow workspace) is always "c".
+ * - "c": one window; the review takes the live window's place while a take
+ *   plays.
+ * `stacked` (a narrow workspace, where the column scrolls) is always "c".
  * Returns { tier, win } with `win` the width of one window.
  */
-export function reviewTier({ width, height, layersW, rowGap = 12, colGap = 12, stripH = 40, gap = 8, tlMin = 217, minW = MIN_WINDOW_W, stacked = false }) {
+export function reviewTier({ width, height, pairGap = 12, colGap = 12, stripH = 40, gap = 8, tlMin = 217, minW = MIN_WINDOW_W, stacked = false }) {
   const byHeight = Math.max(0, (height - colGap - stripH - gap - tlMin) * 16 / 9);
-  const avail = Math.max(0, width - layersW - rowGap);
+  const avail = Math.max(0, width);
   const single = Math.floor(Math.max(minW, Math.min(avail, byHeight)));
   if (stacked || !(width > 0) || !(height > 0)) return { tier: "c", win: single };
-  if (byHeight >= minW && 2 * byHeight + rowGap <= avail) return { tier: "a", win: Math.floor(byHeight) };
-  const pair = Math.min(byHeight, (avail - rowGap) / 2);
+  if (byHeight >= minW && 2 * byHeight + pairGap <= avail) return { tier: "a", win: Math.floor(byHeight) };
+  const pair = Math.min(byHeight, (avail - pairGap) / 2);
   if (pair >= minW && pair >= PAIR_MIN_SHARE * single) return { tier: "b", win: Math.floor(pair) };
   return { tier: "c", win: single };
 }

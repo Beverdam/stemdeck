@@ -1,7 +1,7 @@
-"""Streamer Mode's export: the take render with a composed scene as the
+"""Streamer Mode's export: the take render with the recorded canvas as the
 picture (fit "fill"), the output size and frame rate, the trim range, the
-mix on or off and the click; and the cover endpoint that keeps the canvas
-untainted.
+mix on or off and the click; and no cover endpoint (nothing draws the
+album art).
 
 The renders run the real ffmpeg and are probed, as in test_takes_render.
 """
@@ -16,7 +16,6 @@ import pytest
 import soundfile as sf
 from pydantic import ValidationError
 
-from app.api import cover as cover_mod
 from app.api import stems as stems_mod
 from app.api import takes as takes_mod
 from app.core.registry import _jobs
@@ -353,83 +352,20 @@ async def test_cancel_stops_a_streamer_render(jobs_dir, client, tmp_path):
     assert list((jobs_dir / JOB / "takes" / tid).glob(".render.mp4.*")) == []
 
 
-# ─── Cover ───────────────────────────────────────────────────────────────
-
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+# ─── No cover endpoint ───────────────────────────────────────────────────
 
 
-def test_sniff_image():
-    assert cover_mod.sniff_image(PNG) == "image/png"
-    assert cover_mod.sniff_image(b"\xff\xd8\xff\xe0xx") == "image/jpeg"
-    assert cover_mod.sniff_image(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "image/webp"
-    assert cover_mod.sniff_image(b"GIF89a....") == "image/gif"
-    assert cover_mod.sniff_image(b"<html>") is None
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://127.0.0.1/x.jpg",
-        "http://localhost/x.jpg",
-        "http://10.0.0.5/x.jpg",
-        "http://192.168.1.1/x.jpg",
-        "http://169.254.169.254/latest/meta-data",
-        "http://[::1]/x.jpg",
-        "file:///etc/passwd",
-        "ftp://example.com/x.jpg",
-        "javascript:alert(1)",
-        "",
-    ],
-)
-def test_cover_refuses_non_public_addresses(url):
-    assert cover_mod.public_url(url) is False
-    with pytest.raises(ValueError):
-        cover_mod.fetch_cover(url)
-
-
-def _cover_client():
-    return httpx.AsyncClient(
+async def test_no_cover_endpoint(jobs_dir):
+    """Performance draws no album art any more (its Track Info layer is gone),
+    so nothing fetches a song's remote picture: the route is not there."""
+    job = _make_job(jobs_dir)
+    job.thumbnail = "https://i.ytimg.com/vi/x/hqdefault.jpg"
+    async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app()), base_url="http://testserver"
-    )
-
-
-async def test_cover_endpoint(jobs_dir, monkeypatch):
-    job = _make_job(jobs_dir)
-    fetched = []
-
-    def fake_fetch(url):
-        fetched.append(url)
-        return PNG, "image/png"
-
-    monkeypatch.setattr(cover_mod, "fetch_cover", fake_fetch)
-    async with _cover_client() as c:
-        # No thumbnail: no cover.
-        assert (await c.get(f"/api/jobs/{JOB}/cover")).status_code == 404
-        job.thumbnail = "https://i.ytimg.com/vi/x/hqdefault.jpg"
+    ) as c:
         r = await c.get(f"/api/jobs/{JOB}/cover")
-        assert r.status_code == 200 and r.headers["content-type"] == "image/png"
-        assert r.content == PNG
-        # Kept beside the job: the second request does not fetch again.
-        r = await c.get(f"/api/jobs/{JOB}/cover")
-        assert r.status_code == 200 and len(fetched) == 1
-        assert (jobs_dir / JOB / cover_mod.COVER_FILE).is_file()
-        # Unknown or malformed ids, and traversal.
-        for path in (
-            "/api/jobs/000000000000/cover",
-            "/api/jobs/../../etc/cover",
-            "/api/jobs/..%2F..%2Fetc/cover",
-            "/api/jobs/ABCDEF/cover",
-        ):
-            assert (await c.get(path)).status_code == 404, path
-
-
-async def test_cover_endpoint_hides_fetch_failures(jobs_dir, monkeypatch):
-    job = _make_job(jobs_dir)
-    job.thumbnail = "http://127.0.0.1:9/private.jpg"
-    async with _cover_client() as c:
-        r = await c.get(f"/api/jobs/{JOB}/cover")
-    assert r.status_code == 404
-    assert "127.0.0.1" not in r.text
+    assert r.status_code in (404, 405)
+    assert not (jobs_dir / JOB / "cover.img").exists()
     _jobs.pop(JOB, None)
 
 

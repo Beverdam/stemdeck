@@ -2,8 +2,8 @@
 // releasing them, and why one could not be opened. The view (streamer.js)
 // says each frame what it wants (`reconcile`); this module opens, switches
 // and releases to match, so a device is held only while it is needed: the
-// camera while the Scene Builder shows a visible Camera layer, the input
-// while Streamer is open. Closing Streamer releases both (the camera light
+// camera while one is chosen in Video Source, the input while Streamer is
+// open. Closing Streamer releases both (the camera light
 // goes off).
 //
 // Reuses the studio's capture code: requestMedia and its reasons
@@ -205,7 +205,7 @@ export function cameraSource() {
   return cam.stream && v && v.readyState >= 2 && v.videoWidth > 0 ? v : null;
 }
 
-/** The camera's state for the panel, the preview and the layer row. */
+/** The camera's state for the panel and the live window. */
 export function cameraState() {
   return {
     live: Boolean(cam.stream),

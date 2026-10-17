@@ -3,8 +3,9 @@
 // keeps the song and its position; a saved mix of its own for every song,
 // apart from Practice's, Advanced's and Karaoke's (mixer.js, mixMode.js); the
 // footer hidden while open (as in Karaoke) and back after, with Streamer's
-// own Stop and Play / Pause; the aspect is saved per song; the tabs; the safe
-// zones switch; and one workspace view at a time with Karaoke.
+// own Stop and Play / Pause; the aspect is saved per song; no layers, no
+// templates and no dead settings button; the safe zones switch; and one
+// workspace view at a time with Karaoke.
 
 import { test, expect } from "@playwright/test";
 import { JOB_ID, SIBLING_JOB_ID, openStudio, chooseMode, leaveModeView } from "./helpers.mjs";
@@ -170,23 +171,30 @@ test.describe("Streamer Mode", () => {
     await expect(page.locator("#streamer")).toBeHidden();
   });
 
-  test("tabs: Scene Builder and Templates; Templates is not available yet", async ({ page }) => {
+  test("the camera only: no Scene Layers, no Add Layer, no Templates tab, no settings gear", async ({ page }) => {
     await openStudio(page);
     await openStreamer(page);
-    const tabs = sm(page, "[role=tab]");
-    await expect(tabs).toHaveCount(2);
-    await expect(tabs.nth(0)).toHaveAttribute("data-tab", "builder");
-    await expect(tabs.nth(1)).toHaveAttribute("data-tab", "templates");
-    await expect(sm(page, '[role=tab][data-tab="live"]')).toHaveCount(0);
-    await expect(sm(page, ".sm-tabs")).not.toContainText("Live Controls");
-    await expect(sm(page, '[role=tab][data-tab="builder"]')).toHaveAttribute("aria-selected", "true");
-    await sm(page, '[role=tab][data-tab="templates"]').click();
-    await expect(page.locator("#streamerBuilderPanel")).toBeHidden();
-    await expect(page.locator("#streamerOtherPanel")).toContainText("Templates");
-    await expect(page.locator("#streamerOtherPanel")).toContainText("Not available yet.");
-    await sm(page, '[role=tab][data-tab="builder"]').click();
-    await expect(page.locator("#streamerBuilderPanel")).toBeVisible();
     await expect(sm(page, ".sm-canvas")).toBeVisible();
+    // No tabs at all: the one view is the camera, the strip and the timeline.
+    await expect(sm(page, ":is([role=tab], [role=tablist], [role=tabpanel])")).toHaveCount(0);
+    await expect(page.locator("#streamerOtherPanel")).toHaveCount(0);
+    // No layers panel, no layer rows, no Add Layer, no selection box.
+    await expect(sm(page, ":is(.sm-layers, .sm-layer, .sm-add, .sm-selbox)")).toHaveCount(0);
+    // The gear that only said "Coming in a later update" is gone (#794); the
+    // input's own settings button (Settings, Recording) stays.
+    await expect(sm(page, ".sm-settings")).toHaveCount(0);
+    await expect(sm(page, '[aria-label="Performance settings"]')).toHaveCount(0);
+    await expect(sm(page, ".sm-in-settings")).toHaveCount(1);
+    const text = await page.locator("#streamer").innerText();
+    for (const gone of ["Scene Layers", "Add Layer", "Templates", "Scene Builder", "Track Info", "Lower Third", "Not available yet"]) expect(text).not.toContain(gone);
+    // Stop and Play / Pause sit in the mode header now.
+    await expect(sm(page, ".sm-head .sm-play")).toBeVisible();
+    await expect(sm(page, ".sm-head .sm-stop")).toBeVisible();
+    // Clicking the live window selects nothing and changes nothing.
+    const box = await sm(page, ".sm-preview").boundingBox();
+    await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.3);
+    await page.waitForTimeout(400);
+    expect(await savedScene(page)).toBeNull();
   });
 
   test("the aspect is saved per song; a new song starts with the default scene", async ({ page }) => {
@@ -222,14 +230,33 @@ test.describe("Streamer Mode", () => {
     expect(await ev(page, async () => (await import("/js/transport.js")).transport().isPlaying())).toBe(false);
   });
 
-  test("a layer can be hidden, for this song only", async ({ page }) => {
+  test("a scene saved with layers by an older build opens, keeps its aspect and trim, and its layers are left as they were", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
     await openStudio(page);
+    const old = {
+      v: 2, aspect: "9:16", trim: { in: 1, out: 5 },
+      layers: [
+        { id: "camera", type: "camera", visible: false, frame: { x: 0, y: 0, w: 1, h: 1 }, props: { mirror: true } },
+        { id: "lyrics", type: "lyrics", visible: true, frame: { x: 0.5, y: 0.6, w: 0.3, h: 0.3 }, props: { lines: 5 } },
+        { id: "title", type: "title", visible: true, frame: "nope" },
+        null,
+      ],
+    };
+    await ev(page, async ([key, value]) => (await import("/js/utils.js")).storeSet(key, value), [`stemdeck:streamer:scene:${JOB_ID}`, old]);
     await openStreamer(page);
-    const lyrics = sm(page, '.sm-layer[data-layer="lyrics"] [role=switch]');
-    await expect(lyrics).toHaveAttribute("aria-checked", "true");
-    await lyrics.click();
-    await expect(lyrics).toHaveAttribute("aria-checked", "false");
-    await expect.poll(async () => (await savedScene(page))?.layers.find((l) => l.id === "lyrics").visible).toBe(false);
+    await expect(sm(page, ".sm-aspect select")).toHaveValue("9:16");
+    await expect(sm(page, ".sm-layer")).toHaveCount(0);
+    // Shown, not edited: the record is untouched.
+    await page.waitForTimeout(600);
+    expect(await savedScene(page)).toEqual(old);
+    // An edit (the aspect) writes the scene's own fields and the old layers as they were.
+    await sm(page, ".sm-aspect select").selectOption("1:1");
+    await expect.poll(async () => (await savedScene(page))?.aspect).toBe("1:1");
+    const saved = await savedScene(page);
+    expect(saved.trim).toEqual({ in: 1, out: 5 });
+    expect(saved.layers).toEqual(old.layers);
+    expect(errors).toEqual([]);
   });
 
   test("export to a file is the only way out: no upload card, Export MP4 waits for a take", async ({ page }) => {
@@ -242,14 +269,8 @@ test.describe("Streamer Mode", () => {
   });
 });
 
-// Phase 2: editing the scene and the take timeline.
-test.describe("Streamer Mode: layers and timeline", () => {
-  const layerOf = async (page, id) => (await savedScene(page))?.layers.find((l) => l.id === id);
-  const sceneBox = (page) => ev(page, () => {
-    const p = document.querySelector("#streamer .sm-preview");
-    const r = p.getBoundingClientRect();
-    return { x: r.left + p.clientLeft, y: r.top + p.clientTop, w: p.clientWidth, h: p.clientHeight };
-  });
+// The take timeline: zoom, the ruler, the trim, and undo of the scene's edits.
+test.describe("Streamer Mode: timeline", () => {
   const undoOn = (page) => ev(page, () => !document.querySelector("#streamer .sm-undo").disabled);
   async function dragMouse(page, from, to, { alt = false } = {}) {
     await page.mouse.move(...from);
@@ -259,10 +280,6 @@ test.describe("Streamer Mode: layers and timeline", () => {
     await page.mouse.up();
     if (alt) await page.keyboard.up("Alt");
   }
-  async function menu(page, id, item) {
-    await sm(page, `.sm-layer[data-layer="${id}"] .sm-layer-kebab`).click();
-    await page.locator(`.sm-menu [data-item="${item}"]`).click();
-  }
 
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1800, height: 1020 });
@@ -270,136 +287,29 @@ test.describe("Streamer Mode: layers and timeline", () => {
     await openStreamer(page);
   });
 
-  test("select by row and by clicking the preview", async ({ page }) => {
-    await sm(page, '.sm-layer[data-layer="lyrics"] .sm-layer-pick').click();
-    await expect(sm(page, '.sm-layer[data-layer="lyrics"]')).toHaveClass(/selected/);
-    await expect(sm(page, ".sm-selbox")).toBeVisible();
-    const f = await sceneBox(page);
-    await page.mouse.click(f.x + f.w * 0.06, f.y + f.h * 0.92);
-    await expect(sm(page, '.sm-layer[data-layer="lowerThird"]')).toHaveClass(/selected/);
-  });
-
-  test("a drag moves a layer, snaps to the safe zone, and is one undo step", async ({ page }) => {
-    const f = await sceneBox(page);
-    await page.mouse.click(f.x + f.w * 0.06, f.y + f.h * 0.92);
-    const start = [f.x + f.w * 0.06, f.y + f.h * 0.92];
-    // The lower third's left edge (12/716) moved to 3 px right of the 10% line.
-    const dx = (0.1 - 12 / 716) * f.w + 3;
-    await dragMouse(page, start, [start[0] + dx, start[1] - f.h * 0.3]);
-    await expect.poll(async () => (await layerOf(page, "lowerThird"))?.frame.x).toBeCloseTo(0.1, 9);
-    await sm(page, ".sm-undo").click();
-    await expect.poll(async () => (await layerOf(page, "lowerThird")).frame.x).toBeCloseTo(12 / 716, 6);
+  test("an aspect change is one undo step; Ctrl+Z and Ctrl+Y take it back and forth", async ({ page }) => {
+    await sm(page, ".sm-aspect select").selectOption("1:1");
+    await expect.poll(async () => (await savedScene(page))?.aspect).toBe("1:1");
+    await expect.poll(() => undoOn(page)).toBe(true);
+    await page.locator("#streamer").focus();
+    await page.keyboard.press("Control+z");
+    await expect.poll(async () => (await savedScene(page))?.aspect).toBe("16:9");
+    await expect(sm(page, ".sm-aspect select")).toHaveValue("16:9");
     await expect.poll(() => undoOn(page)).toBe(false);
-    // Alt: no snapping.
-    await dragMouse(page, start, [start[0] + dx, start[1] - f.h * 0.3], { alt: true });
-    await expect.poll(async () => Math.abs((await layerOf(page, "lowerThird")).frame.x - 0.1) > 1e-4).toBe(true);
+    await page.keyboard.press("Control+y");
+    await expect.poll(async () => (await savedScene(page))?.aspect).toBe("1:1");
   });
 
-  test("resize from a corner keeps the opposite corner", async ({ page }) => {
-    await sm(page, '.sm-layer[data-layer="lyrics"] .sm-layer-pick').click();
-    // The selection box moves to the lyrics on the next drawn frame: until
-    // then its handle is still the previous layer's (Track Info's).
-    const f = await sceneBox(page);
-    await expect.poll(async () => Math.abs((await sm(page, ".sm-selbox").boundingBox()).x - (f.x + (494 / 716) * f.w))).toBeLessThan(4);
-    const h = await sm(page, ".sm-handle-se").boundingBox();
-    await dragMouse(page, [h.x + 4, h.y + 4], [h.x - 56, h.y - 36], { alt: true });
-    await expect.poll(async () => (await layerOf(page, "lyrics"))?.frame.w).toBeLessThan(216 / 716 - 0.05);
-    const fr = (await layerOf(page, "lyrics")).frame;
-    expect(fr.x).toBeCloseTo(494 / 716, 6);
-    expect(fr.y).toBeCloseTo(263 / 403, 6);
-  });
-
-  test("reorder by the handle: the list is the drawing order", async ({ page }) => {
-    const grip = await sm(page, '.sm-layer[data-layer="lyrics"] .sm-layer-grip').boundingBox();
-    const first = await sm(page, ".sm-layer").first().boundingBox();
-    await dragMouse(page, [grip.x + grip.width / 2, grip.y + grip.height / 2], [grip.x + grip.width / 2, first.y + 4]);
-    await expect(sm(page, ".sm-layer").first()).toHaveAttribute("data-layer", "lyrics");
-    await expect.poll(async () => (await savedScene(page))?.layers.at(-1).id).toBe("lyrics");
-  });
-
-  test("the layer menu: rename, duplicate, edit, delete; camera keeps its place", async ({ page }) => {
-    await menu(page, "lowerThird", "rename");
-    await page.keyboard.press("Control+A");
-    await page.keyboard.type("My handle");
-    await page.keyboard.press("Enter");
-    await expect.poll(async () => (await layerOf(page, "lowerThird"))?.name).toBe("My handle");
-    await menu(page, "lowerThird", "duplicate");
-    await expect.poll(async () => Boolean(await layerOf(page, "lowerThird-2"))).toBe(true);
-    await menu(page, "lowerThird", "edit");
-    await page.locator(".sm-props input").first().fill("@me");
-    await page.locator(".sm-props input").first().press("Tab");
-    await expect.poll(async () => (await layerOf(page, "lowerThird")).props.handle).toBe("@me");
-    await page.keyboard.press("Escape");
-    await expect(page.locator(".sm-props")).toHaveCount(0);
-    await menu(page, "lowerThird-2", "delete");
-    await expect.poll(async () => Boolean(await layerOf(page, "lowerThird-2"))).toBe(false);
-    await sm(page, '.sm-layer[data-layer="camera"] .sm-layer-kebab').click();
-    await expect(page.locator('.sm-menu [data-item="delete"]')).toHaveAttribute("aria-disabled", "true");
-    await expect(page.locator('.sm-menu [data-item="duplicate"]')).toHaveAttribute("aria-disabled", "true");
-    await page.keyboard.press("Escape");
-    await expect(page.locator(".sm-menu")).toHaveCount(0);
-    await expect(sm(page, '.sm-layer[data-layer="camera"] .sm-layer-kebab')).toBeFocused();
-  });
-
-  test("+ Add Layer adds every type; undo takes them all back", async ({ page }) => {
-    for (const type of ["text", "image", "lowerThird", "lyrics", "trackInfo"]) {
-      await sm(page, ".sm-add").click();
-      await page.locator(`.sm-menu [data-item="${type}"]`).click();
-    }
-    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(10);
-    for (let i = 0; i < 5; i++) await sm(page, ".sm-undo").click();
-    await expect.poll(async () => (await savedScene(page))?.layers.length).toBe(5);
-    await expect.poll(() => undoOn(page)).toBe(false);
-  });
-
-  test("Delete removes the selected layer, never the song", async ({ page }) => {
-    await sm(page, ".sm-add").click();
-    await page.locator('.sm-menu [data-item="text"]').click();
-    await expect.poll(async () => Boolean(await layerOf(page, "text"))).toBe(true);
-    await sm(page, ".sm-fit").focus();
-    await page.keyboard.press("Delete");
-    await expect.poll(async () => Boolean(await layerOf(page, "text"))).toBe(false);
-    await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
-    await sm(page, '.sm-layer[data-layer="camera"] .sm-layer-pick').click();
+  test("Delete and Backspace in the view delete nothing", async ({ page }) => {
+    await sm(page, ".sm-aspect select").selectOption("1:1");
+    await expect.poll(async () => (await savedScene(page))?.aspect).toBe("1:1");
     const before = JSON.stringify(await savedScene(page));
+    await page.locator("#streamer").focus();
     await page.keyboard.press("Delete");
     await page.keyboard.press("Backspace");
     await page.waitForTimeout(500);
     expect(JSON.stringify(await savedScene(page))).toBe(before);
     await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
-  });
-
-  test("arrows nudge 1% and 5%; Ctrl+Z undoes", async ({ page }) => {
-    await sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-pick').click();
-    await sm(page, ".sm-preview").focus();
-    await page.keyboard.press("ArrowLeft");
-    await page.keyboard.press("Shift+ArrowDown");
-    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.frame.y).toBeCloseTo(8 / 403 + 0.05, 9);
-    expect((await layerOf(page, "trackInfo")).frame.x).toBeCloseTo(472 / 716 - 0.01, 9);
-    await page.keyboard.press("Control+z");
-    await expect.poll(async () => (await layerOf(page, "trackInfo")).frame.y).toBeCloseTo(8 / 403, 9);
-  });
-
-  test("Track Info is one row; its part switches change the card and are saved", async ({ page }) => {
-    const rows = await ev(page, () => [...document.querySelectorAll("#streamer .sm-layer")].map((r) => r.dataset.type));
-    expect(rows.filter((t) => t === "trackInfo")).toHaveLength(1);
-    expect(rows.some((t) => ["title", "albumArt", "waveform"].includes(t))).toBe(false);
-    await expect(sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-name')).toHaveText("Track Info");
-    await expect(sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-sub')).toHaveText("Title, artist, art and waveform");
-    await menu(page, "trackInfo", "edit");
-    for (const part of ["art", "title", "artist", "waveform"]) await expect(page.locator(`.sm-props-switch[data-part="${part}"]`)).toHaveAttribute("aria-checked", "true");
-    await page.locator('.sm-props-switch[data-part="waveform"]').click();
-    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props.waveform).toBe(false);
-    await page.locator('.sm-props-switch[data-part="title"]').click();
-    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props.title).toBe(false);
-    // The artist line rests with the title off.
-    await expect(page.locator('.sm-props-switch[data-part="artist"]')).toBeDisabled();
-    await page.locator('.sm-props-switch[data-part="art"]').click();
-    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props.art).toBe(false);
-    await expect(sm(page, '.sm-layer[data-layer="trackInfo"] .sm-layer-sub')).toHaveText("All parts switched off");
-    await page.keyboard.press("Escape");
-    for (let i = 0; i < 3; i++) await sm(page, ".sm-undo").click();
-    await expect.poll(async () => (await layerOf(page, "trackInfo"))?.props).toEqual({ art: true, title: true, waveform: true, showArtist: true, bars: 34 });
   });
 
   test("zoom, Fit and the ruler", async ({ page }) => {
@@ -443,17 +353,8 @@ test.describe("Streamer Mode: layers and timeline", () => {
   });
 });
 
-// Phase 5: narrow layouts, empty and error states, pictures, the second lane.
+// Phase 5: narrow layouts, empty and error states, the second lane.
 test.describe("Streamer Mode polish", () => {
-  // A small PNG, made by the browser itself.
-  const pngOf = async (page) => Buffer.from(await ev(page, () => {
-    const c = document.createElement("canvas");
-    c.width = 64;
-    c.height = 36;
-    c.getContext("2d").fillRect(0, 0, 64, 36);
-    return c.toDataURL("image/png").split(",")[1];
-  }), "base64");
-
   test("under 1000 px: Output opens a drawer, focus moves in, Escape closes it", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await openStudio(page);
@@ -479,8 +380,8 @@ test.describe("Streamer Mode polish", () => {
     expect(await ev(page, () => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
   });
 
-  // The preview gives way so no control needs scrolling: the workspace, the
-  // right panel and the drawer (the Scene Layers list may scroll inside).
+  // The live window gives way so no control needs scrolling: the workspace,
+  // the right panel and the drawer.
   for (const [w, h] of [[1920, 1080], [1600, 900], [1366, 768], [1280, 720]]) {
     test(`${w} x ${h}: every control fits without scrolling`, async ({ page }) => {
       await page.setViewportSize({ width: w, height: h });
@@ -492,7 +393,7 @@ test.describe("Streamer Mode polish", () => {
         const root = document.querySelector("#streamer");
         const found = [];
         for (const e of [root, ...root.querySelectorAll("*")]) {
-          if (e.closest(".sm-layer-list") || !e.getClientRects().length) continue;
+          if (!e.getClientRects().length) continue;
           const oy = getComputedStyle(e).overflowY;
           if ((e === root || oy === "auto" || oy === "scroll") && e.scrollHeight > e.clientHeight + 1) found.push(`${e.className} ${e.scrollHeight}>${e.clientHeight}`);
         }
@@ -511,32 +412,6 @@ test.describe("Streamer Mode polish", () => {
     await openStreamer(page);
     await expect(sm(page, ".sm-no-track")).toBeVisible();
     expect(await ev(page, () => document.querySelector("#streamer .sm-center").inert)).toBe(true);
-  });
-
-  test("a background picture is chosen, kept, shown in the row and undone", async ({ page }) => {
-    await openStudio(page);
-    await openStreamer(page);
-    const row = sm(page, '.sm-layer[data-layer="background"]');
-    await row.locator(".sm-layer-kebab").click();
-    await page.locator('.sm-menu-item[data-item="edit"]').click();
-    await page.setInputFiles(".sm-props input[type=file]", { name: "p.png", mimeType: "image/png", buffer: await pngOf(page) });
-    await expect(page.locator(".sm-props-picture-msg")).toContainText("KB");
-    await expect(page.locator(".sm-props-remove")).toBeVisible();
-    await page.locator(".sm-props-done").click();
-    await expect(row.locator(".sm-layer-sub")).toHaveText("Your image");
-    // The scene is saved a moment after the edit.
-    await expect.poll(async () => (await savedScene(page))?.layers?.find((l) => l.id === "background")?.props?.imageKey ?? "").toMatch(new RegExp(`^${JOB_ID}:background:`));
-    await sm(page, ".sm-undo").click();
-    await expect(row.locator(".sm-layer-sub")).not.toHaveText("Your image");
-  });
-
-  test("a file that is not a picture is refused with a message", async ({ page }) => {
-    await openStudio(page);
-    await openStreamer(page);
-    await sm(page, '.sm-layer[data-layer="background"] .sm-layer-kebab').click();
-    await page.locator('.sm-menu-item[data-item="edit"]').click();
-    await page.setInputFiles(".sm-props input[type=file]", { name: "n.txt", mimeType: "text/plain", buffer: Buffer.from("x") });
-    await expect(page.locator(".sm-props-picture-msg")).toContainText("PNG, JPEG or WebP");
   });
 
   test("I play leaves the part out of what Streamer plays, for Streamer only", async ({ page }) => {
@@ -709,41 +584,6 @@ test.describe("Streamer Mode input and take lane", () => {
   });
 });
 
-test.describe("Streamer Mode: a version 1 scene", () => {
-  test("its Song Title, Album Art and Waveform become one Track Info, saved on the next edit only", async ({ page }) => {
-    await page.setViewportSize({ width: 1800, height: 1020 });
-    await openStudio(page);
-    const px = (x, y, w, h) => ({ x: x / 716, y: y / 403, w: w / 716, h: h / 403 });
-    const old = {
-      v: 1, aspect: "16:9", trim: null,
-      layers: [
-        { id: "background", type: "background", visible: false, frame: { x: 0, y: 0, w: 1, h: 1 }, props: { imageKey: "" } },
-        { id: "camera", type: "camera", visible: true, frame: { x: 0, y: 0, w: 1, h: 1 }, props: { mirror: false } },
-        { id: "lowerThird", type: "lowerThird", visible: true, frame: px(12, 351, 120, 40), props: { handle: "", subtitle: "" } },
-        { id: "lyrics", type: "lyrics", visible: true, frame: px(494, 263, 216, 134), props: { lines: 5 } },
-        { id: "title", type: "title", visible: true, frame: { x: 0.05, y: 0.6, w: 0.4, h: 0.25 }, props: { showArtist: true } },
-        { id: "waveform", type: "waveform", visible: false, frame: px(582, 74, 118, 28), props: { bars: 34 } },
-        { id: "albumArt", type: "albumArt", visible: true, frame: px(482, 18, 88, 88), props: {} },
-      ],
-    };
-    await ev(page, async ([key, value]) => (await import("/js/utils.js")).storeSet(key, value), [`stemdeck:streamer:scene:${JOB_ID}`, old]);
-    await openStreamer(page);
-    await expect(sm(page, '.sm-layer[data-layer="trackInfo"]')).toHaveCount(1);
-    await expect(sm(page, '.sm-layer[data-type="title"], .sm-layer[data-type="albumArt"], .sm-layer[data-type="waveform"]')).toHaveCount(0);
-    // Shown, not edited: the stored scene is still the old one.
-    await page.waitForTimeout(600);
-    expect((await savedScene(page)).v).toBe(1);
-    await sm(page, '.sm-layer[data-layer="lyrics"] [role=switch]').click();
-    await expect.poll(async () => (await savedScene(page))?.v).toBe(2);
-    const saved = await savedScene(page);
-    const ti = saved.layers.filter((l) => l.type === "trackInfo");
-    expect(ti).toHaveLength(1);
-    expect(ti[0].frame).toEqual({ x: 0.05, y: 0.6, w: 0.4, h: 0.25 });
-    expect(ti[0].props).toEqual({ art: true, title: true, waveform: false, showArtist: true, bars: 34 });
-    expect(saved.layers.map((l) => l.id)).toEqual(["background", "camera", "lowerThird", "lyrics", "trackInfo"]);
-  });
-});
-
 // The take review window (streamer.js, reviewModel.js): the recorded take
 // played beside the live preview in step with the transport, a note when
 // there is nothing to play, and one window in place of two when there is no
@@ -764,15 +604,16 @@ test.describe("Streamer Mode take review", () => {
     expect(Math.abs(live.w - rv.w)).toBeLessThanOrEqual(1);
     expect(Math.abs(live.h - rv.h)).toBeLessThanOrEqual(1);
     expect(live.w).toBeGreaterThanOrEqual(360);
-    // Scene Layers at the right edge of the Scene Builder.
-    const builder = await box(page, ".sm-builder");
-    const layers = await box(page, ".sm-layers");
-    expect(Math.abs(builder.right - layers.right)).toBeLessThanOrEqual(1);
+    // Nothing beside them: the pair is centred in the builder.
+    const builder = await sm(page, ".sm-builder").evaluate((e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right }; });
+    const pair = await sm(page, ".sm-screens").evaluate((e) => { const r = e.getBoundingClientRect(); return { left: r.left, right: r.right }; });
+    expect(Math.abs((pair.left - builder.left) - (builder.right - pair.right))).toBeLessThanOrEqual(2);
     // No take yet: the note says how to get one.
     await expect(sm(page, ".sm-review-note")).toHaveText("Record a take to review it here");
     // A small window: one window, the live preview, and the review hidden.
+    // (Without the layers panel, 1280 x 720 has room for two windows.)
     await page.locator("#sidebarCollapseBtn").click();
-    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setViewportSize({ width: 1024, height: 700 });
     await expect.poll(async () => (await review(page)).tier).toBe("c");
     await expect(sm(page, ".sm-preview")).toBeVisible();
     await expect(sm(page, ".sm-review")).toBeHidden();

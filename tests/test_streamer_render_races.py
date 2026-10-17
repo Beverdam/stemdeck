@@ -4,8 +4,8 @@ Cancel kills the ffmpeg process and never reports an older file as done; a
 take deleted while it renders stops the render; a cancel that lands while the
 render is still being prepared starts nothing; a trim outside the take is
 refused; a render's file is not served while a new one is made; a failed
-encoder probe is not cached; stale temp files are swept at startup; a failed
-cover fetch is retried after a pause; an over-long ?name= is refused.
+encoder probe is not cached; stale temp files are swept at startup; an
+over-long ?name= is refused.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import time
 import httpx
 import pytest
 
-from app.api import cover as cover_mod
 from app.api import stems as stems_mod
 from app.api import takes as takes_mod
 from app.pipeline import take_render
@@ -37,7 +36,6 @@ def jobs_dir(tmp_path, monkeypatch):
     from app.core import config
 
     takes_mod._renders.clear()
-    cover_mod._failed_at.clear()
     return config.JOBS_DIR
 
 
@@ -273,72 +271,6 @@ def test_stale_render_temps_are_swept(tmp_path):
     keep.write_bytes(b"y")
     assert take_render.sweep_render_temps(tmp_path) == 1
     assert not stale.exists() and keep.exists()
-
-
-async def test_a_failed_cover_is_retried_after_a_pause(jobs_dir, monkeypatch):
-    from app.core.models import Job
-    from app.core.registry import _jobs
-
-    job = Job(
-        id="c0ffee000001", status="done", title="x", thumbnail="https://i.ytimg.com/vi/x/hq.jpg"
-    )
-    _jobs[job.id] = job
-    (jobs_dir / job.id).mkdir(parents=True, exist_ok=True)
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
-    calls = []
-
-    def flaky(url, **k):
-        calls.append(url)
-        if len(calls) == 1:
-            raise OSError("host down")
-        return png, "image/png"
-
-    monkeypatch.setattr(cover_mod, "fetch_cover", flaky)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_app()), base_url="http://testserver"
-    ) as c:
-        url = f"/api/jobs/{job.id}/cover"
-        assert (await c.get(url)).status_code == 404
-        # Within the pause: not fetched again.
-        assert (await c.get(url)).status_code == 404
-        assert len(calls) == 1
-        # After it: fetched again, and kept.
-        cover_mod._failed_at[job.id] -= cover_mod.COVER_RETRY_AFTER_SEC + 1
-        r = await c.get(url)
-        assert r.status_code == 200 and r.content == png
-        assert len(calls) == 2
-    _jobs.pop(job.id, None)
-
-
-def test_cover_reads_a_slow_drip_within_the_deadline(monkeypatch):
-    """read1 returns what has arrived: a server dripping a byte at a time is
-    stopped at the deadline, not after a full chunk."""
-
-    class Drip:
-        def __init__(self):
-            self.calls = 0
-
-        def read1(self, n):
-            self.calls += 1
-            time.sleep(0.05)
-            return b"\x89" if self.calls < 1000 else b""
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    class Opener:
-        def open(self, request, timeout=None):
-            return Drip()
-
-    monkeypatch.setattr(cover_mod, "public_url", lambda url: True)
-    monkeypatch.setattr(cover_mod.urllib.request, "build_opener", lambda *a: Opener())
-    started = time.monotonic()
-    with pytest.raises(cover_mod.CoverRefused):
-        cover_mod.fetch_cover("https://i.ytimg.com/x.jpg", deadline_sec=0.5)
-    assert time.monotonic() - started < 2.0
 
 
 def test_a_composed_scene_is_placed_at_the_heard_time():
