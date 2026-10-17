@@ -2665,7 +2665,7 @@ function renderQueueList(listEl, snap = getQueueSnapshot()) {
   if (!entries.length) {
     section.insertAdjacentHTML(
       "beforeend",
-      '<span class="folder-empty trash-empty">Nothing importing. Queued tracks appear here.</span>',
+      `<span class="folder-empty trash-empty">${esc(i18nT("queue.emptyState"))}</span>`,
     );
     listEl.appendChild(section);
     return;
