@@ -913,6 +913,7 @@ const en = {
   "queue.cancelImportOf": "Cancel import of {title}",
   "queue.pausedStatus": "Paused",
   "queue.positionInLine": "Queued - #{position} in line",
+  "queue.emptyState": "Nothing importing. Queued tracks appear here.",
 
   "settings.exportLogs.title": "Export logs",
   "settings.exportLogs.desc": "Download every log file as a single zip — the thing to attach to a bug report. See the Logs tab for where they live.",
@@ -1811,6 +1812,7 @@ const pl = {
   "queue.cancelImportOf": "Anuluj import {title}",
   "queue.pausedStatus": "Wstrzymano",
   "queue.positionInLine": "W kolejce - pozycja #{position}",
+  "queue.emptyState": "Nic się nie importuje. Utwory w kolejce pojawią się tutaj.",
 
   "settings.exportLogs.title": "Eksportuj logi",
   "settings.exportLogs.desc": "Pobierz każdy plik logu jako jeden zip — to, co warto załączyć do zgłoszenia błędu. Zakładka Logi pokazuje, gdzie się znajdują.",
@@ -2688,6 +2690,7 @@ const ja = {
   "queue.cancelImportOf": "{title}のインポートをキャンセル",
   "queue.pausedStatus": "一時停止中",
   "queue.positionInLine": "キュー待ち - #{position}番目",
+  "queue.emptyState": "インポート中のものはありません。キューに入れたトラックはここに表示されます。",
 
   "settings.exportLogs.title": "ログをエクスポート",
   "settings.exportLogs.desc": "すべてのログファイルを1つのzipとしてダウンロード — バグ報告に添付するものです。保存場所はログタブを参照。",
@@ -3549,6 +3552,7 @@ const zhHans = {
   "queue.cancelImportOf": "取消导入 {title}",
   "queue.pausedStatus": "已暂停",
   "queue.positionInLine": "排队中 - 第 {position} 位",
+  "queue.emptyState": "没有正在导入的内容。排队的曲目会显示在这里。",
 
   "settings.exportLogs.title": "导出日志",
   "settings.exportLogs.desc": "将所有日志文件下载为一个压缩包 — 这是提交错误报告时应附上的内容。日志的存放位置见「日志」标签页。",
@@ -4415,6 +4419,7 @@ const de = {
   "queue.cancelImportOf": "Import von {title} abbrechen",
   "queue.pausedStatus": "Pausiert",
   "queue.positionInLine": "Wartend - #{position} in der Reihe",
+  "queue.emptyState": "Es wird nichts importiert. Wartende Tracks erscheinen hier.",
 
   "settings.exportLogs.title": "Logs exportieren",
   "settings.exportLogs.desc": "Jede Log-Datei als ein einziges Zip herunterladen — das, was man einem Fehlerbericht anhängen sollte. Der Logs-Tab zeigt, wo sie liegen.",
@@ -5287,6 +5292,7 @@ const pt = {
   "queue.cancelImportOf": "Cancelar importação de {title}",
   "queue.pausedStatus": "Pausado",
   "queue.positionInLine": "Na fila - #{position}",
+  "queue.emptyState": "Nada sendo importado. As faixas na fila aparecem aqui.",
 
   "settings.exportLogs.title": "Exportar logs",
   "settings.exportLogs.desc": "Baixe todos os arquivos de log em um único zip — o que anexar a um relatório de bug. Veja a aba Logs para saber onde ficam.",
@@ -6156,6 +6162,7 @@ const id = {
   "queue.cancelImportOf": "Batalkan impor {title}",
   "queue.pausedStatus": "Dijeda",
   "queue.positionInLine": "Menunggu - urutan ke-#{position} dalam antrean",
+  "queue.emptyState": "Tidak ada yang sedang diimpor. Lagu dalam antrean muncul di sini.",
 
   "settings.exportLogs.title": "Ekspor log",
   "settings.exportLogs.desc": "Unduh setiap file log sebagai satu zip — yang perlu dilampirkan ke laporan bug. Lihat tab Log untuk mengetahui lokasinya.",
@@ -7022,6 +7029,7 @@ const fr = {
   "queue.cancelImportOf": "Annuler l'import de {title}",
   "queue.pausedStatus": "En pause",
   "queue.positionInLine": "En file - n° {position}",
+  "queue.emptyState": "Aucun import en cours. Les morceaux en file d'attente apparaissent ici.",
 
   "settings.exportLogs.title": "Exporter les journaux",
   "settings.exportLogs.desc": "Téléchargez tous les fichiers journaux dans une seule archive zip — à joindre à un rapport de bug. Voir l'onglet Journaux pour leur emplacement.",
@@ -8069,6 +8077,7 @@ const es = {
   "queue.cancelImportOf": "Cancelar la importación de {title}",
   "queue.pausedStatus": "En pausa",
   "queue.positionInLine": "En cola: puesto n.º {position}",
+  "queue.emptyState": "Nada se está importando. Las pistas en cola aparecen aquí.",
 
   "settings.exportLogs.title": "Exportar registros",
   "settings.exportLogs.desc": "Descarga todos los archivos de registro en un único zip: lo que conviene adjuntar a un informe de error. Mira la pestaña Registros para saber dónde están.",
@@ -8958,6 +8967,7 @@ const ko = {
   "queue.cancelImportOf": "{title} 가져오기 취소",
   "queue.pausedStatus": "일시정지됨",
   "queue.positionInLine": "대기 중. {position}번째예요",
+  "queue.emptyState": "가져오는 항목이 없습니다. 대기 중인 트랙이 여기에 표시됩니다.",
 
   "settings.exportLogs.title": "로그 내보내기",
   "settings.exportLogs.desc": "모든 로그 파일을 zip 하나로 받아요. 버그 리포트에 첨부하기 좋아요. 파일이 어디에 있는지는 로그 탭에서 볼 수 있어요.",
