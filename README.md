@@ -79,6 +79,9 @@ Each link downloads the latest release. [Release notes](https://github.com/stemd
 - **Each mode keeps its own stems and its own saved mix** of a song.
 - **Advanced** gains an EQ on every lane, a Master with a loudness target, recording tracks and video tracks.
 - **A redesigned Settings,** with a section list and a search box.
+- **A GPU video encoder** for Performance exports, with an automatic fall-back to the CPU.
+- **Safer by default:** a guard against requests from other websites, auto-delete that skips favorites and songs with takes, and a library that survives one bad record.
+- **Imports:** a Detect lyrics switch, and Try again on an import that failed.
 
 All of it, with credits to the people who reported each problem, is in the [release notes](https://github.com/stemdeckapp/stemdeck/releases/latest).
 
@@ -117,7 +120,7 @@ Pick one from **Mode** in the left rail. Each mode keeps its own choice of stems
 
 - **Practice:** stems, mixer, speed, key, click and loop, without recording, EQ or the master.
 - **Advanced:** everything, with recording tracks, take folders, an EQ on every lane, the master and video.
-- **Karaoke:** the lyrics fill the window and light up as the song plays, with the voice off. Drag songs from the library into a queue.
+- **Karaoke:** the lyrics fill the window and light up word by word as the song plays. Switch the voice and the backing vocals on or off, and drag songs from the library into a queue.
 - **Performance:** film yourself playing along to the song, then export the video.
 
 ### <img src="imgs/readme/stems.svg" width="22" align="top" alt=""> Split any song
@@ -146,7 +149,7 @@ In Performance mode:
 - **Your camera and your input:** pick a camera, or none, and your microphone or audio interface input.
 - **Say what you play** with **I play**, and that part is taken out of the backing track you hear and out of the video.
 - **Review the take** in step with the song, and trim its start and end on the **Take Timeline**.
-- **Export to MP4** at 720p or 1080p, at 24, 30 or 60 fps. StemDeck uses your graphics card when its encoder passes a short test on your computer, and the CPU otherwise.
+- **Export to MP4** at 720p or 1080p, at 24, 30 or 60 fps. StemDeck uses your graphics card when its encoder passes a short test on your computer, and the CPU otherwise. **Settings > Export** has a Video encoder choice and a Test encoders button.
 - **The video stays on your computer.** Uploading and live streaming are not part of this release.
 
 ### <img src="imgs/readme/gauge.svg" width="22" align="top" alt=""> Know the song
