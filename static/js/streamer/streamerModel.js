@@ -1,46 +1,20 @@
-// Streamer Mode's arithmetic, kept apart from the page so it can be tested in
-// Node: the scene (its layers, their frames and the aspect), where a scene is
-// kept per song, reading and writing it, and the small sums the preview and
-// the take timeline draw from (lyric lines in view, waveform bars, ruler
-// ticks, clock text), plus the editing of a scene (move, resize with
-// snapping, reorder, add, duplicate, delete, rename, properties, trim), its
-// undo history and the take timeline's zoom. Nothing here holds state or
-// touches the DOM: every edit returns a new scene.
+// Performance Mode's arithmetic, kept apart from the page so it can be tested
+// in Node: the scene a song keeps (its aspect and its trim), where it is kept,
+// reading and writing it, its undo history, and the small sums the stage and
+// the take timeline draw from (waveform bars, ruler ticks, clock text, the
+// timeline's zoom). Nothing here holds state or touches the DOM: every edit
+// returns a new scene.
 //
 // A scene is plain JSON:
-//   { v, aspect, trim: { in, out } | null,
-//     layers: [{ id, type, name?, visible, frame: { x, y, w, h }, props }] }
-// Array order is the drawing order: the first layer is at the back, the last
-// in front. A frame is in FRACTIONS (0..1) of the output frame, so the small
-// preview and a 1920 x 1080 output are the same picture at two sizes.
+//   { v, aspect, trim: { in, out } | null }
+// The stage is the camera's picture, full frame, at the scene's aspect: there
+// are no layers to place over it. A scene saved by an older build also holds
+// `layers` (and anything else it wrote): those are not read, and are written
+// back untouched with the next edit, so the old data is left as it was.
 
-import { currentLineIndex } from "../lyricsLookup.js";
-
-// 2: the album art, waveform and song title layers became one Track Info
-// layer (parseScene merges a version 1 scene's three into it).
 export const SCENE_VERSION = 2;
 export const ASPECTS = Object.freeze(["16:9", "9:16", "1:1"]);
 export const DEFAULT_ASPECT = "16:9";
-// The header's tabs, in order. Any other value (one from an older build, such
-// as the removed "live" tab) opens the Scene Builder.
-export const TABS = Object.freeze(["builder", "templates"]);
-export const tabOf = (id) => (TABS.includes(id) ? id : "builder");
-export const LAYER_TYPES = Object.freeze(["background", "camera", "lowerThird", "lyrics", "trackInfo", "text", "image"]);
-// What + Add Layer offers, in its order. Camera and Background are the scene's
-// own and are never added (or duplicated, or deleted).
-export const ADDABLE_TYPES = Object.freeze(["text", "image", "lowerThird", "lyrics", "trackInfo"]);
-// Track Info's parts, each a switch in its properties (props of the same name).
-export const TRACK_PARTS = Object.freeze(["art", "title", "waveform"]);
-export const BARS_MIN = 8;
-export const BARS_MAX = 96;
-const FIXED_TYPES = new Set(["camera", "background"]);
-// A text layer's colour, by name (the renderer maps names to colours).
-export const TEXT_COLORS = Object.freeze(["white", "yellow", "red", "blue", "green"]);
-export const TEXT_SIZE_MIN = 0.5;
-export const TEXT_SIZE_MAX = 3;
-export const LYRIC_LINES_MIN = 3;
-export const LYRIC_LINES_MAX = 7;
-export const NAME_MAX = 60;
 export const TRIM_MIN = 1;
 
 /** The saved scene of a song: one record per song (maintainer's decision),
@@ -74,276 +48,61 @@ export function fitAspect(boxW, boxH, aspect) {
   return { x: (boxW - w) / 2, y: (boxH - h) / 2, w, h };
 }
 
-// ── Default scene ──
-
-// The default frames per aspect, in pixels of a preview of that aspect with
-// a 403 px short side. 16:9 is the design's preview (716 x 403: overlays in
-// the right column, lower third bottom left); portrait and square keep the
-// same overlays at the same size, the portrait title card below the REC
-// badge. A text layer starts in the middle, an image layer clear of it.
-// Track Info's frame is the title card; the album art and the waveform are
-// laid out inside it (sceneRenderer.js trackInfoLayout).
-const px = (x, y, w, h, W, H) => ({ x: x / W, y: y / H, w: w / W, h: h / H });
-const FULL = { x: 0, y: 0, w: 1, h: 1 };
-const DEFAULT_FRAMES = {
-  "16:9": {
-    background: FULL,
-    camera: FULL,
-    trackInfo: px(472, 8, 238, 108, 716, 403),
-    lyrics: px(494, 263, 216, 134, 716, 403),
-    lowerThird: px(12, 351, 120, 40, 716, 403),
-    text: px(208, 171, 300, 60, 716, 403),
-    image: px(40, 60, 150, 150, 716, 403),
-  },
-  "9:16": {
-    background: FULL,
-    camera: FULL,
-    // Portrait text and padding are drawn 1.3 times larger (sceneRenderer's
-    // aspectScale), so the cards are that much larger too.
-    trackInfo: px(16, 76, 371, 140, 403, 716),
-    lyrics: px(16, 430, 371, 195, 403, 716),
-    lowerThird: px(16, 650, 208, 52, 403, 716),
-    text: px(40, 340, 323, 88, 403, 716),
-    image: px(121, 220, 161, 118, 403, 716),
-  },
-  "1:1": {
-    background: FULL,
-    camera: FULL,
-    // Square: 1.15 times larger (sceneRenderer's aspectScale).
-    trackInfo: px(197, 8, 280, 124, 483, 483),
-    lyrics: px(229, 318, 248, 154, 483, 483),
-    lowerThird: px(12, 425, 138, 46, 483, 483),
-    text: px(92, 207, 300, 70, 483, 483),
-    image: px(30, 290, 150, 130, 483, 483),
-  },
-};
-
-// Back to front, and which are shown at first (the design: everything but
-// the background image). The camera is right above the background: a
-// full-frame camera over the overlays would hide them (phase 1 decision; the
-// artboard lists Camera first).
-const DEFAULT_LAYERS = [
-  { type: "background", visible: false },
-  { type: "camera", visible: true },
-  { type: "lowerThird", visible: true },
-  { type: "lyrics", visible: true },
-  { type: "trackInfo", visible: true },
-];
-
-const DEFAULT_PROPS = {
-  // An image the person chose (sceneImages.js keeps it; the scene holds its key).
-  background: () => ({ imageKey: "" }),
-  camera: () => ({ mirror: false }),
-  // Every part shown; the artist line is part of "title" and can be left out.
-  trackInfo: () => ({ art: true, title: true, waveform: true, showArtist: true, bars: 34 }),
-  lyrics: () => ({ lines: 5 }),
-  // Empty text shows the placeholder (an i18n string the page passes in).
-  lowerThird: () => ({ handle: "", subtitle: "" }),
-  text: () => ({ text: "", size: 1, color: "white" }),
-  image: () => ({ imageKey: "" }),
-};
-
-export function defaultFrame(type, aspect = DEFAULT_ASPECT) {
-  const frames = DEFAULT_FRAMES[ASPECTS.includes(aspect) ? aspect : DEFAULT_ASPECT];
-  return { ...(frames[type] || FULL) };
-}
-
-/** A new scene: the five default layers at `aspect`, the whole song kept. */
-export function defaultScene(aspect = DEFAULT_ASPECT) {
-  const a = ASPECTS.includes(aspect) ? aspect : DEFAULT_ASPECT;
-  return {
-    v: SCENE_VERSION,
-    aspect: a,
-    trim: null,
-    layers: DEFAULT_LAYERS.map((l) => ({
-      id: l.type,
-      type: l.type,
-      visible: l.visible,
-      frame: defaultFrame(l.type, a),
-      props: DEFAULT_PROPS[l.type](),
-    })),
-  };
-}
-
-const sameFrame = (a, b) => ["x", "y", "w", "h"].every((k) => Math.abs((a?.[k] ?? NaN) - b[k]) < 1e-6);
-
 /**
- * `scene` at a new aspect. A layer still at the old aspect's default frame
- * moves to the new aspect's default; one placed by hand keeps its fractions.
- * Returns a new scene; `scene` is not changed.
+ * Where a `iw` x `ih` picture lands in a `bw` x `bh` box: "cover" fills it
+ * (cut at the sides or top and bottom), "contain" fits inside it (bars
+ * left as they are). { x, y, w, h } relative to the box. The stage draws the
+ * camera with "cover": the whole output is picture, never stretched.
  */
+export function fitRect(iw, ih, bw, bh, mode = "contain") {
+  if (!(iw > 0 && ih > 0 && bw > 0 && bh > 0)) return { x: 0, y: 0, w: 0, h: 0 };
+  const s = mode === "cover" ? Math.max(bw / iw, bh / ih) : Math.min(bw / iw, bh / ih);
+  const w = iw * s;
+  const h = ih * s;
+  return { x: (bw - w) / 2, y: (bh - h) / 2, w, h };
+}
+
+// ── The scene ──
+
+/** A new scene: `aspect`, the whole song kept. */
+export function defaultScene(aspect = DEFAULT_ASPECT) {
+  return { v: SCENE_VERSION, aspect: ASPECTS.includes(aspect) ? aspect : DEFAULT_ASPECT, trim: null };
+}
+
+/** `scene` at a new aspect (an unknown one leaves it as it is). */
 export function withAspect(scene, aspect) {
-  if (!ASPECTS.includes(aspect)) return scene;
-  const from = scene.aspect;
-  return {
-    ...scene,
-    aspect,
-    layers: scene.layers.map((l) => ({
-      ...l,
-      frame: sameFrame(l.frame, defaultFrame(l.type, from)) ? defaultFrame(l.type, aspect) : { ...l.frame },
-    })),
-  };
+  if (!ASPECTS.includes(aspect) || aspect === scene.aspect) return scene;
+  return { ...scene, aspect };
 }
 
-/** `scene` with layer `id` shown or hidden. */
-export function withLayerVisible(scene, id, visible) {
-  return { ...scene, layers: scene.layers.map((l) => (l.id === id ? { ...l, visible: Boolean(visible) } : l)) };
-}
-
-// ── Reading and writing ──
-
-const clamp01 = (v) => Math.max(0, Math.min(1, v));
-
-/** A frame held inside the output: each side 0..1, at least 1% wide and high. */
-export function clampFrame(f) {
-  const w = Math.max(0.01, clamp01(Number(f?.w) || 0));
-  const h = Math.max(0.01, clamp01(Number(f?.h) || 0));
-  const x = Math.min(1 - w, clamp01(Number(f?.x) || 0));
-  const y = Math.min(1 - h, clamp01(Number(f?.y) || 0));
-  return { x, y, w, h };
-}
+// What a scene is: the fields read here. Everything else a stored record
+// holds (an older build's layers) is kept as it was, in `kept`.
+const OWN = new Set(["v", "aspect", "trim", "kept"]);
 
 /**
  * A saved scene made safe to use: anything unreadable gives the default
- * scene, an unknown layer type is dropped, a frame is clamped, a missing
- * prop takes its default. A song's scene from an older version with no
- * readable layers also starts over.
+ * scene, an unknown aspect the default one, a trim that cannot be one no
+ * trim. The fields of an older build (its layers) are not read; they are
+ * carried in `kept` and written back as they were (serializeScene).
  */
 export function parseScene(raw) {
   let data = raw;
   if (typeof data === "string") {
     try { data = JSON.parse(data); } catch { return defaultScene(); }
   }
-  if (!data || typeof data !== "object" || !Array.isArray(data.layers)) return defaultScene();
-  const aspect = ASPECTS.includes(data.aspect) ? data.aspect : DEFAULT_ASPECT;
-  const seen = new Set();
-  const layers = [];
-  for (const l of migrateLayers(data.layers)) {
-    if (!l || !LAYER_TYPES.includes(l.type)) continue;
-    const id = typeof l.id === "string" && l.id && !seen.has(l.id) ? l.id : `${l.type}-${layers.length}`;
-    seen.add(id);
-    const layer = {
-      id,
-      type: l.type,
-      visible: l.visible !== false,
-      frame: clampFrame(l.frame || defaultFrame(l.type, aspect)),
-      props: cleanProps(l.type, { ...DEFAULT_PROPS[l.type](), ...(l.props && typeof l.props === "object" ? l.props : {}) }),
-    };
-    const name = cleanName(l.name);
-    if (name) layer.name = name;
-    layers.push(layer);
-  }
-  if (!layers.length) return defaultScene(aspect);
-  return { v: SCENE_VERSION, aspect, trim: cleanTrim(data.trim), layers };
+  if (!data || typeof data !== "object" || Array.isArray(data)) return defaultScene();
+  const scene = defaultScene(data.aspect);
+  scene.trim = cleanTrim(data.trim);
+  const kept = {};
+  for (const [k, v] of Object.entries(data)) if (!OWN.has(k)) kept[k] = v;
+  if (Object.keys(kept).length) scene.kept = kept;
+  return scene;
 }
 
-// ── Version 1 to 2: three song layers become one Track Info ──
-
-// The version 1 layer types and the Track Info part each one was.
-const LEGACY_PART = { title: "title", albumArt: "art", waveform: "waveform" };
-const isLegacy = (l) => Boolean(l) && typeof l === "object" && Object.hasOwn(LEGACY_PART, l.type);
-const shown = (l) => l.visible !== false;
-const objectOr = (v) => (v && typeof v === "object" ? v : null);
-
-/**
- * Saved layers (raw JSON) with the version 1 Song Title, Album Art and
- * Waveform layers merged into Track Info layers; anything else is passed on
- * untouched (parseScene cleans it). The first of each of the three types
- * make one Track Info, at the place in the drawing order of the earliest of
- * them:
- * - its frame is the Song Title's, else the Album Art's, else the Waveform's;
- * - a part is on when its layer was there and shown (when none of them was
- *   shown, the card is hidden and a part is on when its layer was there);
- * - it is shown when any of them was;
- * - its name is the first name of their own (Song Title, Album Art,
- *   Waveform), none when none was renamed;
- * - the artist switch is the Song Title's, the bar count the Waveform's.
- * A second layer of a type (a duplicate) becomes a Track Info of its own
- * with only its part on, where it was. Layers that are not the old types,
- * and a scene without them, come back as they were (so running it twice
- * gives the same result).
- */
-export function migrateLayers(layers) {
-  if (!Array.isArray(layers) || !layers.some(isLegacy)) return Array.isArray(layers) ? layers : [];
-  const used = new Set(layers.filter((l) => l && !isLegacy(l) && typeof l.id === "string").map((l) => l.id));
-  const nextId = () => {
-    let id = "trackInfo";
-    for (let n = 2; used.has(id); n++) id = `trackInfo-${n}`;
-    used.add(id);
-    return id;
-  };
-  const first = {};
-  layers.forEach((l, i) => {
-    if (isLegacy(l) && first[l.type] === undefined) first[l.type] = i;
-  });
-  const at = Math.min(...Object.values(first));
-  const of = (type) => (first[type] === undefined ? null : layers[first[type]]);
-  const make = (members) => {
-    const anyShown = members.some(shown);
-    const t = members.find((m) => m.type === "title");
-    const w = members.find((m) => m.type === "waveform");
-    const props = { art: false, title: false, waveform: false, showArtist: objectOr(t?.props)?.showArtist !== false, bars: objectOr(w?.props)?.bars ?? 34 };
-    for (const m of members) props[LEGACY_PART[m.type]] = anyShown ? shown(m) : true;
-    const out = { id: nextId(), type: "trackInfo", visible: anyShown, props };
-    const frame = members.map((m) => objectOr(m.frame)).find(Boolean);
-    if (frame) out.frame = { ...frame };
-    const name = members.map((m) => cleanName(m.name)).find(Boolean);
-    if (name) out.name = name;
-    return out;
-  };
-  const out = [];
-  layers.forEach((l, i) => {
-    if (!isLegacy(l)) out.push(l);
-    else if (i === at) out.push(make(["title", "albumArt", "waveform"].map(of).filter(Boolean)));
-    else if (first[l.type] !== i) out.push(make([l]));
-  });
-  return out;
-}
-
-/** What is stored: a deep copy with nothing but the scene's own fields. */
+/** What is stored: a deep copy, the scene's own fields over what an older
+ * build left in the record (kept untouched). */
 export function serializeScene(scene) {
-  return JSON.parse(JSON.stringify({ v: SCENE_VERSION, aspect: scene.aspect, trim: scene.trim ?? null, layers: scene.layers }));
-}
-
-function cleanName(name) {
-  return typeof name === "string" ? name.trim().slice(0, NAME_MAX) : "";
-}
-
-const clampNum = (v, lo, hi, dflt) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : dflt;
-};
-
-/** A layer's props held to what each field can be. */
-function cleanProps(type, props) {
-  const p = { ...props };
-  if (type === "text") {
-    p.text = typeof p.text === "string" ? p.text.slice(0, 200) : "";
-    p.size = clampNum(p.size, TEXT_SIZE_MIN, TEXT_SIZE_MAX, 1);
-    if (!TEXT_COLORS.includes(p.color)) p.color = "white";
-  } else if (type === "lyrics") {
-    p.lines = Math.round(clampNum(p.lines, LYRIC_LINES_MIN, LYRIC_LINES_MAX, 5));
-  } else if (type === "lowerThird") {
-    p.handle = typeof p.handle === "string" ? p.handle.slice(0, 60) : "";
-    p.subtitle = typeof p.subtitle === "string" ? p.subtitle.slice(0, 60) : "";
-  } else if (type === "camera") {
-    p.mirror = p.mirror === true;
-  } else if (type === "image" || type === "background") {
-    p.imageKey = typeof p.imageKey === "string" && /^[a-z0-9:_-]{0,80}$/i.test(p.imageKey) ? p.imageKey : "";
-  } else if (type === "trackInfo") {
-    for (const part of TRACK_PARTS) p[part] = p[part] !== false;
-    p.showArtist = p.showArtist !== false;
-    p.bars = Math.round(clampNum(p.bars, BARS_MIN, BARS_MAX, 34));
-  }
-  return p;
-}
-
-/** Whether `layer` is drawn as a square: a Track Info with the album art
- * and nothing else (its card shrinks to the art; the editor's outline and
- * handles follow). */
-export function isSquareLayer(layer) {
-  const p = layer?.props;
-  return layer?.type === "trackInfo" && p?.art !== false && p?.title === false && p?.waveform === false;
+  return JSON.parse(JSON.stringify({ ...(scene.kept || {}), v: SCENE_VERSION, aspect: scene.aspect, trim: scene.trim ?? null }));
 }
 
 function cleanTrim(trim) {
@@ -351,226 +110,6 @@ function cleanTrim(trim) {
   const b = Number(trim?.out);
   if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b - a < TRIM_MIN) return null;
   return { in: a, out: b };
-}
-
-// ── Editing (every function returns a new scene; `locked` is the recording
-// lock, phase 4: while it holds, nothing is added, deleted or reordered) ──
-
-const layerOf = (scene, id) => scene.layers.find((l) => l.id === id) || null;
-const replaceLayer = (scene, id, fn) => ({ ...scene, layers: scene.layers.map((l) => (l.id === id ? fn(l) : l)) });
-
-/** What may be done to `layer` now. */
-export function layerRules(layer, { locked = false } = {}) {
-  const fixed = FIXED_TYPES.has(layer?.type);
-  return {
-    canDelete: Boolean(layer) && !fixed && !locked,
-    canDuplicate: Boolean(layer) && !fixed && !locked,
-    canReorder: Boolean(layer) && !locked,
-    canAdd: !locked,
-  };
-}
-
-/** A layer id not yet in `scene`: the type, then -2, -3 and so on. */
-export function newLayerId(scene, type) {
-  const ids = new Set(scene.layers.map((l) => l.id));
-  if (!ids.has(type)) return type;
-  for (let n = 2; ; n++) if (!ids.has(`${type}-${n}`)) return `${type}-${n}`;
-}
-
-const isFullFrame = (f) => f.w >= 0.99 && f.h >= 0.99;
-
-/** Whether two frames share any area (touching edges do not count). */
-export function framesOverlap(a, b) {
-  const e = 1e-9;
-  return a.x < b.x + b.w - e && b.x < a.x + a.w - e && a.y < b.y + b.h - e && b.y < a.y + a.h - e;
-}
-
-/**
- * Where a new frame of `want`'s size goes in `scene`: `want` itself when it
- * covers no other overlay, else the free spot inside the 5% safe inset
- * nearest to it (a 2.5% grid), else `want` moved 2% per layer of `type`
- * already there (no free spot: overlapping cannot be avoided). Full-frame
- * layers (camera, background) do not count.
- */
-export function freeSpot(scene, want, type) {
-  const others = scene.layers.map((l) => l.frame).filter((f) => !isFullFrame(f));
-  const free = (f) => !others.some((o) => framesOverlap(f, o));
-  const start = clampFrame(want);
-  if (free(start)) return start;
-  const step = 0.025;
-  const spots = [];
-  for (let y = 0.05; y + start.h <= 0.95 + 1e-9; y += step) {
-    for (let x = 0.05; x + start.w <= 0.95 + 1e-9; x += step) {
-      spots.push({ x, y, w: start.w, h: start.h });
-    }
-  }
-  spots.sort((a, b) => Math.hypot(a.x - start.x, a.y - start.y) - Math.hypot(b.x - start.x, b.y - start.y));
-  const spot = spots.find(free);
-  if (spot) return clampFrame(spot);
-  const k = scene.layers.filter((l) => l.type === type).length * 0.02;
-  return clampFrame({ ...start, x: start.x + k, y: start.y + k });
-}
-
-/** `scene` with a new layer of `type` in front, at its default place, or the
- * nearest free spot when that is taken (freeSpot). */
-export function addLayer(scene, type, { locked = false, id = null } = {}) {
-  if (locked || !ADDABLE_TYPES.includes(type)) return scene;
-  const layer = {
-    id: id || newLayerId(scene, type),
-    type,
-    visible: true,
-    frame: freeSpot(scene, defaultFrame(type, scene.aspect), type),
-    props: DEFAULT_PROPS[type](),
-  };
-  return { ...scene, layers: [...scene.layers, layer] };
-}
-
-/** A copy of layer `id` just in front of it, in the free spot nearest to it
- * (freeSpot; when there is none, moved down and right 2%). */
-export function duplicateLayer(scene, id, { locked = false } = {}) {
-  const i = scene.layers.findIndex((l) => l.id === id);
-  if (i < 0 || !layerRules(scene.layers[i], { locked }).canDuplicate) return scene;
-  const src = scene.layers[i];
-  const copy = JSON.parse(JSON.stringify(src));
-  copy.id = newLayerId(scene, src.type);
-  copy.frame = freeSpot(scene, src.frame, src.type);
-  const layers = [...scene.layers];
-  layers.splice(i + 1, 0, copy);
-  return { ...scene, layers };
-}
-
-export function deleteLayer(scene, id, { locked = false } = {}) {
-  const layer = layerOf(scene, id);
-  if (!layer || !layerRules(layer, { locked }).canDelete) return scene;
-  return { ...scene, layers: scene.layers.filter((l) => l.id !== id) };
-}
-
-/** `scene` with layer `id` moved to array index `to` (0 = at the back). */
-export function reorderLayer(scene, id, to, { locked = false } = {}) {
-  const from = scene.layers.findIndex((l) => l.id === id);
-  if (from < 0 || locked) return scene;
-  const at = Math.max(0, Math.min(scene.layers.length - 1, Math.round(to)));
-  if (at === from) return scene;
-  const layers = [...scene.layers];
-  const [l] = layers.splice(from, 1);
-  layers.splice(at, 0, l);
-  return { ...scene, layers };
-}
-
-/** A name of its own (empty goes back to the type's name). */
-export function renameLayer(scene, id, name) {
-  if (!layerOf(scene, id)) return scene;
-  const n = cleanName(name);
-  return replaceLayer(scene, id, (l) => {
-    const next = { ...l };
-    if (n) next.name = n;
-    else delete next.name;
-    return next;
-  });
-}
-
-export function setLayerProps(scene, id, patch) {
-  if (!layerOf(scene, id)) return scene;
-  return replaceLayer(scene, id, (l) => ({ ...l, props: cleanProps(l.type, { ...l.props, ...patch }) }));
-}
-
-/** `scene` with layer `id` at `frame` (clamped inside the output). */
-export function setLayerFrame(scene, id, frame) {
-  if (!layerOf(scene, id)) return scene;
-  return replaceLayer(scene, id, (l) => ({ ...l, frame: clampFrame(frame) }));
-}
-
-/** Layer `id` moved by dx, dy (fractions; the arrow keys use 0.01 and 0.05). */
-export function nudgeLayer(scene, id, dx, dy) {
-  const layer = layerOf(scene, id);
-  if (!layer) return scene;
-  return setLayerFrame(scene, id, { ...layer.frame, x: layer.frame.x + dx, y: layer.frame.y + dy });
-}
-
-// ── Move, resize and snapping (fractions of the output) ──
-
-// What a dragged edge or centre snaps to: the edges, the safe zones (5% and
-// 10% in) and the centre line.
-export const SNAP_LINES = Object.freeze([0, 0.05, 0.1, 0.5, 0.9, 0.95, 1]);
-
-/** The snap line nearest `v` within `threshold`, or null. */
-export function nearestLine(v, threshold, lines = SNAP_LINES) {
-  let best = null;
-  let dist = threshold;
-  for (const l of lines) {
-    const d = Math.abs(v - l);
-    if (d <= dist) {
-      dist = d;
-      best = l;
-    }
-  }
-  return best;
-}
-
-function snapAxis(pos, size, th) {
-  let best = null;
-  for (const [edge, off] of [[pos, 0], [pos + size, size], [pos + size / 2, size / 2]]) {
-    const line = nearestLine(edge, th);
-    if (line === null) continue;
-    const d = Math.abs(edge - line);
-    if (!best || d < best.d) best = { d, pos: line - off };
-  }
-  return best ? best.pos : pos;
-}
-
-/**
- * `start` moved by dx, dy, then snapped: its left, right or centre to a line
- * on x, its top, bottom or middle on y, each within its threshold
- * (fractions: tx across, ty down). Clamped inside the output.
- */
-export function moveFrame(start, dx, dy, { snap = true, tx = 0.01, ty = 0.01 } = {}) {
-  let x = start.x + dx;
-  let y = start.y + dy;
-  if (snap) {
-    x = snapAxis(x, start.w, tx);
-    y = snapAxis(y, start.h, ty);
-  }
-  return clampFrame({ x, y, w: start.w, h: start.h });
-}
-
-const MIN_SIZE = 0.03;
-
-/**
- * `start` resized from a corner ("nw", "ne", "sw", "se") by dx, dy; the
- * opposite corner stays put. The moving edges snap; at least 3% wide and
- * high; held inside the output.
- */
-export function resizeFrame(start, corner, dx, dy, { snap = true, tx = 0.01, ty = 0.01 } = {}) {
-  let left = start.x;
-  let top = start.y;
-  let right = start.x + start.w;
-  let bottom = start.y + start.h;
-  const west = corner.includes("w");
-  const north = corner.includes("n");
-  if (west) left += dx; else right += dx;
-  if (north) top += dy; else bottom += dy;
-  if (snap) {
-    if (west) left = nearestLine(left, tx) ?? left; else right = nearestLine(right, tx) ?? right;
-    if (north) top = nearestLine(top, ty) ?? top; else bottom = nearestLine(bottom, ty) ?? bottom;
-  }
-  left = Math.max(0, left);
-  top = Math.max(0, top);
-  right = Math.min(1, right);
-  bottom = Math.min(1, bottom);
-  if (west) left = Math.min(left, right - MIN_SIZE); else right = Math.max(right, left + MIN_SIZE);
-  if (north) top = Math.min(top, bottom - MIN_SIZE); else bottom = Math.max(bottom, top + MIN_SIZE);
-  return clampFrame({ x: left, y: top, w: right - left, h: bottom - top });
-}
-
-/** The front-most shown layer whose frame holds the point (fractions), or null. */
-export function layerAt(scene, x, y) {
-  for (let i = scene.layers.length - 1; i >= 0; i--) {
-    const l = scene.layers[i];
-    if (!l.visible) continue;
-    const f = l.frame;
-    if (x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h) return l;
-  }
-  return null;
 }
 
 // ── Undo history ──
@@ -641,26 +180,6 @@ export function withTrimPoint(scene, which, t, duration) {
   else b = Math.min(d, Math.max(Number(t) || 0, a + TRIM_MIN));
   const trim = a <= 1e-6 && b >= d - 1e-6 ? null : { in: a, out: b };
   return { ...scene, trim };
-}
-
-// ── Lyrics in view ──
-
-/**
- * The lyric lines the lyrics layer shows at `t`: `n` lines from the one
- * being sung, as { text, role } with role "current" (drawn in the accent),
- * "next" (the two after it, white) or "later" (dim). Before the first line
- * the first `n` lines are shown, none current.
- */
-export function lyricWindow(lines, t, n = 5) {
-  if (!lines?.length) return [];
-  const i = currentLineIndex(lines, t);
-  const start = Math.max(0, i);
-  const out = [];
-  for (let j = 0; j < n && start + j < lines.length; j++) {
-    const role = i < 0 ? (j < 3 ? "next" : "later") : j === 0 ? "current" : j < 3 ? "next" : "later";
-    out.push({ text: lines[start + j].text, role });
-  }
-  return out;
 }
 
 // ── Waveform bars ──
@@ -757,35 +276,3 @@ export function ticksEvery(duration, step) {
   }
   return out;
 }
-
-// ── Pictures (Image and Background Image layers) ──
-
-export const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
-export const IMAGE_TYPES = Object.freeze(["image/png", "image/jpeg", "image/webp"]);
-
-/** The size a picture is stored at: no wider than `maxW` (the output's
- * width), the aspect kept, never enlarged. */
-export function downscaleSize(w, h, maxW) {
-  const width = Math.max(1, Math.round(Number(w) || 1));
-  const height = Math.max(1, Math.round(Number(h) || 1));
-  const max = Math.max(1, Math.round(Number(maxW) || width));
-  if (width <= max) return { width, height };
-  return { width: max, height: Math.max(1, Math.round((height * max) / width)) };
-}
-
-/**
- * Where a `iw` x `ih` picture lands in a `bw` x `bh` box: "cover" fills it
- * (cut at the sides or top and bottom), "contain" fits inside it (bars
- * left as they are). { x, y, w, h } relative to the box.
- */
-export function fitRect(iw, ih, bw, bh, mode = "contain") {
-  if (!(iw > 0 && ih > 0 && bw > 0 && bh > 0)) return { x: 0, y: 0, w: 0, h: 0 };
-  const s = mode === "cover" ? Math.max(bw / iw, bh / ih) : Math.min(bw / iw, bh / ih);
-  const w = iw * s;
-  const h = ih * s;
-  return { x: (bw - w) / 2, y: (bh - h) / 2, w, h };
-}
-
-/** The store key of a song's layer picture; `stamp` makes each chosen
- * picture its own key, so undo brings the one before back. */
-export const imageKey = (jobId, layerId, stamp = "") => [jobId, layerId, stamp].filter(Boolean).join(":").slice(0, 80);

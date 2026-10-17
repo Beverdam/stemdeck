@@ -164,21 +164,20 @@ export function videoLaneState({ lane, take, film }) {
 }
 
 /** The note the Video lane writes over the take for `state` and how the
- * take was filmed (`camera`: "on", "off" (Video Source: No camera),
- * "hidden" (the Camera layer hidden), or null when unknown): an i18n key,
- * or "" for none. */
+ * take was filmed (`camera`: "on", "off" (Video Source: No camera), or null
+ * when unknown): an i18n key, or "" for none. A take of an older build
+ * filmed with its Camera layer hidden ("hidden") had no camera picture
+ * either, and says the same as "off". */
 export function videoLaneNote(state, camera) {
   if (state === "noVideo") return "streamer.lane.noVideo";
   if (state === "failed") return "streamer.lane.filmFailed";
-  if (state === "film" && camera === "off") return "streamer.lane.cameraOff";
-  if (state === "film" && camera === "hidden") return "streamer.lane.cameraHidden";
+  if (state === "film" && (camera === "off" || camera === "hidden")) return "streamer.lane.cameraOff";
   return "";
 }
 
-/** How a take films the scene: "hidden" (no visible Camera layer), "off"
- * (no camera open: Video Source "No camera", or it failed) or "on". */
-export function cameraUse({ layerVisible, live }) {
-  if (!layerVisible) return "hidden";
+/** How a take films the camera: "on", or "off" (no camera open: Video
+ * Source "No camera", or it failed). */
+export function cameraUse({ live }) {
   return live ? "on" : "off";
 }
 

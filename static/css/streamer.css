@@ -3,7 +3,7 @@
    the design's; colours are the app's tokens where it has one (--accent,
    --fg, --muted), the design's own otherwise, named once below.
    As in Karaoke, the app's footer is hidden while the view is open and the
-   layer covers its place; Stop and Play / Pause sit in the timeline strip.
+   layer covers its place; Stop and Play / Pause sit in the mode header.
    The layer's width depends on the
    sidebar, not the window, so the narrow layouts are container queries on
    the layer itself. */
@@ -42,7 +42,7 @@
 }
 .streamer[hidden] { display: none; }
 /* The footer's transport, speed, key and click are not Streamer's: Stop and
-   Play / Pause in the timeline strip stand in for what it needs. !important
+   Play / Pause in the mode header stand in for what it needs. !important
    because daw.css forces the footer to display: flex !important. */
 html.streamer-open .daw-footer { display: none !important; }
 .streamer h2, .streamer h3 { margin: 0; }
@@ -58,18 +58,15 @@ html.streamer-open .daw-footer { display: none !important; }
 }
 
 /* ── Centre column ──
-   Every control fits the window without scrolling: the preview is the
-   elastic part. Its width comes from the Scene Builder's own size (the
-   builder is a size container, so a mode header that wraps is counted), held
-   by the room the layers need beside it and by the height the strip under
-   it and the timeline's smallest height leave (the --sm-* heights below,
-   tighter in a short window). Under 360 px of preview the column scrolls
-   instead of squeezing it further. */
+   Every control fits the window without scrolling: the live window is the
+   elastic part. Its width comes from the builder's own size (the builder is
+   a size container, so a mode header that wraps is counted), held by the
+   height the strip under it and the timeline's smallest height leave (the
+   --sm-* heights below, tighter in a short window). Under 360 px of window
+   the column scrolls instead of squeezing it further. */
 .sm-center {
-  /* The Scene Layers panel: thumbnail, two lines of text, switch, menu. */
-  --sm-layers-w: 320px;
   --sm-gap: 8px;
-  --sm-head-h: 96px;
+  --sm-head-h: 56px;
   --sm-head-pad: 10px 12px;
   --sm-ctl-h: 36px;
   --sm-strip-h: 40px;
@@ -94,7 +91,7 @@ html.streamer-open .daw-footer { display: none !important; }
   overflow-y: auto;
 }
 
-/* Mode header and tabs */
+/* Mode header: title, aspect, Safe Zones, Output (narrow), Stop and Play */
 .sm-head {
   flex: none;
   height: var(--sm-head-h);
@@ -137,23 +134,6 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-ib:hover { border-color: #3a4552; color: #fff; }
 .sm-output-btn { display: none; width: auto; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
 .sm-output-btn[aria-expanded="true"] { border-color: var(--sm-yellow); color: var(--sm-yellow); }
-
-.sm-tabs-row { display: flex; align-items: center; gap: 8px; }
-.sm-tabs { display: flex; gap: 8px; min-width: 0; }
-.sm-tab {
-  height: var(--sm-ctl-h);
-  padding: 0 22px;
-  box-sizing: border-box;
-  border: 1px solid var(--sm-edge);
-  border-radius: 7px;
-  background: var(--sm-panel);
-  color: var(--sm-text-2);
-  font-size: 13.5px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.sm-tab:hover { border-color: #3a4552; color: #fff; }
-.sm-tab[aria-selected="true"] { border-color: var(--sm-yellow); background: var(--sm-yellow); color: var(--sm-on-yellow); }
 
 /* Selects */
 .sm-select { position: relative; min-width: 0; }
@@ -221,7 +201,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-safe { gap: 10px; height: 34px; padding: 0 6px; color: var(--sm-text-2); white-space: nowrap; }
 .sm-safe .sm-switch { --sm-sw-w: 38px; --sm-sw-h: 20px; }
 
-/* ── Scene Builder ── */
+/* ── The windows, the strip and the timeline ── */
 .sm-builder {
   flex: 1;
   /* A 360 px preview, the strip under it and the timeline at its least. */
@@ -232,25 +212,24 @@ html.streamer-open .daw-footer { display: none !important; }
   container-type: size;
 }
 .sm-builder[hidden] { display: none; }
-.sm-row { flex: none; display: flex; gap: 12px; }
+/* The windows' column, centred over the timeline. */
+.sm-row { flex: none; display: flex; gap: 12px; justify-content: center; }
 .sm-preview-col {
   flex: none;
-  /* Everything the layers panel leaves, as long as the preview's 16:9
-     height still leaves the strip under it and the timeline's smallest
-     height (cqw and cqh are the Scene Builder's); never under 360 px. */
-  width: max(360px, min(100cqw - var(--sm-layers-w) - 12px, (100cqh - var(--sm-col-gap) - var(--sm-strip-h) - var(--sm-gap) - var(--sm-tl-min)) * 16 / 9));
+  /* The whole width, as long as the window's 16:9 height still leaves the
+     strip under it and the timeline's smallest height (cqw and cqh are the
+     builder's); never under 360 px. */
+  width: max(360px, min(100cqw, (100cqh - var(--sm-col-gap) - var(--sm-strip-h) - var(--sm-gap) - var(--sm-tl-min)) * 16 / 9));
   display: flex;
   flex-direction: column;
   gap: var(--sm-col-gap);
 }
 /* Room for the live window and the take review side by side (tiers a and
-   b, reviewModel.reviewTier, set from the Scene Builder's size): the column
+   b, reviewModel.reviewTier, set from the builder's size): the column
    holds two windows of --sm-win-w. Tier c keeps one window, sized as above. */
 .sm-builder:is([data-tier="a"], [data-tier="b"]) .sm-preview-col { width: calc(2 * var(--sm-win-w, 360px) + 12px); }
-/* Scene Layers sits at the right edge of the column, whatever room is left. */
-.sm-layers { margin-left: auto; }
 
-/* The windows: live (the scene as it is now) and review (the recorded take). */
+/* The windows: live (the camera as it is now) and review (the recorded take). */
 .sm-screens { position: relative; display: flex; gap: 12px; }
 .sm-screens > .sm-preview, .sm-screens > .sm-review { flex: 1 1 0; min-width: 0; }
 /* One window: the review only while it shows the take, in the live one's place. */
@@ -259,7 +238,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-screens[data-tier="c"][data-shows="take"] > .sm-review { display: block; }
 .sm-screens[data-tier="c"][data-shows="take"] > .sm-preview { display: none; }
 
-/* The preview: 16:9 on screen whatever the scene's aspect (pillarboxed). */
+/* The live window: 16:9 on screen whatever the scene's aspect (pillarboxed). */
 .sm-preview, .sm-review {
   position: relative;
   width: 100%;
@@ -446,23 +425,6 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-clock-now { font: 700 18px var(--font-mono); }
 .sm-clock-dur { font: 500 13px var(--font-mono); color: var(--sm-faint); }
 
-/* Scene Layers: as tall as the preview column beside it (its own size
-   does not count), the list scrolling inside. */
-.sm-layers {
-  /* Its own width, a little more when the preview is held by the height. */
-  flex: 1 1 var(--sm-layers-w);
-  max-width: 420px;
-  min-width: 0;
-  contain: size;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 10px 10px;
-  background: var(--sm-panel);
-}
-/* A long title and button (French, German) wrap to two lines, never cut. */
-.sm-layers-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 8px; padding-left: 4px; }
-.sm-layers-title { font-size: 16px; font-weight: 600; white-space: nowrap; }
 .sm-primary {
   height: 34px;
   border: 0;
@@ -480,101 +442,6 @@ html.streamer-open .daw-footer { display: none !important; }
   cursor: pointer;
 }
 .sm-primary:hover { background: #ffc24a; }
-.sm-layer-list {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.sm-layer {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 58px;
-  box-sizing: border-box;
-  padding: 6px 6px 6px 0;
-  border: 1px solid var(--sm-line);
-  border-radius: 8px;
-  background: var(--sm-row);
-}
-.sm-layer:hover { border-color: #3a4552; }
-.sm-layer.selected { border-color: #b8892a; box-shadow: 0 0 0 .5px #b8892a; background: rgba(245, 183, 42, .05); }
-.sm-layer-grip {
-  flex: none;
-  width: 22px;
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-right: 2px;
-  border-right: 1px solid var(--sm-line);
-  color: var(--sm-muted);
-}
-.sm-layer-pick {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.sm-layer-thumb {
-  flex: none;
-  width: 44px;
-  height: 44px;
-  box-sizing: border-box;
-  border: 1px solid var(--sm-edge);
-  border-radius: 6px;
-  overflow: hidden;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: #141b24;
-  color: var(--sm-text);
-}
-.sm-thumb-trackInfo { background: radial-gradient(circle at 30% 30%, #d98a3c, #5b2a14 60%, #1c0f09); }
-.sm-thumb-background { color: var(--sm-icon); }
-.sm-thumb-art { width: 100%; height: 100%; object-fit: cover; }
-.sm-thumb-art[hidden] { display: none; }
-.sm-layer.off .sm-layer-thumb { opacity: .55; }
-.sm-layer-texts { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.sm-layer-name { font-size: 13.5px; font-weight: 600; color: var(--sm-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sm-layer.off .sm-layer-name { color: #7e8894; }
-.sm-layer-sub {
-  font-size: 11.5px;
-  line-height: 1.3;
-  color: var(--sm-muted);
-  white-space: pre-line;
-  overflow: hidden;
-  max-height: 30px;
-  overflow-wrap: anywhere;
-}
-.sm-layer-switch { flex: none; margin-left: 4px; padding: 0; }
-.sm-layer-kebab {
-  flex: none;
-  width: 24px;
-  height: 32px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--sm-icon);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-
 /* ── Take timeline ──
    One scrolling grid: a label column that stays put (sticky, over a mask)
    and the song's column, as wide as the zoom makes it (--sm-tl-w, set by
@@ -919,130 +786,9 @@ html.streamer-open .daw-footer { display: none !important; }
 }
 .sm-tl-playhead-line { position: absolute; top: 24px; bottom: 0; left: -1px; width: 2px; background: var(--sm-red); }
 
-/* ── Editing in the preview ── */
-.sm-preview { cursor: default; touch-action: none; }
-.sm-preview:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.sm-selbox { position: absolute; cursor: move; z-index: 1; }
-.sm-selbox[hidden] { display: none; }
-.sm-handle {
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  margin: -5px 0 0 -5px;
-  box-sizing: border-box;
-  border: 1.5px solid var(--sm-yellow);
-  border-radius: 2px;
-  background: #0b0f14;
-}
-.sm-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
-.sm-handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
-.sm-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
-.sm-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
 .sm-rec { z-index: 2; }
 
-/* ── Layer rows: reorder, rename ── */
-.sm-layer-grip { cursor: grab; touch-action: none; }
-.sm-layer-grip.disabled { cursor: default; opacity: .4; }
-.sm-layer.dragging { opacity: .6; }
-.sm-layer.drop-before { box-shadow: inset 0 2px 0 var(--sm-yellow); }
-.sm-layer.drop-after { box-shadow: inset 0 -2px 0 var(--sm-yellow); }
-.sm-rename {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid #6b5317;
-  border-radius: 5px;
-  background: var(--sm-field);
-  color: var(--sm-text);
-  font: 600 13px var(--font-sans);
-  padding: 2px 6px;
-  outline: none;
-}
-.streamer.sm-locked .sm-add, .sm-add:disabled { opacity: .45; cursor: default; }
-
-/* ── Menus (a layer's kebab, + Add Layer) ── */
-.sm-menu {
-  position: fixed;
-  z-index: 70;
-  min-width: 180px;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--panel);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
-  font-family: var(--font-sans);
-}
-.sm-menu-item {
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-2);
-  font: 500 13px var(--font-sans);
-  text-align: left;
-  cursor: pointer;
-}
-.sm-menu-item:hover:not([aria-disabled="true"]), .sm-menu-item:focus-visible { background: var(--panel-2); color: var(--fg); outline: none; }
-.sm-menu-item[aria-disabled="true"] { opacity: .4; cursor: default; }
-
-/* ── Edit properties ── */
-.sm-props {
-  position: absolute;
-  z-index: 8;
-  width: 260px;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: var(--panel);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
-}
-.sm-props-head { font-size: 14px; font-weight: 600; color: var(--sm-text); overflow-wrap: anywhere; }
-.sm-props-body { display: flex; flex-direction: column; gap: 10px; }
-.sm-props-field { display: flex; flex-direction: column; gap: 5px; }
-.sm-props-hint { margin: 0; font-size: 12px; color: var(--sm-muted); line-height: 1.4; }
-/* Track Info: the artist switch sits under the title one, and rests while the title is off. */
-.sm-props-sub { margin-left: 22px; }
-.sm-props-switch:disabled { opacity: .45; cursor: default; }
-.sm-props-done { align-self: flex-end; height: 32px; }
-.sm-props-picture { display: flex; flex-direction: column; gap: 8px; }
-.sm-props-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.sm-props-choose { height: 32px; }
-.sm-props-choose:disabled { opacity: .55; cursor: progress; }
-.sm-props-remove { width: auto; height: 32px; padding: 0 10px; font-size: 12.5px; font-weight: 600; }
-.sm-props-remove[hidden] { display: none; }
-.sm-range { width: 100%; accent-color: var(--sm-yellow); }
-.sm-props-colors { display: flex; gap: 8px; }
-.sm-swatch { width: 24px; height: 24px; padding: 0; border: 2px solid var(--sm-edge); border-radius: 50%; cursor: pointer; }
-.sm-swatch[aria-checked="true"] { border-color: var(--fg); box-shadow: 0 0 0 2px var(--sm-yellow); }
-.sm-swatch-white { background: #ffffff; }
-.sm-swatch-yellow { background: var(--sm-yellow); }
-.sm-swatch-red { background: #ef4444; }
-.sm-swatch-blue { background: #6ea8ff; }
-.sm-swatch-green { background: #22c55e; }
-
-/* Templates: not there yet. */
-.sm-other {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  border: 1px dashed var(--sm-edge);
-  border-radius: 10px;
-  color: var(--sm-muted);
-  font-size: 13px;
-}
-.sm-other[hidden] { display: none; }
-.sm-other-title { font-size: 16px; font-weight: 600; color: var(--sm-text-2); }
-
-/* ── Right panel: Recording & Output, YouTube ── */
+/* ── Right panel: Recording & Output ── */
 .sm-side {
   flex: none;
   width: 300px;
@@ -1064,7 +810,7 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-side .sm-sel-caret { top: 10px; }
 .sm-side .sm-sel-lead { top: 7px; }
 .sm-flabel { font-size: 13px; font-weight: 500; color: var(--sm-text-2); }
-.sm-flabel + .sm-select, .sm-flabel + .sm-inp { margin-top: -3px; }
+.sm-flabel + .sm-select { margin-top: -3px; }
 /* The input meter: two rows of 36 segments (10 px in all), green to 70%,
    yellow to 86%, red above, as the design's. */
 .sm-meter-row { display: flex; align-items: center; gap: 10px; }
@@ -1123,18 +869,6 @@ html.streamer-open .daw-footer { display: none !important; }
 .sm-out-switches .sm-switch-row { gap: 12px; padding: 1px 0; font-size: 12.5px; line-height: 1.3; }
 .sm-out-switches .sm-switch { --sm-sw-w: 36px; --sm-sw-h: 20px; }
 
-.sm-inp {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--sm-edge);
-  border-radius: 8px;
-  background: var(--sm-field);
-  color: var(--sm-text);
-  font: 400 13px var(--font-sans);
-  padding: 8px 12px;
-  outline: none;
-}
-.sm-inp:focus { border-color: #6b5317; }
 .sm-scrim { display: none; }
 
 /* No song open. */
@@ -1153,7 +887,7 @@ html.streamer-open .daw-footer { display: none !important; }
 }
 .sm-no-track[hidden] { display: none; }
 
-/* A note beside the control that cannot do this yet (or the rail button). */
+/* A short note beside a control (or the Mode button). */
 .sm-note {
   position: fixed;
   z-index: 300;
@@ -1176,7 +910,7 @@ html.streamer-open .daw-footer { display: none !important; }
 @container streamer (max-height: 760px) {
   .sm-center {
     --sm-gap: 6px;
-    --sm-head-h: 84px;
+    --sm-head-h: 46px;
     --sm-head-pad: 7px 12px;
     --sm-ctl-h: 32px;
     --sm-strip-h: 34px;
@@ -1196,10 +930,6 @@ html.streamer-open .daw-footer { display: none !important; }
   .sm-safe { height: 32px; }
   .sm-strip-title { font-size: 14px; }
   .sm-clock-now { font-size: 16px; }
-  .sm-layers { gap: 8px; padding-top: 10px; }
-  .sm-primary.sm-add { height: 32px; }
-  .sm-layer { min-height: 54px; padding-top: 5px; padding-bottom: 5px; }
-  .sm-layer-thumb { width: 40px; height: 40px; }
 }
 
 /* Under 600 px of height (a very short window): tighter still; below this
@@ -1207,7 +937,7 @@ html.streamer-open .daw-footer { display: none !important; }
 @container streamer (max-height: 600px) {
   .sm-center {
     --sm-gap: 5px;
-    --sm-head-h: 80px;
+    --sm-head-h: 44px;
     --sm-head-pad: 6px 12px;
     --sm-strip-h: 32px;
     --sm-video-h: 26px;
@@ -1217,19 +947,14 @@ html.streamer-open .daw-footer { display: none !important; }
 }
 
 /* ── Narrower workspaces ── */
-@container streamer (max-width: 1399px) {
-  .sm-center { --sm-layers-w: 290px; }
-}
 /* 1000 to 1199: the output panel is a drawer, opened by Output. */
 @container streamer (max-width: 1199px) {
-  /* The right panel is a drawer here: the layers get their full width back. */
-  .sm-center { --sm-layers-w: 320px; }
   .sm-output-btn { display: inline-flex; }
   /* Below the mode header, so Output stays in reach to close it. It scrolls
      only when the window is too short for it, Export staying in view. */
   .sm-side {
     position: absolute;
-    top: var(--sm-drawer-top, 114px);
+    top: var(--sm-drawer-top, 74px);
     right: 0;
     bottom: 0;
     z-index: 6;
@@ -1249,42 +974,35 @@ html.streamer-open .daw-footer { display: none !important; }
   .sm-side .sm-out-body > :not(.sm-flabel, .sm-select) { grid-column: 1 / -1; }
   .sm-side .sm-out-body > .sm-flabel + .sm-select { margin-top: 0; }
   .sm-side .sm-out-body > .sm-export { align-self: end; }
-  .sm-drawer-open .sm-scrim { display: block; position: absolute; inset: var(--sm-drawer-top, 114px) 0 0; z-index: 5; background: rgba(0, 0, 0, .35); }
+  .sm-drawer-open .sm-scrim { display: block; position: absolute; inset: var(--sm-drawer-top, 74px) 0 0; z-index: 5; background: rgba(0, 0, 0, .35); }
 }
-/* Under 1000: the layers stay beside the preview, narrower; the header
-   wraps rather than cutting Safe Zones, settings and Output. */
+/* Under 1000: the header wraps rather than cutting Safe Zones, Output,
+   Stop and Play. */
 @container streamer (max-width: 999px) {
-  .sm-center { --sm-layers-w: 280px; }
-  .sm-head, .sm-tl, .sm-layers { min-width: 0; }
+  .sm-head, .sm-tl { min-width: 0; }
   .sm-tl { --sm-label-w: 56px; }
   .sm-tl-label { gap: 4px; padding-left: 6px; font-size: 11.5px; }
   .sm-tl-label > svg { display: none; }
   .sm-head { height: auto; gap: 6px; }
   .sm-head-row { height: auto; min-height: var(--sm-ctl-h); flex-wrap: wrap; gap: 6px 8px; }
   .sm-head-sep, .sm-head-sub { display: none; }
-  .sm-tabs-row { flex-wrap: wrap; row-gap: 6px; }
-  .sm-tab { padding: 0 14px; white-space: nowrap; }
   .sm-aspect { width: 150px; }
   /* I play and the zoom share the timeline's top row: the zoom keeps its
      buttons, its slider goes. */
   .sm-part-select { width: 140px; }
   .sm-zoom-track { display: none; }
 }
-/* Under 680 (no room for a 360 px preview and the layers beside it): the
-   layers go under the preview, and the column scrolls. */
+/* Under 680: the column scrolls. */
 @container streamer (max-width: 679px) {
-  /* The header, the layers and the timeline fit any width (they wrap or
-     scroll themselves); only the preview keeps its 480 px, so a workspace
+  /* The header and the timeline fit any width (they wrap or scroll
+     themselves); only the live window keeps its 480 px, so a workspace
      narrower than that scrolls sideways under the header, never squeezing
-     the preview or hiding a control. */
+     the window or hiding a control. */
   .sm-center { overflow: auto; }
   .sm-builder { flex: none; min-height: 0; container-type: inline-size; }
-  .sm-row { flex-direction: column; }
-  /* cqw is the Scene Builder's width here. */
+  .sm-row { flex-direction: column; justify-content: flex-start; }
+  /* cqw is the builder's width here. */
   .sm-preview-col { width: clamp(480px, min(100cqw, 716px), 716px); }
-  /* Five rows in view, the rest scroll. */
-  .sm-layers { flex: none; max-width: none; contain: none; margin-left: 0; }
-  .sm-layer-list { flex: none; max-height: calc(5 * 62px + 4 * 5px); }
   .sm-tl { flex: none; height: 217px; }
 }
 

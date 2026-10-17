@@ -400,14 +400,6 @@ TAKE_CAMERA_MAX_BYTES_PER_SEC = 20_000_000 // 8  # 20 Mbit/s, 2.5x the 8 Mbit/s 
 CANVAS_SHORT_SIDES = {"720": 720, "1080": 1080}
 # The click's level in a take render: the export's default (stems.py).
 RENDER_CLICK_GAIN = 0.6
-# A song's cover fetched for Streamer Mode (app/api/cover.py): its size cap,
-# the whole fetch's deadline, the hosts it may come from (a suffix on a dot
-# boundary: YouTube's i.ytimg.com, yt3.ggpht.com, lh3.googleusercontent.com
-# and SoundCloud's i1.sndcdn.com), and how long a failed fetch is not retried.
-COVER_MAX_BYTES = 5 * 1024 * 1024
-COVER_DEADLINE_SEC = 15.0
-COVER_HOSTS = ("ytimg.com", "ggpht.com", "googleusercontent.com", "sndcdn.com")
-COVER_RETRY_AFTER_SEC = 60.0
 # A backing track without one stem (app/pipeline/backing.py): a sum of five
 # WAVs, seconds for a song; the ceiling only guards a stuck disk.
 TIMEOUT_BACKING = _env_int("STEMDECK_TIMEOUT_BACKING", 120)

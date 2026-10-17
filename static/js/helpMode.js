@@ -210,23 +210,12 @@ const HELP = [
   ["#t-export-mix", "help.exportMix"],
   ["#t-export-stems", "help.exportStems"],
   ["#t-export-region", "help.exportRegion"],
-  // Performance Mode's two windows (streamer.js): the live scene and the take
-  // review, and the Live | Take switch shown when only one window fits.
+  // Performance Mode's two windows (streamer.js): the live camera and the
+  // take review, and the Live | Take switch shown when only one window fits.
   ["#streamer .sm-view-switch", "help.smViewSwitch"],
   ["#streamer .sm-review", "help.smReview"],
-  ["#streamer .sm-preview", "help.smPreview"],
-  // Performance Mode's Scene Layers panel (streamer.js). The Track Info row
-  // comes before the other rows; its part switches are in Edit properties.
-  ['#streamer .sm-layer[data-type="trackInfo"] .sm-layer-pick', "help.smTrackInfo"],
-  ["#streamer .sm-layer-pick", "help.smLayer"],
-  ["#streamer .sm-layer-switch", "help.smLayerSwitch"],
-  ["#streamer .sm-layer-kebab", "help.smLayerMenu"],
-  ["#streamer .sm-layer-grip", "help.smLayerGrip"],
-  ["#streamer .sm-add", "help.smAddLayer"],
-  ['.sm-props-switch[data-part="art"]', "help.smPartArt"],
-  ['.sm-props-switch[data-part="title"]', "help.smPartTitle"],
-  ['.sm-props-switch[data-part="artist"]', "help.smPartArtist"],
-  ['.sm-props-switch[data-part="waveform"]', "help.smPartWaveform"],
+  // Its own name: the REC badge's "READY" is the first text inside it.
+  ["#streamer .sm-preview", "help.smPreview", null, "streamer.previewHint"],
 ];
 
 // Every option in Settings, by section, in the order of the dialog's own

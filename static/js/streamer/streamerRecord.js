@@ -1,14 +1,16 @@
-// Streamer Mode's recorder: one take of the scene.
+// Streamer Mode's recorder: one take of the camera and the input.
 //
 // Reuse, not a second recording path. A Streamer take is a studio take
 // (capture/takeRecorder.js) on a track of its own ("Streamer", a video
 // track): the microphone through the same capture graph and recorder
 // worklet, the take clock, the upload in parts and /finish. The picture is
 // that take's camera part, recorded by the studio's camera recorder
-// (video/cameraRecorder.js) from the composed scene: an offscreen canvas at
-// the output size, drawn each frame by the one scene renderer without the
-// editor's overlays, and captured with canvas.captureStream(fps). So the
-// scene and the sound share the sync block the studio's camera takes use,
+// (video/cameraRecorder.js) from an offscreen canvas at the output size:
+// the camera covering it, drawn each frame by the one stage renderer
+// (stageRenderer.js) without the live window's guides, and captured with
+// canvas.captureStream(fps). The canvas fixes the output's shape and size
+// (the aspect and resolution chosen), whatever the camera delivers. So the
+// picture and the sound share the sync block the studio's camera takes use,
 // and the server renders the MP4 exactly as it renders a camera take
 // (app/api/takes.py, fit "fill").
 //
@@ -151,7 +153,7 @@ async function ensureTrack(jobId, name) {
 
 /**
  * Start a take. `capture` is Streamer's open input (streamerDevices), or
- * null for a take without a microphone (the scene and the backing only).
+ * null for a take without a microphone (the camera and the backing only).
  * `draw(ctx, width, height)` paints one output frame. Resolves
  * { ok: true } or { ok: false, reason }.
  */
@@ -163,8 +165,9 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
   set("start", { reason: null, jobId, takeId: null, session: null, hiddenWhileRecording: false, aborted: false });
   // What the take is recorded at, and the part left out of what it hears.
   rec.recordedAt = { aspect, resolution: String(settings.resolution), fps: Number(settings.fps) || 30, remove: remove || "" };
-  // How the scene was filmed: "on", "off" (Video Source: No camera) or
-  // "hidden" (the Camera layer hidden). The Video lane says so.
+  // How the take was filmed: "on" or "off" (Video Source: No camera, or no
+  // camera open). A take of an older build may say "hidden" (its Camera
+  // layer was hidden). The Video lane says so.
   if (["on", "off", "hidden"].includes(camera)) rec.recordedAt.camera = camera;
   // Closed while starting (stopRecording before a session exists): stop here.
   const goOn = () => {
@@ -188,7 +191,7 @@ export async function startRecording({ jobId, capture, settings, aspect, range, 
     const want = cap.silent ? [0] : (channels || [0]).filter((c) => c < max);
     rec.recorder = cap.createRecorder(want.length ? want : [0]);
 
-    // The picture: the scene at the output size, drawn before the first frame
+    // The picture: the camera at the output size, drawn before the first frame
     // is captured.
     const size = outputPixels(aspect, settings.resolution);
     const canvas = document.createElement("canvas");

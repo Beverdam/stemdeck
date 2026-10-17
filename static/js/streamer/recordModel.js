@@ -156,7 +156,8 @@ export function exportFileName(title, artist, ext = "mp4") {
  *   `exclude` (the Streamer track itself) left out; none at all when
  *   `mixedAudio` is off (the take's sound alone);
  * - the canvas at the scene's aspect, `resolution` and `fps`, fit "fill"
- *   (the recorded picture is the scene, already the canvas's shape);
+ *   (the recorded picture, the camera cropped to that aspect, is already
+ *   the canvas's shape);
  * - the kept range as span "range";
  * - never a click (Performance has no click switch);
  * - the lanes' EQ and the master when given;

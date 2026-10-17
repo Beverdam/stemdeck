@@ -61,12 +61,12 @@ check("saved, frames failed: failed", videoLaneState({ lane: "saved", take: cam,
 check("note: no video part", videoLaneNote("noVideo", null) === "streamer.lane.noVideo");
 check("note: frames failed", videoLaneNote("failed", "on") === "streamer.lane.filmFailed");
 check("note: filmed with no camera", videoLaneNote("film", "off") === "streamer.lane.cameraOff");
-check("note: Camera layer hidden", videoLaneNote("film", "hidden") === "streamer.lane.cameraHidden");
+check("note: an older take filmed with its Camera layer hidden reads as no camera", videoLaneNote("film", "hidden") === "streamer.lane.cameraOff");
 check("no note for a filmed take", videoLaneNote("film", "on") === "" && videoLaneNote("film", null) === "");
 check("no note while recording or loading", videoLaneNote("recording", "off") === "" && videoLaneNote("loading", "off") === "");
-check("camera: layer hidden wins", cameraUse({ layerVisible: false, live: true }) === "hidden");
-check("camera: no camera open", cameraUse({ layerVisible: true, live: false }) === "off");
-check("camera: on", cameraUse({ layerVisible: true, live: true }) === "on");
+check("camera: no camera open", cameraUse({ live: false }) === "off");
+check("camera: on", cameraUse({ live: true }) === "on");
+check("camera: never hidden (there is no Camera layer to hide)", cameraUse({ layerVisible: false, live: true }) === "on");
 check("span: the camera's first frame for its length", eq(filmSpan(29.8, 15.2, 171), { from: 29.8, to: 45 }));
 check("span: a camera started before the song shows from 0", eq(filmSpan(-0.3, 2, 171), { from: 0, to: 1.7 }));
 check("span: clipped at the song's end", eq(filmSpan(170, 5, 171), { from: 170, to: 171 }));

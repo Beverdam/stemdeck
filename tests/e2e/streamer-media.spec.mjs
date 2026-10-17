@@ -61,7 +61,6 @@ test.describe("Streamer Mode: devices and meter", () => {
     await expect.poll(() => page.locator("#streamerVideoSrc option").count()).toBeGreaterThan(2);
     await expect.poll(() => page.locator("#streamerAudioSrc option").count()).toBeGreaterThan(2);
     await expect.poll(async () => (await media(page)).camera).toBe(true);
-    await expect(sm(page, '.sm-layer[data-layer="camera"] .sm-layer-sub')).toContainText("×");
     const meter = sm(page, ".sm-meter");
     await expect(meter).toHaveAttribute("role", "meter");
     await expect(meter).toHaveAttribute("aria-valuemin", "-60");
@@ -78,14 +77,36 @@ test.describe("Streamer Mode: devices and meter", () => {
     await expect.poll(() => ev(page, () => window.__tracks.every((tr) => tr.readyState === "ended"))).toBe(true);
   });
 
-  test("hiding the Camera layer or choosing No camera releases it", async ({ page }) => {
-    await expect.poll(async () => (await media(page)).camera).toBe(true);
-    await sm(page, '.sm-layer[data-layer="camera"] [role=switch]').click();
-    await expect.poll(async () => (await media(page)).camera).toBe(false);
-    await sm(page, '.sm-layer[data-layer="camera"] [role=switch]').click();
+  test("choosing No camera releases it, and choosing a camera opens it again", async ({ page }) => {
     await expect.poll(async () => (await media(page)).camera).toBe(true);
     await page.locator("#streamerVideoSrc").selectOption("none");
     await expect.poll(async () => (await media(page)).camera).toBe(false);
+    await page.locator("#streamerVideoSrc").selectOption("");
+    await expect.poll(async () => (await media(page)).camera).toBe(true);
+  });
+
+  // The live window is the camera, full frame, with nothing over it: every
+  // part of the picture is the fake camera's, the corners included (a layer
+  // card or a lower third would cover a corner in the dark).
+  test("the live window shows the camera's picture over the whole frame, at every aspect", async ({ page }) => {
+    await expect.poll(async () => (await media(page)).camera).toBe(true);
+    // The fake camera's frame, drawn alone: the reference the window must match.
+    const sample = (aspect) => ev(page, async (a) => {
+      const { fitAspect } = await import("/js/streamer/streamerModel.js");
+      const c = document.querySelector("#streamer .sm-canvas");
+      const ctx = c.getContext("2d");
+      const f = fitAspect(c.width, c.height, a);
+      const at = (fx, fy) => [...ctx.getImageData(Math.floor(f.x + f.w * fx), Math.floor(f.y + f.h * fy), 1, 1).data];
+      const lit = (px) => px[0] + px[1] + px[2] > 60;
+      const spots = [[0.03, 0.03], [0.97, 0.03], [0.03, 0.97], [0.97, 0.97], [0.85, 0.15], [0.85, 0.8], [0.1, 0.92]];
+      return { all: spots.every(([x, y]) => lit(at(x, y))), outside: f.x > 2 ? lit(at(-0.02, 0.5)) : null };
+    }, aspect);
+    for (const aspect of ["16:9", "9:16", "1:1"]) {
+      await sm(page, ".sm-aspect select").selectOption(aspect);
+      await expect.poll(async () => (await sample(aspect)).all, { message: aspect }).toBe(true);
+      // Pillarboxed: outside the picture stays black.
+      if (aspect !== "16:9") expect((await sample(aspect)).outside).toBe(false);
+    }
   });
 
   test("output settings are kept per user, 60 fps warns", async ({ page }) => {
@@ -129,7 +150,7 @@ test.describe("Streamer Mode: camera refused", () => {
   });
 });
 
-// Phase 4: recording the scene and exporting it through the server.
+// Phase 4: recording the camera and exporting it through the server.
 test.describe("Streamer Mode: recording and export", () => {
   const recording = (page) => ev(page, () => document.querySelector("#streamer .sm-rec")?.classList.contains("recording"));
 
@@ -150,7 +171,7 @@ test.describe("Streamer Mode: recording and export", () => {
 
   test("R records from the trim's start, auto-stops at its end, and the take is kept", async ({ page }) => {
     await setUp(page);
-    await sm(page, ".sm-preview").focus();
+    await page.locator("#streamer").focus();
     await page.keyboard.press("r");
     await expect.poll(() => recording(page)).toBe(true);
     // The take is open (the button turns red) a moment before the playhead
@@ -158,10 +179,11 @@ test.describe("Streamer Mode: recording and export", () => {
     // never from the top of the song.
     await expect.poll(() => ev(page, async () => (await import("/js/transport.js")).transport().isPlaying())).toBe(true);
     expect(Math.abs((await now(page)) - 1)).toBeLessThan(1);
-    await expect(sm(page, ".sm-add")).toBeDisabled();
+    // The take's shape is fixed while it records.
+    await expect(sm(page, ".sm-aspect select")).toBeDisabled();
     await expect.poll(() => recording(page), { timeout: 20000 }).toBe(false);
     await expect(sm(page, ".sm-export-go")).toBeVisible({ timeout: 30000 });
-    await expect(sm(page, ".sm-add")).toBeEnabled();
+    await expect(sm(page, ".sm-aspect select")).toBeEnabled();
   });
 
   test("speed not 100% refuses recording with the reason", async ({ page }) => {
@@ -191,7 +213,7 @@ test.describe("Streamer Mode: recording and export", () => {
     await setUp(page, { in: 0, out: 5 });
     await sm(page, ".sm-rec").click();
     await expect.poll(() => recording(page)).toBe(true);
-    await sm(page, ".sm-preview").focus();
+    await page.locator("#streamer").focus();
     await page.keyboard.press("Delete");
     await expect(page.locator(`#catalogList .cat-item[data-id="${JOB_ID}"]`).first()).not.toHaveClass(/in-trash/);
     await page.keyboard.press("r");
