@@ -214,8 +214,30 @@ const HELP = [
   // take review, and the Live | Take switch shown when only one window fits.
   ["#streamer .sm-view-switch", "help.smViewSwitch"],
   ["#streamer .sm-review", "help.smReview"],
+  // The REC button sits inside the live window, so it comes first. Its own
+  // name: the badge reads "READY" or the time, which says nothing about it.
+  ["#streamer .sm-rec", "help.smRec", null, "streamer.recOn"],
   // Its own name: the REC badge's "READY" is the first text inside it.
   ["#streamer .sm-preview", "help.smPreview", null, "streamer.previewHint"],
+  // The Recording & Output card (streamer.js buildSide): each field with its label.
+  ["#streamer .sm-select:has(#streamerVideoSrc), #streamer label[for=streamerVideoSrc]", "help.smVideoSource", null, "streamer.videoSource"],
+  ["#streamer .sm-select:has(#streamerAudioSrc), #streamer label[for=streamerAudioSrc]", "help.smAudioSource", null, "streamer.audioSource"],
+  ["#streamer .sm-out-col:has(#streamerRes)", "help.smResolution", null, "streamer.resolution"],
+  ["#streamer .sm-out-col:has(#streamerFps)", "help.smFps", null, "streamer.fps"],
+  // Its text changes with the take (Try again), so the name is fixed.
+  ["#streamer .sm-export-go", "help.smExport", null, "streamer.export.go"],
+  ["#streamer .sm-export-reveal", "help.smReveal", null, "streamer.export.reveal"],
+  ["#streamer .sm-part", "help.smPart", null, "streamer.part.label"],
+  // The Take Timeline's zoom and its trim handles (the handles name themselves).
+  ["#streamer .sm-zoom", "help.smZoom", null, "streamer.zoom"],
+  ["#streamer .sm-tl-trim", "help.smTrim"],
+  // Karaoke Mode's own controls (karaoke/karaoke.js). The fullscreen view is
+  // a layer on the page body, so its exit button is matched by its own class.
+  [".kk-fs-btn", "help.kkFullscreen"],
+  [".kk-fs-exit", "help.kkFullscreenExit"],
+  ["#karaoke .kk-side, #karaoke .kk-side-strip", "help.kkQueue", null, "karaoke.tabQueue"],
+  ["#karaoke .kk-voice", "help.kkVoice", null, "karaoke.voiceForm"],
+  ["#karaoke .kk-transport", "help.kkTransport", null, "karaoke.transport"],
 ];
 
 // Every option in Settings, by section, in the order of the dialog's own
