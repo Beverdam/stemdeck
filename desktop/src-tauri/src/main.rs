@@ -5073,6 +5073,10 @@ fn ensure_ffmpeg(data_dir: &Path) -> Result<PathBuf, String> {
     // An explicit STEMDECK_FFMPEG override is exempt. It names a file the user
     // chose, usually outside the data directory, and replacing that is not ours
     // to do -- say what is wrong with it and stop.
+    //
+    // macOS runs its own copy of these first two steps, in ensure_macos_ffmpeg,
+    // because there a pair that runs can still be the wrong one to keep (#771).
+    #[cfg(not(target_os = "macos"))]
     if let Some(existing) = resolve_existing_ffmpeg(data_dir) {
         match verify_ffmpeg_pair(&existing) {
             Ok(()) => return Ok(existing),
@@ -5093,6 +5097,7 @@ fn ensure_ffmpeg(data_dir: &Path) -> Result<PathBuf, String> {
     // users on an older OS than our downloaded build assumes (#414): if they
     // already have a working system FFmpeg, we no longer force a potentially
     // incompatible download on top of it.
+    #[cfg(not(target_os = "macos"))]
     if verify_ffmpeg_pair(Path::new("ffmpeg")).is_ok() {
         return Ok(PathBuf::from("ffmpeg"));
     }
@@ -5108,11 +5113,7 @@ fn ensure_ffmpeg(data_dir: &Path) -> Result<PathBuf, String> {
 
     #[cfg(target_os = "macos")]
     {
-        download_macos_ffmpeg(data_dir)?;
-        let portable =
-            ffmpeg_path(data_dir).ok_or_else(|| "failed to resolve FFmpeg path".to_string())?;
-        verify_ffmpeg_pair(&portable)?;
-        Ok(portable)
+        ensure_macos_ffmpeg(data_dir)
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -5389,6 +5390,267 @@ fn macos_arch_suffix(arch: &str) -> &'static str {
     }
 }
 
+// What an Apple Silicon Mac can do with a binary, read from its Mach-O header
+// without running it (#771). Native: it has an arm64 slice, or the host is
+// Intel, where verification is the only judge. IntelOnly: x86_64 and no
+// arm64, so it runs only through Rosetta. Unknown: not a Mach-O we can read
+// (a wrapper script, a short file); verification decides, as before.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacBinaryArch {
+    Native,
+    IntelOnly,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+const MACHO_CPU_TYPE_X86_64: u32 = 0x0100_0007;
+#[cfg(target_os = "macos")]
+const MACHO_CPU_TYPE_ARM64: u32 = 0x0100_000c;
+
+// The CPU types a Mach-O header declares: one for a thin binary, one per
+// slice for a universal one. None when `header` is not a Mach-O.
+#[cfg(target_os = "macos")]
+fn macho_cpu_types(header: &[u8]) -> Option<Vec<u32>> {
+    let be = |at: usize| -> Option<u32> {
+        let bytes = header.get(at..at + 4)?;
+        Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+    let le = |at: usize| -> Option<u32> { be(at).map(u32::swap_bytes) };
+    match be(0)? {
+        // Universal: a big-endian list of slices, 20 bytes each (32 for fat64).
+        magic @ (0xcafe_babe | 0xcafe_babf) => {
+            let entry = if magic == 0xcafe_babf { 32 } else { 20 };
+            let count = usize::try_from(be(4)?).ok()?;
+            (0..count).map(|i| be(8 + i * entry)).collect()
+        }
+        // Thin, little-endian (every Mac binary in practice), 64- or 32-bit.
+        0xcffa_edfe | 0xcefa_edfe => Some(vec![le(4)?]),
+        // Thin, big-endian.
+        0xfeed_facf | 0xfeed_face => Some(vec![be(4)?]),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn classify_macos_binary(host: &str, header: &[u8]) -> MacBinaryArch {
+    if host != "arm64" {
+        return MacBinaryArch::Native;
+    }
+    match macho_cpu_types(header) {
+        Some(types) if types.contains(&MACHO_CPU_TYPE_ARM64) => MacBinaryArch::Native,
+        Some(types) if types.contains(&MACHO_CPU_TYPE_X86_64) => MacBinaryArch::IntelOnly,
+        _ => MacBinaryArch::Unknown,
+    }
+}
+
+// The pair as a whole: Intel-only if either half is, since StemDeck runs both.
+#[cfg(target_os = "macos")]
+fn classify_macos_pair(ffmpeg: MacBinaryArch, ffprobe: MacBinaryArch) -> MacBinaryArch {
+    if ffmpeg == MacBinaryArch::IntelOnly || ffprobe == MacBinaryArch::IntelOnly {
+        MacBinaryArch::IntelOnly
+    } else if ffmpeg == MacBinaryArch::Native && ffprobe == MacBinaryArch::Native {
+        MacBinaryArch::Native
+    } else {
+        MacBinaryArch::Unknown
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_binary_arch(host: &str, path: &Path) -> MacBinaryArch {
+    use std::io::Read;
+    let mut header = Vec::with_capacity(4096);
+    let read = fs::File::open(path).and_then(|file| file.take(4096).read_to_end(&mut header));
+    match read {
+        Ok(_) => classify_macos_binary(host, &header),
+        Err(_) => MacBinaryArch::Unknown,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_pair_arch(host: &str, ffmpeg: &Path) -> MacBinaryArch {
+    classify_macos_pair(
+        macos_binary_arch(host, ffmpeg),
+        macos_binary_arch(host, &ffprobe_beside(ffmpeg)),
+    )
+}
+
+// Rosetta's runtime lives here once `softwareupdate --install-rosetta` has
+// run. Checked before downloading an Intel build, so a Mac without it is told
+// so instead of being handed a binary it cannot start (#771).
+#[cfg(target_os = "macos")]
+fn rosetta_installed() -> bool {
+    Path::new("/Library/Apple/usr/libexec/oah/libRosettaRuntime").is_file()
+}
+
+// Whether an Intel-only FFmpeg may be installed on this Mac: always on an
+// Intel Mac, and on Apple Silicon only when Rosetta can run it.
+#[cfg(target_os = "macos")]
+fn macos_intel_build_allowed(host: &str, rosetta: bool) -> bool {
+    host != "arm64" || rosetta
+}
+
+// Said whenever StemDeck declines to install an Intel-only FFmpeg on an Apple
+// Silicon Mac without Rosetta. setup.js recognises "built for Intel Macs" and
+// adds no hint of its own, since this already says what to do.
+#[cfg(target_os = "macos")]
+const MACOS_INTEL_REFUSED: &str = "StemDeck could not find an FFmpeg for Apple Silicon \
+     that has every encoder it needs. The only download it could fall back to is built for Intel Macs, and this Mac cannot run \
+     it without Rosetta, so StemDeck did not install it.\n\
+     Do one of these, then click Retry:\n\
+     - Install FFmpeg for Apple Silicon with Homebrew by running \"brew install ffmpeg-full\" \
+     in Terminal. StemDeck finds it on its own.\n\
+     - Or install Rosetta by running \"softwareupdate --install-rosetta\" in Terminal.";
+
+// Where an FFmpeg already installed on this Mac may be, in the order tried:
+// Homebrew's linked ffmpeg, Homebrew's keg-only ffmpeg-full (the Homebrew
+// build that includes libvorbis; plain `ffmpeg` dropped it), then PATH.
+// Duplicates are dropped. A Mac app opened from Finder gets a PATH of
+// /usr/bin:/bin:/usr/sbin:/sbin, so without the fixed paths a Homebrew
+// install was never seen at all (#771).
+#[cfg(target_os = "macos")]
+fn macos_system_ffmpeg_candidates(path_var: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from("/opt/homebrew/bin/ffmpeg"),
+        PathBuf::from("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"),
+    ];
+    if let Some(found) = path_var.and_then(|path| resolve_in_paths("ffmpeg", path)) {
+        if !candidates.contains(&found) {
+            candidates.push(found);
+        }
+    }
+    candidates
+}
+
+// The first candidate that is not Intel-only and passes `verify`. Intel-only
+// ones are skipped without being run: on Apple Silicon a system FFmpeg is
+// only worth preferring over a download when it is native.
+#[cfg(target_os = "macos")]
+fn pick_macos_system_ffmpeg(
+    candidates: &[PathBuf],
+    arch: impl Fn(&Path) -> MacBinaryArch,
+    verify: impl Fn(&Path) -> Result<(), String>,
+) -> Option<PathBuf> {
+    candidates.iter().find_map(|candidate| {
+        if arch(candidate) == MacBinaryArch::IntelOnly {
+            return None;
+        }
+        match verify(candidate) {
+            Ok(()) => Some(candidate.clone()),
+            Err(err) => {
+                eprintln!("system FFmpeg at {} not used: {err}", candidate.display());
+                None
+            }
+        }
+    })
+}
+
+// What to do with the pair already in the data folder (or named by
+// STEMDECK_FFMPEG), given whether it verified and what it is built for.
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+enum ExistingFfmpeg {
+    // Use it and stop.
+    Use,
+    // It runs, but only through Rosetta: keep it unless a native pair is
+    // already installed elsewhere. Never replaced by a download.
+    KeepUnlessNativeFound,
+    // Look for a replacement.
+    Replace,
+    // An explicit STEMDECK_FFMPEG that fails: report it, replace nothing.
+    Fail,
+}
+
+#[cfg(target_os = "macos")]
+fn decide_existing_ffmpeg(verified: bool, arch: MacBinaryArch, explicit: bool) -> ExistingFfmpeg {
+    match (verified, explicit) {
+        (true, true) => ExistingFfmpeg::Use,
+        (true, false) if arch == MacBinaryArch::IntelOnly => ExistingFfmpeg::KeepUnlessNativeFound,
+        (true, false) => ExistingFfmpeg::Use,
+        (false, true) => ExistingFfmpeg::Fail,
+        (false, false) => ExistingFfmpeg::Replace,
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+enum MacFfmpegNext {
+    Use(PathBuf),
+    Download,
+}
+
+// Steps 3 to 5 below, without the side effects: `find_system` is only asked
+// when STEMDECK_FFMPEG_URL is not set, since that names the source to use.
+#[cfg(target_os = "macos")]
+fn next_macos_ffmpeg(
+    installed_intel: Option<PathBuf>,
+    url_override: bool,
+    find_system: impl FnOnce() -> Option<PathBuf>,
+) -> MacFfmpegNext {
+    if !url_override {
+        if let Some(found) = find_system() {
+            return MacFfmpegNext::Use(found);
+        }
+    }
+    match installed_intel {
+        Some(path) => MacFfmpegNext::Use(path),
+        None => MacFfmpegNext::Download,
+    }
+}
+
+// The macOS order (#771). An explicit setting always wins over anything
+// StemDeck would pick itself:
+//   1. STEMDECK_FFMPEG, a file the user named: used if it verifies, else an error.
+//   2. The pair in the data folder, if it verifies and is native.
+//   3. Unless STEMDECK_FFMPEG_URL is set: a native pair already installed
+//      (Homebrew, then PATH) that passes the same verification.
+//   4. The data-folder pair from step 2 that runs only through Rosetta.
+//      Kept rather than downloaded over.
+//   5. A download: STEMDECK_FFMPEG_URL if set, else the per-architecture
+//      primary, else the Intel-only fallback, which an Apple Silicon Mac
+//      without Rosetta refuses (see download_macos_ffmpeg).
+#[cfg(target_os = "macos")]
+fn ensure_macos_ffmpeg(data_dir: &Path) -> Result<PathBuf, String> {
+    let host = macos_arch_suffix(std::env::consts::ARCH);
+    let explicit = env_path_override("STEMDECK_FFMPEG").is_some();
+
+    let mut installed_intel = None;
+    if let Some(existing) = resolve_existing_ffmpeg(data_dir) {
+        let verified = verify_ffmpeg_pair(&existing);
+        let arch = macos_pair_arch(host, &existing);
+        match decide_existing_ffmpeg(verified.is_ok(), arch, explicit) {
+            ExistingFfmpeg::Use => return Ok(existing),
+            ExistingFfmpeg::KeepUnlessNativeFound => installed_intel = Some(existing),
+            ExistingFfmpeg::Fail => return verified.map(|()| existing),
+            ExistingFfmpeg::Replace => eprintln!(
+                "FFmpeg at {} is present but unusable, looking for a replacement: {}",
+                existing.display(),
+                verified.err().unwrap_or_default()
+            ),
+        }
+    }
+
+    let url_override = env_path_override("STEMDECK_FFMPEG_URL").is_some();
+    let find_system = || {
+        let candidates = macos_system_ffmpeg_candidates(env::var_os("PATH").as_deref());
+        pick_macos_system_ffmpeg(
+            &candidates,
+            |path| macos_pair_arch(host, path),
+            verify_ffmpeg_pair,
+        )
+    };
+    if let MacFfmpegNext::Use(path) = next_macos_ffmpeg(installed_intel, url_override, find_system)
+    {
+        return Ok(path);
+    }
+
+    download_macos_ffmpeg(data_dir)?;
+    let portable =
+        ffmpeg_path(data_dir).ok_or_else(|| "failed to resolve FFmpeg path".to_string())?;
+    verify_ffmpeg_pair(&portable)?;
+    Ok(portable)
+}
+
 // An override hash from `env_var`, trimmed and lowercased, or None if unset/
 // blank. Mirrors the Windows override path: an explicit custom URL skips
 // pinned-hash verification unless the matching *_SHA256 env var is also set.
@@ -5425,7 +5687,8 @@ fn verify_pinned_sha256(path: &Path, expected: Option<&str>, label: &str) -> Res
     Ok(())
 }
 
-/// evermeet.cx (zip-wrapped, universal binary) is used both for the fallback
+/// evermeet.cx (zip-wrapped, x86_64 only: it runs on Apple Silicon only
+/// through Rosetta, #771) is used both for the fallback
 /// path and for a custom STEMDECK_FFMPEG_URL override -- that env var has
 /// always pointed at a zip in this shape, so overrides keep working exactly
 /// as before regardless of what the built-in primary source looks like.
@@ -5463,8 +5726,8 @@ fn download_macos_ffmpeg_zip_source(
 }
 
 /// Primary source: shaka-project's per-architecture builds, published as raw
-/// (non-zip) binaries -- downloaded straight to their final path, no
-/// extraction step.
+/// (non-zip) binaries -- downloaded straight into `ffmpeg_dir` (the staging
+/// folder), no extraction step.
 #[cfg(target_os = "macos")]
 fn download_macos_ffmpeg_primary(ffmpeg_dir: &Path) -> Result<(), String> {
     let arch = macos_arch_suffix(std::env::consts::ARCH);
@@ -5506,6 +5769,62 @@ fn download_macos_ffmpeg(data_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(&ffmpeg_dir)
         .map_err(|e| format!("failed to create {}: {e}", ffmpeg_dir.display()))?;
 
+    // Every source lands in staged/ first and replaces the installed pair only
+    // once it has passed the checks below. Downloading straight over
+    // data/ffmpeg destroyed a pair the user had put there even when what
+    // replaced it was no better, and a locked file there failed the download
+    // itself (#771). Inside data/ffmpeg rather than downloads/, which
+    // prune_downloads empties.
+    let staged = ffmpeg_dir.join("staged");
+    let _ = fs::remove_dir_all(&staged);
+    fs::create_dir_all(&staged)
+        .map_err(|e| format!("failed to create {}: {e}", staged.display()))?;
+    let host = macos_arch_suffix(std::env::consts::ARCH);
+    let result = download_macos_ffmpeg_sources(host, &downloads, &staged)
+        .and_then(|()| install_staged_ffmpeg(&staged, &ffmpeg_dir));
+    let _ = fs::remove_dir_all(&staged);
+    result
+}
+
+// Whether a downloaded pair is refused before it is ever run: Intel-only on
+// an Apple Silicon Mac that has no Rosetta to run it (#771).
+#[cfg(target_os = "macos")]
+fn refuse_intel_build(host: &str, arch: MacBinaryArch, rosetta: bool) -> bool {
+    arch == MacBinaryArch::IntelOnly && !macos_intel_build_allowed(host, rosetta)
+}
+
+// The architecture check, then the same verification every other FFmpeg gets.
+#[cfg(target_os = "macos")]
+fn check_staged_ffmpeg(host: &str, staged: &Path, refusal: &str) -> Result<(), String> {
+    let ffmpeg = staged.join("ffmpeg");
+    if refuse_intel_build(host, macos_pair_arch(host, &ffmpeg), rosetta_installed()) {
+        return Err(refusal.to_string());
+    }
+    verify_ffmpeg_pair(&ffmpeg)
+}
+
+// Move a checked pair from staged/ into data/ffmpeg.
+#[cfg(target_os = "macos")]
+fn install_staged_ffmpeg(staged: &Path, ffmpeg_dir: &Path) -> Result<(), String> {
+    for name in ["ffmpeg", "ffprobe"] {
+        let target = ffmpeg_dir.join(name);
+        fs::rename(staged.join(name), &target).map_err(|e| {
+            format!(
+                "StemDeck could not replace {}: {e}. If you locked this file, unlock it, \
+                 or delete the ffmpeg folder in StemDeck's data folder, then click Retry.",
+                target.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn download_macos_ffmpeg_sources(
+    host: &str,
+    downloads: &Path,
+    staged: &Path,
+) -> Result<(), String> {
     // An explicit override always wins and skips the primary/fallback dance
     // entirely -- the user has already chosen a source. Goes through the
     // zip-wrapped path, the shape this override has always expected.
@@ -5516,13 +5835,21 @@ fn download_macos_ffmpeg(data_dir: &Path) -> Result<(), String> {
             .unwrap_or_else(|| DEFAULT_MACOS_FFPROBE_URL.to_string());
         let ffmpeg_expected = override_sha256("STEMDECK_FFMPEG_SHA256");
         let ffprobe_expected = override_sha256("STEMDECK_FFPROBE_SHA256");
-        return download_macos_ffmpeg_zip_source(
+        download_macos_ffmpeg_zip_source(
             &ffmpeg_url,
             &ffprobe_url,
             ffmpeg_expected.as_deref(),
             ffprobe_expected.as_deref(),
-            &downloads,
-            &ffmpeg_dir,
+            downloads,
+            staged,
+        )?;
+        return check_staged_ffmpeg(
+            host,
+            staged,
+            "The FFmpeg that STEMDECK_FFMPEG_URL points at is built for Intel Macs, and this \
+             Mac cannot run it without Rosetta, so StemDeck did not install it. Point \
+             STEMDECK_FFMPEG_URL at a build for Apple Silicon, or install Rosetta by running \
+             \"softwareupdate --install-rosetta\" in Terminal, then click Retry.",
         );
     }
 
@@ -5539,27 +5866,40 @@ fn download_macos_ffmpeg(data_dir: &Path) -> Result<(), String> {
     // downloads, so "ffmpeg arrived and runs" says nothing about ffprobe, and
     // accepting the pair on half the evidence is how a working ffmpeg came to
     // sit beside an ffprobe that could not run at all (#637).
-    let primary_result = download_macos_ffmpeg_primary(&ffmpeg_dir)
-        .and_then(|()| verify_ffmpeg_pair(&ffmpeg_dir.join("ffmpeg")));
-    if let Err(primary_err) = primary_result {
-        eprintln!("primary FFmpeg source failed, trying the evermeet.cx fallback: {primary_err}");
-        return download_macos_ffmpeg_zip_source(
-            DEFAULT_MACOS_FFMPEG_URL,
-            DEFAULT_MACOS_FFPROBE_URL,
-            Some(DEFAULT_MACOS_FFMPEG_SHA256),
-            Some(DEFAULT_MACOS_FFPROBE_SHA256),
-            &downloads,
-            &ffmpeg_dir,
-        )
-        .map_err(|fallback_err| {
-            format!(
-                "Could not download FFmpeg from either source.\n\
-                 Primary: {primary_err}\n\
-                 Fallback: {fallback_err}"
-            )
-        });
+    //
+    // As pinned (n8.1.2-1) this primary fails that encoder check on both
+    // architectures: shaka-project's build-scripts/90-ffmpeg.sh configures no
+    // --enable-libvorbis, so it has no libvorbis (#771).
+    let primary_result = download_macos_ffmpeg_primary(staged)
+        .and_then(|()| check_staged_ffmpeg(host, staged, MACOS_INTEL_REFUSED));
+    let Err(primary_err) = primary_result else {
+        return Ok(());
+    };
+
+    // The fallback publishes Intel builds only. On Apple Silicon without
+    // Rosetta it cannot run, so do not fetch it at all: say so, and what to do
+    // (#771). Before this it was installed anyway and failed on every launch
+    // as "Bad CPU type in executable".
+    if !macos_intel_build_allowed(host, rosetta_installed()) {
+        return Err(format!("{MACOS_INTEL_REFUSED}\n\nDetails: {primary_err}"));
     }
-    Ok(())
+    eprintln!("primary FFmpeg source failed, trying the evermeet.cx fallback: {primary_err}");
+    download_macos_ffmpeg_zip_source(
+        DEFAULT_MACOS_FFMPEG_URL,
+        DEFAULT_MACOS_FFPROBE_URL,
+        Some(DEFAULT_MACOS_FFMPEG_SHA256),
+        Some(DEFAULT_MACOS_FFPROBE_SHA256),
+        downloads,
+        staged,
+    )
+    .and_then(|()| check_staged_ffmpeg(host, staged, MACOS_INTEL_REFUSED))
+    .map_err(|fallback_err| {
+        format!(
+            "Could not download FFmpeg from either source.\n\
+             Primary: {primary_err}\n\
+             Fallback: {fallback_err}"
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -7393,6 +7733,234 @@ mod tests {
         assert_eq!(super::macos_arch_suffix("aarch64"), "arm64");
         assert_eq!(super::macos_arch_suffix("x86_64"), "x64");
         assert_eq!(super::macos_arch_suffix("something-unexpected"), "x64");
+    }
+
+    // A thin little-endian 64-bit Mach-O header with the given CPU type.
+    #[cfg(target_os = "macos")]
+    fn thin_macho(cpu: u32) -> Vec<u8> {
+        let mut header = vec![0xcf, 0xfa, 0xed, 0xfe];
+        header.extend_from_slice(&cpu.to_le_bytes());
+        header.extend_from_slice(&[0; 24]);
+        header
+    }
+
+    // A universal (fat32) header listing the given CPU types.
+    #[cfg(target_os = "macos")]
+    fn fat_macho(cpus: &[u32]) -> Vec<u8> {
+        let mut header = vec![0xca, 0xfe, 0xba, 0xbe];
+        header.extend_from_slice(&u32::try_from(cpus.len()).unwrap().to_be_bytes());
+        for cpu in cpus {
+            header.extend_from_slice(&cpu.to_be_bytes());
+            header.extend_from_slice(&[0; 16]);
+        }
+        header
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn classify_macos_binary_reads_thin_and_universal_headers() {
+        use super::{MacBinaryArch, MACHO_CPU_TYPE_ARM64 as ARM, MACHO_CPU_TYPE_X86_64 as X86};
+        let classify = super::classify_macos_binary;
+        assert_eq!(classify("arm64", &thin_macho(ARM)), MacBinaryArch::Native);
+        assert_eq!(
+            classify("arm64", &thin_macho(X86)),
+            MacBinaryArch::IntelOnly
+        );
+        assert_eq!(
+            classify("arm64", &fat_macho(&[X86, ARM])),
+            MacBinaryArch::Native
+        );
+        assert_eq!(
+            classify("arm64", &fat_macho(&[X86])),
+            MacBinaryArch::IntelOnly
+        );
+        // Not a Mach-O, or cut short: verification decides, as before.
+        assert_eq!(
+            classify("arm64", b"#!/bin/sh\nexec ffmpeg"),
+            MacBinaryArch::Unknown
+        );
+        assert_eq!(classify("arm64", &[0xcf, 0xfa]), MacBinaryArch::Unknown);
+        assert_eq!(
+            classify("arm64", &fat_macho(&[X86, ARM])[..20]),
+            MacBinaryArch::Unknown
+        );
+        // An Intel Mac is never second-guessed here.
+        assert_eq!(classify("x64", &thin_macho(X86)), MacBinaryArch::Native);
+        assert_eq!(classify("x64", &thin_macho(ARM)), MacBinaryArch::Native);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_pair_arch_reads_both_files_from_disk() {
+        use super::{MacBinaryArch, MACHO_CPU_TYPE_ARM64 as ARM, MACHO_CPU_TYPE_X86_64 as X86};
+        let dir = make_tmp();
+        let ffmpeg = dir.path().join("ffmpeg");
+        fs::write(&ffmpeg, thin_macho(ARM)).unwrap();
+        fs::write(dir.path().join("ffprobe"), thin_macho(ARM)).unwrap();
+        assert_eq!(
+            super::macos_pair_arch("arm64", &ffmpeg),
+            MacBinaryArch::Native
+        );
+        // An Intel ffprobe beside a native ffmpeg makes the pair Intel-only (#637).
+        fs::write(dir.path().join("ffprobe"), thin_macho(X86)).unwrap();
+        assert_eq!(
+            super::macos_pair_arch("arm64", &ffmpeg),
+            MacBinaryArch::IntelOnly
+        );
+        fs::remove_file(dir.path().join("ffprobe")).unwrap();
+        assert_eq!(
+            super::macos_pair_arch("arm64", &ffmpeg),
+            MacBinaryArch::Unknown
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn intel_build_is_refused_on_apple_silicon_without_rosetta_only() {
+        use super::MacBinaryArch::{IntelOnly, Native, Unknown};
+        assert!(super::refuse_intel_build("arm64", IntelOnly, false));
+        assert!(!super::refuse_intel_build("arm64", IntelOnly, true));
+        assert!(!super::refuse_intel_build("arm64", Native, false));
+        assert!(!super::refuse_intel_build("arm64", Unknown, false));
+        assert!(!super::refuse_intel_build("x64", IntelOnly, false));
+        assert!(!super::macos_intel_build_allowed("arm64", false));
+        assert!(super::macos_intel_build_allowed("arm64", true));
+        assert!(super::macos_intel_build_allowed("x64", false));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn intel_refusal_is_recognised_by_the_setup_screen() {
+        // setup.js matches this phrase to skip its network hint.
+        assert!(super::MACOS_INTEL_REFUSED.contains("built for Intel Macs"));
+        assert!(super::MACOS_INTEL_REFUSED.is_ascii());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn existing_ffmpeg_decision_keeps_explicit_and_native_and_holds_intel() {
+        use super::ExistingFfmpeg::{Fail, KeepUnlessNativeFound, Replace, Use};
+        use super::MacBinaryArch::{IntelOnly, Native, Unknown};
+        let decide = super::decide_existing_ffmpeg;
+        assert_eq!(decide(true, Native, false), Use);
+        assert_eq!(decide(true, Unknown, false), Use);
+        assert_eq!(decide(true, IntelOnly, false), KeepUnlessNativeFound);
+        // An explicit STEMDECK_FFMPEG wins whatever it is built for.
+        assert_eq!(decide(true, IntelOnly, true), Use);
+        assert_eq!(decide(false, Native, true), Fail);
+        // Verification failure falls through to the next source.
+        assert_eq!(decide(false, Native, false), Replace);
+        assert_eq!(decide(false, IntelOnly, false), Replace);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_ffmpeg_candidates_try_homebrew_then_path_without_duplicates() {
+        let dir = make_tmp();
+        fs::write(dir.path().join("ffmpeg"), b"").unwrap();
+        let path_var = env::join_paths([dir.path()]).unwrap();
+        let candidates = super::macos_system_ffmpeg_candidates(Some(&path_var));
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/opt/homebrew/bin/ffmpeg"),
+                PathBuf::from("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"),
+                dir.path().join("ffmpeg"),
+            ]
+        );
+        assert_eq!(super::macos_system_ffmpeg_candidates(None).len(), 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pick_system_ffmpeg_skips_intel_and_failed_verification() {
+        use super::MacBinaryArch::{IntelOnly, Native};
+        let candidates = vec![
+            PathBuf::from("/intel/ffmpeg"),
+            PathBuf::from("/no-vorbis/ffmpeg"),
+            PathBuf::from("/good/ffmpeg"),
+            PathBuf::from("/also-good/ffmpeg"),
+        ];
+        let ran = std::cell::RefCell::new(Vec::new());
+        let picked = super::pick_macos_system_ffmpeg(
+            &candidates,
+            |path| {
+                if path.starts_with("/intel") {
+                    IntelOnly
+                } else {
+                    Native
+                }
+            },
+            |path| {
+                ran.borrow_mut().push(path.to_path_buf());
+                if path.starts_with("/no-vorbis") {
+                    Err("missing required encoder(s): libvorbis".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(picked, Some(PathBuf::from("/good/ffmpeg")));
+        // The Intel one is never run; the search stops at the first good one.
+        assert_eq!(
+            ran.into_inner(),
+            vec![
+                PathBuf::from("/no-vorbis/ffmpeg"),
+                PathBuf::from("/good/ffmpeg")
+            ]
+        );
+        assert_eq!(
+            super::pick_macos_system_ffmpeg(&candidates[..2], |_| Native, |_| Err(String::new())),
+            None
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn next_macos_ffmpeg_prefers_native_system_and_lets_the_url_override_win() {
+        use super::MacFfmpegNext::{Download, Use};
+        let intel = || Some(PathBuf::from("/data/ffmpeg/ffmpeg"));
+        let brew = || Some(PathBuf::from("/opt/homebrew/bin/ffmpeg"));
+        let none = || None;
+        // A native system pair beats an installed Intel one and a download.
+        assert_eq!(
+            super::next_macos_ffmpeg(intel(), false, brew),
+            Use(PathBuf::from("/opt/homebrew/bin/ffmpeg"))
+        );
+        assert_eq!(
+            super::next_macos_ffmpeg(None, false, brew),
+            Use(PathBuf::from("/opt/homebrew/bin/ffmpeg"))
+        );
+        // No native one: the Intel pair that already runs is kept, not downloaded over.
+        assert_eq!(
+            super::next_macos_ffmpeg(intel(), false, none),
+            Use(PathBuf::from("/data/ffmpeg/ffmpeg"))
+        );
+        assert_eq!(super::next_macos_ffmpeg(None, false, none), Download);
+        // STEMDECK_FFMPEG_URL wins over a system pair, which is not even looked for.
+        let never = || -> Option<PathBuf> { panic!("system lookup with an explicit URL") };
+        assert_eq!(super::next_macos_ffmpeg(None, true, never), Download);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn install_staged_ffmpeg_moves_the_pair_and_reports_a_failed_move() {
+        let dir = make_tmp();
+        let staged = dir.path().join("ffmpeg").join("staged");
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("ffmpeg"), b"new ffmpeg").unwrap();
+        fs::write(staged.join("ffprobe"), b"new ffprobe").unwrap();
+        let ffmpeg_dir = dir.path().join("ffmpeg");
+        fs::write(ffmpeg_dir.join("ffmpeg"), b"old").unwrap();
+        super::install_staged_ffmpeg(&staged, &ffmpeg_dir).unwrap();
+        assert_eq!(fs::read(ffmpeg_dir.join("ffmpeg")).unwrap(), b"new ffmpeg");
+        assert_eq!(
+            fs::read(ffmpeg_dir.join("ffprobe")).unwrap(),
+            b"new ffprobe"
+        );
+        // Nothing staged: an error that says what to do, not a panic.
+        let err = super::install_staged_ffmpeg(&staged, &ffmpeg_dir).unwrap_err();
+        assert!(err.contains("click Retry"), "{err}");
     }
 
     #[cfg(target_os = "macos")]
