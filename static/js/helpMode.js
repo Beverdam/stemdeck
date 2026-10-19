@@ -17,6 +17,8 @@ const chipName = (el) => el.textContent.trim();
 const presenceName = (el) => t(`stem.${el.dataset.stem}`);
 /** A row of the Stems popover names its instrument ("Drums"). */
 const stemsRowName = (el) => el.closest(".stems-pop-row")?.querySelector(".stems-pop-name")?.textContent.trim() || "";
+/** The Donate dialog's Coming soon names the way that is chosen ("Stripe"). */
+const donateChosenWay = (el) => ({ stripe: "Stripe", liberapay: "Liberapay" })[el.closest("#donateDialog")?.querySelector('.donate-way[aria-pressed="true"]')?.dataset.way] || "";
 
 // Order matters only where selectors overlap: the first match wins.
 const HELP = [
@@ -60,6 +62,22 @@ const HELP = [
   ["#friendsBtn", "help.recommend"],
   ["#settingsBtn", "settings"],
   ["#aboutBtn", "help.about"],
+  // The Donate dialog (donate.js), opened from the rail. While the chosen
+  // way has no link yet, its Coming soon button is disabled and takes no
+  // pointer, so pointing at it lands on the wrapper around it.
+  ["#donateClose", "help.donateClose"],
+  ['.donate-way[data-way="stripe"]', "help.donateWayStripe"],
+  ['.donate-way[data-way="liberapay"]', "help.donateWayLiberapay"],
+  [".donate-preset", "help.donatePreset"],
+  ["#donateCustom", "help.donateCustom"],
+  ["#donateGo", "help.donateGo"],
+  ["#donateSoonWrap", "help.donateSoon", donateChosenWay],
+  ["#donateQr", "help.donateQr", null, "donate.qrAlt"],
+  ["#donateCopy", "help.donateCopy"],
+  ["#donateShare", "help.donateShare"],
+  ["#donateStar", "help.donateStar"],
+  ["#donateReleases", "help.donateReleases"],
+  ["#donateBtn", "help.donate"],
   ["#catalogSearch, #catalogToggle", "help.searchLibrary"],
   ["#newFolderBtn", "help.newFolder"],
   ["#clearBinBtn", "help.emptyTrash"],
@@ -484,10 +502,10 @@ function onPointerOver(e) {
 // it. Those buttons still open what they open (choosing in it is taken like
 // any press), so the parts inside explain themselves too: the Mode menu, the
 // Stems popover, the Export menu, the click volume and options, and the
-// notifications. The Record arrow is not among them: its panel opens the
-// microphone. A click shows that control's box, which is also how help mode
+// notifications, and the Donate dialog. The Record arrow is not among them:
+// its panel opens the microphone. A click shows that control's box, which is also how help mode
 // works on a touch screen.
-const PASS = "#helpModeBtn, #modeBtn, #laneStemsBtn, #t-export-btn, #t-metro-vol-btn, #t-metro-more, #notifBtn";
+const PASS = "#helpModeBtn, #modeBtn, #laneStemsBtn, #t-export-btn, #t-metro-vol-btn, #t-metro-more, #notifBtn, #donateBtn";
 
 function swallow(e) {
   if (e.target instanceof Element && e.target.closest(PASS)) {

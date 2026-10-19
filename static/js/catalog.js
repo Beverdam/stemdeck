@@ -18,6 +18,7 @@ import { notifyFailure, setReleasePending, dismissFailuresByJobId, dismissFailur
 // Aliased (not the bare "t") -- this file already uses "t"/"tr" as local
 // variable names for track objects and table rows in several scopes.
 import { wireVideoEncoderSetting } from "./videoEncoderSettings.js";
+import { wireDonateDialog } from "./donate.js";
 import { searchSettings, countBySection, highlightParts, nextTabIndex } from "./settingsNav.js";
 import { t as i18nT, plural as i18nPlural, LANGUAGES, getLanguage, setLanguage, onLanguageChange, applyTranslations } from "./i18n.js";
 
@@ -5747,6 +5748,7 @@ export async function initCatalog() {
   wireRailLibraryDrop();
   wireLibraryDeleteKeys();
   wireAboutDialog();
+  wireDonateDialog();
   wireSupportersDialog();
   wireReleaseDialog();
   wireSettingsMenu();
