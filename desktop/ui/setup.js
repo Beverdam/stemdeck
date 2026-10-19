@@ -269,6 +269,10 @@ async function installRuntimePack(appRoot) {
 // normally papers over it, but a bare exec() never triggers Rosetta's
 // install-on-demand prompt, so a Mac without it just fails.
 function ffmpegFailureHint(message) {
+  // An Apple Silicon Mac without Rosetta, where StemDeck declined to install
+  // an Intel-only build (#771). The message already says what to do, and a
+  // network hint under it would be wrong.
+  if (/built for Intel Macs/.test(message)) return null;
   const wrongArchitecture = /bad cpu type|os error 86|EBADARCH/i.test(message);
   if (wrongArchitecture) {
     return (
