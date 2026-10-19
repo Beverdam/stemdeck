@@ -577,6 +577,29 @@ def cancel_job(job_id: str) -> dict:
     return job.to_state()
 
 
+@router.post("/{job_id}/stop")
+def stop_job(job_id: str) -> dict:
+    """Take a job out of the Queue: stop its extraction and keep the song (#772).
+
+    What the Queue's remove button sends. It used to send cancel, which deletes
+    the job's folder, so the song left the Library as well and never reached
+    the Trash. A stop settles as "stopped" with its files kept, the state a
+    trashed import ends in (#748) but out of the Trash, so the Library shows it
+    with Extract. A link that had not downloaded yet keeps its link, and
+    Extract fetches it again. A job already finished is left as it is.
+    """
+    if not JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=404, detail="job not found")
+    job = registry_get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status not in FINISHED_STATUSES:
+        job.stop_requested = True
+        _cancel_pipeline(job)
+        registry_persist(JOBS_DIR)
+    return job.to_state()
+
+
 def _cancel_pipeline(job: Job) -> None:
     """Stop a job that is waiting or running. Shared by cancel and trash (#748).
 

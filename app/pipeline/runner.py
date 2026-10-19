@@ -480,6 +480,13 @@ async def _run_async(
             " (wrapped)" if not isinstance(e, JobCancelled) else "",
             job.id,
         )
+        if job.stop_requested:
+            # A stopped job keeps its source, in the Library (#772) or the
+            # Trash (#748). Its half-written separation is of no use and can
+            # be large; Extract clears the same folder (reset_for_rerun).
+            # Cleared before the status changes, so nothing that sees
+            # "stopped" can still find it.
+            shutil.rmtree(job_dir / DEMUCS_MODEL, ignore_errors=True)
         remove_files = settle_cancelled(job)
         persist_registry(jobs_dir)
         release_source(job.id)

@@ -1,5 +1,5 @@
 // An import's progress and stage on its library row, and the Import Queue view:
-// order, "extract next", cancelling a waiting import, a paused queue and its
+// order, "extract next", removing a waiting import (#772), a paused queue and its
 // Start button, and the view closing itself when the queue empties.
 //
 // The queue is answered here (the e2e backend never separates, so a job that
@@ -16,7 +16,7 @@ const C = "a0a0a0a0a003";
 
 /** A queue the test owns. `set()` replaces it and pushes it to the page. */
 async function stubQueue(page) {
-  const sent = { reorder: [], cancel: [], start: 0 };
+  const sent = { reorder: [], stop: [], start: 0 };
   let snap = { running: null, queued: [], paused: false };
   const body = () => ({
     ...snap,
@@ -42,9 +42,9 @@ async function stubQueue(page) {
     snap = { ...snap, paused: false };
     return route.fulfill({ json: body() });
   });
-  await page.route(/\/api\/jobs\/[0-9a-f]{12}\/cancel$/, (route) => {
+  await page.route(/\/api\/jobs\/[0-9a-f]{12}\/stop$/, (route) => {
     const id = new URL(route.request().url()).pathname.split("/")[3];
-    sent.cancel.push(id);
+    sent.stop.push(id);
     snap = { ...snap, queued: snap.queued.filter((j) => j.job_id !== id) };
     return route.fulfill({ json: { ok: true } });
   });
@@ -157,7 +157,7 @@ test("Extract this one next moves it to the front of the line", async ({ page })
   await expect(page.locator(`.queue-row[data-id="${C}"] .cat-queue-label`)).toHaveText("Queued - #2 in line");
 });
 
-test("cancelling a waiting import takes its row out at once", async ({ page }) => {
+test("removing a waiting import takes its row out at once", async ({ page }) => {
   const queue = await open(page);
   await queue.set({ running: job(A, "First", { status: "separating" }), queued: [job(B, "Second"), job(C, "Third")] });
   await openQueueView(page);
@@ -165,7 +165,7 @@ test("cancelling a waiting import takes its row out at once", async ({ page }) =
   await page.locator(`.queue-row[data-id="${B}"] .queue-cancel`).click();
 
   await expect.poll(() => shownOrder(page)).toEqual([A, C]);
-  expect(queue.sent.cancel).toEqual([B]);
+  expect(queue.sent.stop).toEqual([B]);
   await expect(page.locator("#queueBadge")).toHaveText("2");
 });
 
