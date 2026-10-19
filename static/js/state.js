@@ -198,9 +198,14 @@ export function setCurrentJobId(v) { currentJobId = v; }
 export function setForegroundJobId(v) { foregroundJobId = v; }
 export function setTrackIndex(v) { trackIndex = v; }
 export function setTotalDuration(v) { totalDuration = v; }
-export function setLoopEnabled(v) { loopEnabled = v; }
-export function setLoopStart(v) { loopStart = v; }
-export function setLoopEnd(v) { loopEnd = v; }
+// Whoever needs to react to the loop changing (the Sections Add button depends
+// on whether a loop is armed) subscribes here rather than polling.
+const _loopListeners = [];
+export function onLoopChange(fn) { _loopListeners.push(fn); }
+function _loopChanged() { for (const fn of _loopListeners) fn(); }
+export function setLoopEnabled(v) { loopEnabled = v; _loopChanged(); }
+export function setLoopStart(v) { loopStart = v; _loopChanged(); }
+export function setLoopEnd(v) { loopEnd = v; _loopChanged(); }
 export function setAudioContext(v) { audioContext = v; }
 export function setMasterVolume(v) { masterVolume = v; }
 export let playbackSpeed = 1.0;
