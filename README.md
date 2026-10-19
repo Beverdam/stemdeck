@@ -310,3 +310,5 @@ Questions, ideas and show-and-tell are all welcome.
 ## <img src="imgs/readme/link.svg" width="26" align="top" alt=""> Contributing
 
 Issues, feature suggestions and pull requests are welcome. See the [open issues](https://github.com/stemdeckapp/stemdeck/issues) for what is planned, and [Build from source](docs/build-from-source.md) to run it yourself.
+
+If you would like to support the time I put into StemDeck, the Donate button in the app's left rail is there for that. Donating is optional: StemDeck stays free, with every feature, for everyone.

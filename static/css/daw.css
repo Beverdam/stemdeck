@@ -3871,6 +3871,192 @@ input, textarea { font-family: inherit; }
 .about-license a { color: inherit; text-decoration: underline; }
 .about-license a:hover { color: var(--fg-2); }
 
+/* ── Donate (donate.js) ──
+   Laid out like a donate page: a wide hero card on top, the ways to give and
+   their amounts on the left, sharing StemDeck on the right. The look is the
+   app's own: the About card's frame, panel surfaces, the accent for what is
+   chosen and for the action, and the rail's line icons. */
+.rail-donate svg { color: var(--danger); }
+.rail-donate:hover svg { color: var(--danger); filter: brightness(1.15); }
+.donate-card {
+  width: min(940px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px); overflow-y: auto; overflow-x: hidden;
+  padding: 16px; gap: 12px; align-items: stretch; text-align: left;
+}
+.donate-card [hidden] { display: none !important; }
+/* The About card is a flex column; here nothing may shrink, the card scrolls. */
+.donate-card > * { flex-shrink: 0; }
+.donate-card .about-close { z-index: 2; }
+
+/* Hero: words on the left, a drawing of stem lanes on the right, over a
+   faint tile of hearts (the Donate button's heart). */
+.donate-hero {
+  position: relative; overflow: hidden; isolation: isolate;
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  align-items: center; gap: 20px; min-height: 236px;
+  padding: 32px 36px 32px 40px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+}
+.donate-hero::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: var(--border);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='40' viewBox='0 0 44 40'%3E%3Cpath d='M22 31 13.4 22.6a5 5 0 0 1 7.1-7.1L22 17l1.5-1.5a5 5 0 0 1 7.1 7.1Z' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E") 0 0 / 44px 40px repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='40' viewBox='0 0 44 40'%3E%3Cpath d='M22 31 13.4 22.6a5 5 0 0 1 7.1-7.1L22 17l1.5-1.5a5 5 0 0 1 7.1 7.1Z' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E") 0 0 / 44px 40px repeat;
+  opacity: 0.7;
+}
+.donate-hero::after {
+  /* The hearts fade out towards the drawing, so it stands on plain panel. */
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(90deg, transparent 0 35%, var(--panel) 75%);
+}
+.donate-hero-text { min-width: 0; }
+.donate-mark { display: inline-flex; color: var(--accent); margin-bottom: 14px; }
+.donate-card .donate-hero h2 {
+  margin: 0 0 12px; font-family: var(--font-sans); font-size: 34px; line-height: 1.12;
+  font-weight: 700; letter-spacing: -0.015em; color: var(--fg); text-wrap: balance; word-break: auto-phrase;
+}
+.donate-sub {
+  margin: 0; max-width: 40ch; font-size: 13.5px; line-height: 1.6; color: var(--muted);
+}
+.donate-art { min-width: 0; display: flex; justify-content: flex-end; }
+.donate-art-svg { width: 100%; max-width: 360px; height: auto; display: block; }
+.donate-art-lane { fill: var(--bg-2); stroke: var(--border-strong); stroke-width: 1; }
+.donate-art-wave { fill: none; stroke-width: 2.2; stroke-linecap: round; }
+.donate-art-wave.is-ahead { opacity: 0.38; }
+.donate-art-vocals { stroke: var(--vocals); }
+.donate-art-drums { stroke: var(--drums); }
+.donate-art-bass { stroke: var(--bass); }
+.donate-art-guitar { stroke: var(--guitar); }
+.donate-art-piano { stroke: var(--piano); }
+.donate-art-head { stroke: var(--accent); stroke-width: 1.5; }
+.donate-art-head-cap { fill: var(--accent); }
+
+/* The two cards below the hero. */
+.donate-grid {
+  display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 12px; align-items: stretch;
+}
+.donate-panel {
+  min-width: 0; padding: 14px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+}
+
+/* Ways to give: two tiles side by side; the chosen one is lighter with an
+   accent border. */
+.donate-ways { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.donate-way {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
+  padding: 14px 14px 13px; text-align: left; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--muted); font: inherit;
+  transition: background var(--t-fast) var(--easing), border-color var(--t-fast) var(--easing);
+}
+.donate-way svg { margin-bottom: 10px; color: var(--muted); }
+.donate-way:hover { background: var(--panel-3); }
+.donate-way[aria-pressed="true"] { background: var(--panel-3); border-color: var(--accent); }
+.donate-way[aria-pressed="true"] svg { color: var(--accent); }
+.donate-way-name { font-size: 14px; font-weight: 600; color: var(--fg); overflow-wrap: anywhere; }
+.donate-way-via { font-size: 12px; color: var(--muted); }
+
+/* Amounts: one row that scrolls on its own when it does not fit. */
+.donate-presets {
+  display: flex; gap: 8px; margin: 10px 0 0; padding-bottom: 2px;
+  overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin;
+}
+.donate-preset {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  padding: 10px 12px; cursor: pointer; white-space: nowrap;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--fg); font: inherit;
+  transition: background var(--t-fast) var(--easing), border-color var(--t-fast) var(--easing);
+}
+.donate-preset:hover { background: var(--panel-3); }
+.donate-preset[aria-pressed="true"] { background: var(--panel-3); border-color: var(--accent); }
+.donate-preset-top { display: inline-flex; align-items: center; gap: 6px; }
+.donate-preset-top svg { color: var(--muted); }
+.donate-preset[aria-pressed="true"] .donate-preset-top svg { color: var(--accent); }
+.donate-preset-top b { font-size: 15px; font-weight: 700; }
+.donate-preset-cap { font-size: 11.5px; color: var(--muted); }
+
+/* Custom amount, then the square arrow that continues to the chosen way. */
+.donate-custom-row { display: flex; gap: 8px; margin-top: 10px; }
+.donate-custom {
+  flex: 1; min-width: 0; height: 42px; padding: 0 14px;
+  background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  color: var(--fg); font: inherit; font-size: 13px;
+}
+.donate-custom::placeholder { color: var(--muted); }
+.donate-custom:focus { outline: none; border-color: var(--accent); }
+.donate-go {
+  flex: 0 0 auto; width: 42px; height: 42px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius);
+  color: var(--bg); text-decoration: none; cursor: pointer;
+  transition: filter var(--t-fast) var(--easing);
+}
+.donate-go:hover { filter: brightness(1.08); }
+.donate-go:focus-visible, .donate-way:focus-visible, .donate-preset:focus-visible, .donate-sq:focus-visible {
+  outline: 2px solid var(--focus-ring); outline-offset: 2px;
+}
+/* The wrapper takes the pointer for the Guide; the disabled button takes none. */
+.donate-soon-wrap { flex: 0 0 auto; display: flex; }
+.donate-soon {
+  height: 42px; padding: 0 14px; white-space: nowrap;
+  background: transparent; border: 1px dashed var(--border-strong); border-radius: var(--radius);
+  color: var(--muted); font: inherit; font-size: 12px; font-weight: 600;
+  cursor: default; pointer-events: none;
+}
+.donate-hint { margin: 8px 2px 0; font-size: 11.5px; line-height: 1.4; color: var(--accent); }
+
+/* Share: QR on the left, four square buttons on the right. */
+.donate-share { display: flex; flex-direction: column; }
+.donate-share-icon { color: var(--fg-2); }
+.donate-share-title { margin: 6px 0 10px; font-size: 14px; font-weight: 600; color: var(--fg); }
+.donate-share-body {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start;
+}
+.donate-qr {
+  display: block; width: 132px; height: 132px; border-radius: var(--radius);
+  background: var(--fg);
+}
+.donate-addr {
+  grid-column: 1 / -1; margin: 0; min-width: 0;
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.donate-share-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+/* Without a system share the last button takes the whole second row. */
+.donate-share-btns.is-three > :last-child { grid-column: 1 / -1; }
+.donate-sq {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  min-width: 0; height: 62px; padding: 6px 4px; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--fg-2); font: inherit; font-size: 11.5px; font-weight: 600; text-decoration: none;
+  transition: background var(--t-fast) var(--easing), border-color var(--t-fast) var(--easing), color var(--t-fast) var(--easing);
+}
+.donate-sq:hover { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.donate-sq.is-done { border-color: var(--accent); color: var(--accent); }
+.donate-sq-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* One column below 760 px; the drawing goes under the words, smaller. */
+@media (max-width: 760px) {
+  .donate-card { padding: 12px; }
+  .donate-hero { grid-template-columns: 1fr; gap: 16px; min-height: 0; padding: 24px 20px 20px; }
+  .donate-hero::after { background: linear-gradient(180deg, transparent 0 40%, var(--panel) 85%); }
+  .donate-card .donate-hero h2 { font-size: 26px; margin-right: 24px; }
+  .donate-art { justify-content: flex-start; }
+  .donate-art-svg { max-width: 260px; }
+  .donate-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 420px) {
+  .donate-ways { gap: 8px; }
+  .donate-way { padding: 12px 11px; }
+  .donate-way-name { font-size: 13px; }
+  .donate-share-body { grid-template-columns: 112px minmax(0, 1fr); }
+  .donate-qr { width: 112px; height: 112px; }
+  .donate-sq { height: 52px; }
+}
+
 /* ── Release notes dialog ── */
 .release-card {
   width: min(520px, calc(100vw - 32px));
