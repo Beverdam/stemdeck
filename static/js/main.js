@@ -4,7 +4,7 @@ import {
   playBtn, loopBtn, totalDuration, loopEnabled, loopStart, loopEnd,
   setLoopStart, setLoopEnd, selectedStems, saveSelectedStems, stemSelectionReady,
   currentJobId, vocalSplitMode, vocalSplitModeReady, setVocalSplitMode,
-  setAutoSectionsResetFn,
+  setAutoSectionsResetFn, onLoopChange,
 } from "./state.js";
 import { STEM_NAMES, syncStemNamesFromAPI } from "./constants.js";
 import { refreshStemChoiceVisuals } from "./stemChoice.js";
@@ -14,7 +14,7 @@ import { initSearch } from "./search.js";
 import { wireTransportButtons } from "./transport.js";
 import { wireBeatGridUi } from "./beatgridUi.js";
 import { togglePlayPause, updateLoopRegionVisual, toggleMetronome, transport, setPlayheadTime, setLoopRange } from "./transport.js";
-import { setSectionsLoopBridge } from "./sections.js";
+import { setSectionsLoopBridge, refreshSectionsAddState } from "./sections.js";
 import { wireStemListControls, wireMixerToolbar, laneDragIcon } from "./mixer.js";
 import { initCatalog, collectDiagnostics } from "./catalog.js";
 import { initNotifications, notifyFailure, dismissFailuresByJobId } from "./notifications.js";
@@ -485,6 +485,7 @@ setSectionsLoopBridge({
   getLoop: () => ({ enabled: loopEnabled, start: loopStart, end: loopEnd }),
   setLoopRange,
 });
+onLoopChange(refreshSectionsAddState);
 wireBeatGridUi();
 wireFooterControls();
 requestAnimationFrame(drawFooterPlaceholder);
