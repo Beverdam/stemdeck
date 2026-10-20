@@ -403,6 +403,19 @@ RENDER_CLICK_GAIN = 0.6
 # A backing track without one stem (app/pipeline/backing.py): a sum of five
 # WAVs, seconds for a song; the ceiling only guards a stuck disk.
 TIMEOUT_BACKING = _env_int("STEMDECK_TIMEOUT_BACKING", 120)
+
+# How a finished song's stems are kept on disk (#783): "wav" (16-bit PCM, as
+# separated) or "mp3" (CBR libmp3lame at one of STEM_MP3_KBPS_CHOICES). The
+# default for an install with no saved choice and no env var. One line to
+# change. 128 kbps is the maintainer's choice: stems summed again in the
+# mixer carry the coding noise of each one.
+DEFAULT_STEM_STORAGE: tuple[str, int] = ("mp3", 128)
+STEM_FORMAT_CHOICES: tuple[str, ...] = ("wav", "mp3")
+STEM_MP3_KBPS_CHOICES: tuple[int, ...] = (128, 192, 256)
+# The MP3 step at the end of the pipeline (app/pipeline/stem_storage.py): one
+# ffmpeg per stem, a few seconds each. Terminated when ffmpeg is silent this
+# long; the song then keeps its WAVs.
+TIMEOUT_STEM_TRANSCODE_STALL = _env_int("STEMDECK_TIMEOUT_STEM_TRANSCODE_STALL", 120)
 # Video render of a take (libx264 + AAC). Slower than any audio export: a
 # 5-minute 1080p30 encode runs about 1x to 3x realtime on a desktop CPU.
 TIMEOUT_VIDEO_RENDER = _env_int("STEMDECK_TIMEOUT_VIDEO_RENDER", 3600)

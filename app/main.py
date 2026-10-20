@@ -72,6 +72,8 @@ from app.core.settings import (
     get_playlist_max_items,
     get_port,
     get_separation_quality,
+    get_stem_format,
+    get_stem_mp3_kbps,
     get_transcribe_lyrics,
     get_video_encoder,
     get_video_max_height,
@@ -90,6 +92,7 @@ from app.core.settings import (
     set_playlist_max_items,
     set_port,
     set_separation_quality,
+    set_stem_storage,
     set_transcribe_lyrics,
     set_video_encoder,
     set_video_max_height,
@@ -394,6 +397,10 @@ def _settings_payload() -> dict[str, object]:
         "video_max_height": get_video_max_height(),
         "export_sample_rate": get_export_sample_rate(),
         "separation_quality": get_separation_quality(),
+        # How new songs' stems are stored (#783). Read when a job finishes;
+        # songs already in the library keep their own format.
+        "stem_format": get_stem_format(),
+        "stem_mp3_kbps": get_stem_mp3_kbps(),
         # Whisper lyrics for a job no lookup found any for: "auto" (on a GPU
         # only) | "on" | "off".
         "transcribe_lyrics": get_transcribe_lyrics(),
@@ -550,6 +557,13 @@ async def update_settings(request: Request) -> dict[str, object]:
         try:
             set_separation_quality(str(body["separation_quality"]))
         except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+    if "stem_format" in body or "stem_mp3_kbps" in body:
+        try:
+            # Both checked before either is kept: one bad value changes nothing.
+            set_stem_storage(body.get("stem_format"), body.get("stem_mp3_kbps"))
+        except ValueError as e:
+            # The messages list the whitelist; they never echo the value.
             raise HTTPException(status_code=422, detail=str(e)) from None
     if "transcribe_lyrics" in body:
         try:
