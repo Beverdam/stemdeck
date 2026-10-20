@@ -168,6 +168,11 @@
       "specs": ["master-live", "eq-suggest", "eq-engine", "eq-panels", "mode-stems", "export-menu", "modes", "help-mode", "partial-stems", "error-banner"]
     },
     {
+      "why": "Stem storage format (#783): the MP3 storage stage and the engine an MP3 song opens on",
+      "paths": ["app/pipeline/stem_storage.py", "static/js/playbackStems.js"],
+      "specs": ["stem-storage", "mode-stems", "karaoke", "streamer"]
+    },
+    {
       "why": "Karaoke mode",
       "paths": ["static/js/karaoke/**", "static/css/karaoke.css", "app/api/backing.py", "app/pipeline/backing.py"],
       "specs": ["karaoke", "streamer", "modes", "help-mode", "mode-stems", "lyrics", "playback-memory", "track-header", "video-sync", "zoom"]
