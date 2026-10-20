@@ -275,6 +275,8 @@ const SETTINGS = [
   ["settings.tab.library", [
     ["settings.stemsLocation.title", "help.set.stemsLocation"],
     ["settings.exportsLocation.title", "help.set.exportsLocation"],
+    ["settings.stemFormat.title", "help.set.stemFormat"],
+    ["settings.stemBitrate.title", "help.set.stemBitrate"],
     ["settings.autoDelete.title", "help.set.autoDelete"],
     ["settings.outOfSync.subhead", "help.set.outOfSync"],
     ["settings.resetData.title", "help.set.resetData"],

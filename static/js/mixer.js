@@ -20,6 +20,7 @@ import {
 import { storeGet, storeSetDebounced, storeFlushPending } from "./utils.js";
 import { getMode } from "./mode.js";
 import { t } from "./i18n.js";
+import { stemFileExt } from "./playbackStems.js";
 import { PITCH_MAX, PITCH_MIN, clampPitch, pitchBlockedKey } from "./pitchBus.js";
 
 function defaultMixerEntry() {
@@ -733,7 +734,7 @@ export function renderMixerRow(stem) {
   const dl = document.createElement("a");
   dl.className = "lane-dl mx-btn";
   dl.href = stem.url;
-  dl.download = `${stem.name}.wav`;
+  dl.download = `${stem.name}.${stemFileExt(stem.url)}`;
   dl.title = t("aria.download", { name: display });
   dl.appendChild(downloadIcon());
 

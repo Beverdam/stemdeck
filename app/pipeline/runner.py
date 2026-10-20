@@ -40,6 +40,7 @@ from app.pipeline.lyrics_lookup import LyricsLookup
 from app.pipeline.lyrics_retime import retime_after_separation
 from app.pipeline.sections import detect_sections
 from app.pipeline.separate import separate
+from app.pipeline.stem_storage import store_stems
 from app.pipeline.transcribe import transcribe_lyrics
 
 logger = logging.getLogger("stemdeck.pipeline")
@@ -324,12 +325,30 @@ def _run_with_band_lookup(job: Job, source: Path, job_dir: Path) -> None:
     _lap(job, "retime", mark)
 
 
+def _store_stems(job: Job, job_dir: Path) -> None:
+    """WAV or MP3 storage of the stems (#783). Last, once no stage reads the
+    stems any more: separation and every analysis ran on the WAVs. Never
+    fails the song; store_stems keeps the WAVs on any failure, and the guard
+    is for a future change there, as for the beat grid."""
+    _check_cancel(job)
+    mark = time.monotonic()
+    try:
+        store_stems(job, job_dir)
+    except JobCancelled:
+        raise
+    except Exception:
+        logger.exception("stem storage stage failed for job %s; stems kept as WAV", job.id)
+        _set(job, stem_format="wav", stem_mp3_kbps=None)
+    _lap(job, "store", mark)
+
+
 def _run_blocking(job: Job, url: str, job_dir: Path) -> None:
     _check_cancel(job)
     mark = time.monotonic()
     source = download(job, url, job_dir)
     _lap(job, "download", mark)
     _run_with_band_lookup(job, source, job_dir)
+    _store_stems(job, job_dir)
 
 
 def _run_local_blocking(job: Job, source_path: Path, job_dir: Path) -> None:
@@ -338,6 +357,7 @@ def _run_local_blocking(job: Job, source_path: Path, job_dir: Path) -> None:
     source = _prepare_local_source(job, source_path, job_dir)
     _lap(job, "prepare", mark)
     _run_with_band_lookup(job, source, job_dir)
+    _store_stems(job, job_dir)
 
 
 def _write_metadata(job: Job, job_dir: Path) -> None:
@@ -367,6 +387,8 @@ def _write_metadata(job: Job, job_dir: Path) -> None:
         "compute_device": job.compute_device,
         "gpu_fallback": job.gpu_fallback,
         "stage_timings": job.stage_timings,
+        "stem_format": job.stem_format,
+        "stem_mp3_kbps": job.stem_mp3_kbps,
     }
     try:
         (job_dir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")

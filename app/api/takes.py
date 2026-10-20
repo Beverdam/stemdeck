@@ -91,6 +91,7 @@ from app.core.models import Job, _set
 from app.core.registry import get as registry_get
 from app.core.registry import persist as registry_persist
 from app.core.settings import get_export_sample_rate
+from app.core.stem_files import stem_path
 from app.core.takes import (
     camera_file,
     make_track,
@@ -268,7 +269,9 @@ def _reference_stem(job_id: str) -> Path | None:
     if not stems_dir.is_relative_to(JOBS_DIR.resolve()):
         return None
     for name in (*STEM_NAMES, *EXTRA_STEM_NAMES, "original"):
-        path = stems_dir / f"{name}.wav"
+        # WAV or MP3 (#783): an MP3 stem decodes to the WAV's exact frame
+        # count, which stem_storage verified before keeping it.
+        path = stem_path(stems_dir, name)
         if path.is_file():
             return path
     return None
