@@ -39,6 +39,7 @@ import numpy as np
 import soundfile as sf
 
 from app.core.config import EXTRA_STEM_NAMES, STEM_NAMES
+from app.core.stem_files import stem_exists, stem_path
 
 logger = logging.getLogger("stemdeck.backing")
 
@@ -64,12 +65,13 @@ def backing_inputs(stems_dir: Path, remove: str) -> list[Path]:
     if remove not in REMOVABLE:
         raise ValueError(f"unknown stem {remove!r}")
     names = [n for n in STEM_NAMES if n != remove]
-    paths = [stems_dir / f"{n}.wav" for n in names]
+    # WAV or MP3, whichever the song keeps (#783); libsndfile reads both.
+    paths = [stem_path(stems_dir, n) for n in names]
     present = [p for p in paths if p.is_file()]
-    vocals_gone = not (stems_dir / "vocals.wav").is_file()
+    vocals_gone = not stem_exists(stems_dir, "vocals")
     if remove != "vocals" and vocals_gone:
         # No vocals.wav but a finished split: its two halves stand in for it.
-        split = [stems_dir / f"{n}.wav" for n in EXTRA_STEM_NAMES]
+        split = [stem_path(stems_dir, n) for n in EXTRA_STEM_NAMES]
         if all(p.is_file() for p in split):
             present += split
     return present
@@ -226,11 +228,11 @@ def rest_inputs(stems_dir: Path, names: tuple[str, ...]) -> list[Path]:
     vocals.wav already holds them."""
     paths: list[Path] = []
     for name in names:
-        p = stems_dir / f"{name}.wav"
+        p = stem_path(stems_dir, name)
         if p.is_file():
             paths.append(p)
             continue
-        split = [stems_dir / f"{n}.wav" for n in EXTRA_STEM_NAMES]
+        split = [stem_path(stems_dir, n) for n in EXTRA_STEM_NAMES]
         if name == "vocals" and all(s.is_file() for s in split):
             paths += split
             continue

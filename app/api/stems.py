@@ -35,6 +35,7 @@ from app.core.config import (
 )
 from app.core.registry import get as registry_get
 from app.core.settings import get_export_sample_rate
+from app.core.stem_files import stem_ext, stem_media_type, stem_path
 from app.core.takes import take_dir
 from app.pipeline.audio_stats import vocal_envelope
 from app.pipeline.click_render import cache_key as click_cache_key
@@ -349,7 +350,8 @@ def _validate_stem_path(job_id: str, name: str):
     job = registry_get(job_id)
     if job is None or job.status != "done":
         raise HTTPException(status_code=404, detail="job not ready")
-    path = (JOBS_DIR / job_id / "stems" / f"{name}.wav").resolve()
+    # WAV or MP3, whichever this song keeps (#783).
+    path = stem_path(JOBS_DIR / job_id / "stems", name).resolve()
     if not path.is_file() or not path.is_relative_to(JOBS_DIR.resolve()):
         raise HTTPException(status_code=404, detail="stem not found")
     return path
@@ -1044,7 +1046,7 @@ def _expand_render_lanes(
         # pointing at whichever component was tried last.
         paths: list[Path] = []
         for comp in components:
-            comp_path = (JOBS_DIR / job_id / "stems" / f"{comp}.wav").resolve()
+            comp_path = stem_path(JOBS_DIR / job_id / "stems", comp).resolve()
             if not comp_path.is_file() or not comp_path.is_relative_to(JOBS_DIR.resolve()):
                 paths = []
                 break
@@ -1071,7 +1073,7 @@ def _job_original_set(job_id: str) -> frozenset[str] | None:
     """The stems the job's own original.wav holds (make_original_track: every
     base stem not selected), or None when it has no such file."""
     job = registry_get(job_id)
-    path = (JOBS_DIR / job_id / "stems" / "original.wav").resolve()
+    path = stem_path(JOBS_DIR / job_id / "stems", "original").resolve()
     if job is None or not path.is_file() or not path.is_relative_to(JOBS_DIR.resolve()):
         return None
     selected = set(job.selected_stems)
@@ -1128,7 +1130,7 @@ def _expand_mode_lanes(
             continue
         paths: list[Path] = []
         for comp in components:
-            comp_path = (JOBS_DIR / job_id / "stems" / f"{comp}.wav").resolve()
+            comp_path = stem_path(JOBS_DIR / job_id / "stems", comp).resolve()
             if not comp_path.is_file() or not comp_path.is_relative_to(JOBS_DIR.resolve()):
                 paths = []
                 break
@@ -1498,7 +1500,7 @@ async def get_vocal_envelope(job_id: str) -> Response:
     if job is None or job.status != "done":
         raise HTTPException(status_code=404, detail="job not ready")
     stems_dir = (JOBS_DIR / job_id / "stems").resolve()
-    src = stems_dir / "vocals.wav"
+    src = stem_path(stems_dir, "vocals")
     dest = stems_dir / _VOCAL_ENVELOPE_FILE
     jobs_root = JOBS_DIR.resolve()
     if not src.is_file() or not src.is_relative_to(jobs_root) or not dest.is_relative_to(jobs_root):
@@ -1557,12 +1559,16 @@ async def get_stem(
     click_accent: int = Query(default=-1, ge=-1, le=32, description="-1 auto, 0 off, N per bar"),
     click_gain: float = Query(default=0.6, ge=0, le=4, description="Click level"),
 ) -> FileResponse | StreamingResponse:
-    """Download a WAV stem. Optional ?start=&end= trims to a time region."""
+    """A stem, as the song stores it: WAV, or MP3 for a song stored as MP3
+    (#783), with its own type and file name whatever this URL says. Optional
+    ?start=&end= trims to a time region, always rendered as WAV."""
     path = _validate_stem_path(job_id, name)
 
     if start is None and end is None:
         return FileResponse(
-            path, media_type="audio/wav", filename=_stem_download_name(job_id, name, "wav")
+            path,
+            media_type=stem_media_type(path),
+            filename=_stem_download_name(job_id, name, stem_ext(path)),
         )
 
     if start is None or end is None or start >= end:
@@ -2211,17 +2217,22 @@ def _arcname(prefix: str, name: str, ext: str) -> str:
 def _build_stems_zip(
     sources: list[tuple[str, Path]], fmt: str, dest: Path, prefix: str = ""
 ) -> None:
-    """Blocking: write the stems into a ZIP. WAV files are stored as-is; MP3,
-    FLAC, and OGG are transcoded per stem via ffmpeg. ZIP_STORED throughout - audio doesn't
-    meaningfully compress, and STORED keeps the build fast. Runs in a thread."""
-    if fmt == "wav":
+    """Blocking: write the stems into a ZIP. A file already in `fmt` is stored
+    as-is (a WAV in a WAV zip, and an MP3-stored stem in an MP3 zip, which is
+    not encoded a second time); anything else is transcoded per stem via
+    ffmpeg. ZIP_STORED throughout - audio doesn't meaningfully compress, and
+    STORED keeps the build fast. Runs in a thread."""
+    if all(p.suffix.lower() == f".{fmt}" for _name, p in sources):
         with zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
             for name, p in sources:
-                zf.write(p, arcname=_arcname(prefix, name, "wav"))
+                zf.write(p, arcname=_arcname(prefix, name, fmt))
         return
     encode = _ENCODE_ARGS[fmt]
     with tempfile.TemporaryDirectory() as td, zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
         for name, p in sources:
+            if p.suffix.lower() == f".{fmt}":
+                zf.write(p, arcname=_arcname(prefix, name, fmt))
+                continue
             out = os.path.join(td, f"{name}.{fmt}")
             cmd = [
                 ffmpeg_executable(),
@@ -2292,7 +2303,7 @@ async def get_all_stems_zip(
 
     sources: list[tuple[str, Path]] = []
     for name in wanted:
-        p = (stems_dir / f"{name}.wav").resolve()
+        p = stem_path(stems_dir, name).resolve()
         if p.is_file() and p.is_relative_to(jobs_root):
             sources.append((name, p))
     labels = {t.get("id"): t.get("label") for t in job.takes}

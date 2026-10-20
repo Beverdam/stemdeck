@@ -63,6 +63,7 @@ from app.core.settings import (
     get_discogs_token,
     get_max_duration_sec,
 )
+from app.core.stem_files import stem_path, stem_url
 from app.core.stems_location import is_relocating
 from app.pipeline import discogs, jobqueue
 from app.pipeline.analyze import dynamic_range_db, measure_loudness
@@ -103,6 +104,7 @@ from app.pipeline.lyrics_retime import (
 )
 from app.pipeline.lyrics_retime import saved_view as saved_retime_view
 from app.pipeline.runner import _pipeline_lock
+from app.pipeline.stem_storage import store_split_stems
 from app.pipeline.vocal_split import split_vocals
 from app.pipeline.work_lookup import find_work, might_have_work
 
@@ -501,7 +503,7 @@ def _loudness_sources(job_id: str) -> list[Path]:
     stems_dir = (JOBS_DIR / job_id / "stems").resolve()
     if not stems_dir.is_relative_to(JOBS_DIR.resolve()):
         return []
-    return [p for p in (stems_dir / f"{n}.wav" for n in STEM_NAMES) if p.is_file()]
+    return [p for p in (stem_path(stems_dir, n) for n in STEM_NAMES) if p.is_file()]
 
 
 def _upgrade_loudness(job: Job) -> None:
@@ -805,6 +807,12 @@ async def start_vocal_split(job_id: str) -> Response:
     try:
         async with _pipeline_lock:
             new_names = await asyncio.to_thread(split_vocals, job, stems_dir)
+            # The peaks are read from the new WAVs first; then the two are kept
+            # the way the song keeps its stems (#783). Neither raises.
+            rms_values = await asyncio.to_thread(
+                merge_stem_peaks, stems_dir, ["vocals", *new_names]
+            )
+            await asyncio.to_thread(store_split_stems, job, stems_dir, new_names)
     except Exception as e:
         cause = classify_failure("\n".join([*(getattr(e, "tail", None) or []), str(e)]))
         logger.warning("[%s] vocal split failed: %s", job_id, e, exc_info=True)
@@ -817,11 +825,10 @@ async def start_vocal_split(job_id: str) -> Response:
     existing = {s["name"] for s in job.stems}
     for name in new_names:
         if name not in existing:
-            job.stems.append({"name": name, "url": f"/api/jobs/{job_id}/stems/{name}.wav"})
-    # "vocals" rides along so presence_for_split can recover the scale the base
-    # stems were normalised against; without it the two new cards would have no
-    # percentage to show.
-    rms_values = merge_stem_peaks(stems_dir, ["vocals", *new_names])
+            job.stems.append({"name": name, "url": stem_url(job_id, stems_dir, name)})
+    # "vocals" rode along in merge_stem_peaks above so presence_for_split can
+    # recover the scale the base stems were normalised against; without it the
+    # two new cards would have no percentage to show.
     extra_presence = presence_for_split(rms_values, job.stem_presence)
     if extra_presence:
         job.stem_presence = {**(job.stem_presence or {}), **extra_presence}
@@ -1195,7 +1202,7 @@ def _fingerprint_audio(job: Job) -> list[Path]:
     stems_root = (JOBS_DIR / job.id / "stems").resolve()
     stems = []
     for name in STEM_NAMES:
-        path = (stems_root / f"{name}.wav").resolve()
+        path = stem_path(stems_root, name).resolve()
         if path.is_file() and path.is_relative_to(JOBS_DIR.resolve()):
             stems.append(path)
     return stems
@@ -1560,7 +1567,7 @@ def _retime_ready(job_dir: Path, lyrics: dict | None) -> None:
             raise HTTPException(status_code=404, detail="no lyrics")
     if not lyric_pairs(lyrics):
         raise HTTPException(status_code=409, detail="lyrics have no lines")
-    vocals = (job_dir / "stems" / "vocals.wav").resolve()
+    vocals = stem_path(job_dir / "stems", "vocals").resolve()
     if not vocals.is_relative_to(JOBS_DIR.resolve()) or not vocals.is_file():
         raise HTTPException(status_code=409, detail="no vocals stem")
 

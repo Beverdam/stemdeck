@@ -14,6 +14,7 @@ from pathlib import Path
 from app.core.config import DEMUCS_MODEL, EXTRA_STEM_NAMES, JOB_ID_RE, LYRICS_FILE, STEM_NAMES
 from app.core.models import Job, clean_artist, clean_audio_tags, clean_identity, clean_work
 from app.core.settings import quarantine_corrupt
+from app.core.stem_files import stem_exists, stem_url
 from app.core.takes import reconcile_tracks, recover_takes
 
 logger = logging.getLogger("stemdeck.registry")
@@ -566,22 +567,23 @@ def _recover_done_job(job_dir: Path) -> Job | None:
     stems_dir = job_dir / "stems"
     if not stems_dir.is_dir():
         return None
+    # WAV or MP3, whichever the song was stored as (#783).
     stems = [
-        {"name": name, "url": f"/api/jobs/{job_dir.name}/stems/{name}.wav"}
+        {"name": name, "url": stem_url(job_dir.name, stems_dir, name)}
         for name in ("original", *STEM_NAMES, *EXTRA_STEM_NAMES)
-        if (stems_dir / f"{name}.wav").is_file()
+        if stem_exists(stems_dir, name)
     ]
     if not stems:
         return None
     mix_url = None
-    if (stems_dir / "mix.wav").is_file():
-        mix_url = f"/api/jobs/{job_dir.name}/stems/mix.wav"
+    if stem_exists(stems_dir, "mix"):
+        mix_url = stem_url(job_dir.name, stems_dir, "mix")
     selected = [stem["name"] for stem in stems if stem["name"] in STEM_NAMES] or list(STEM_NAMES)
     # A restart between the split finishing and its next registry persist
     # would otherwise report the job as never split -- derive from disk the
     # same way `stems` above does, so the recovered library entry doesn't
     # regress (#275).
-    has_split = all((stems_dir / f"{name}.wav").is_file() for name in EXTRA_STEM_NAMES)
+    has_split = all(stem_exists(stems_dir, name) for name in EXTRA_STEM_NAMES)
     vocal_split = "done" if has_split else "none"
     meta_path = job_dir / "metadata.json"
     meta: dict = {}
@@ -633,6 +635,10 @@ def _recover_done_job(job_dir: Path) -> Job | None:
         # The file is the record: metadata.json predates it for most jobs.
         has_lyrics=(job_dir / LYRICS_FILE).is_file(),
         vocal_split=vocal_split,
+        stem_format=meta.get("stem_format") if meta.get("stem_format") in ("wav", "mp3") else None,
+        stem_mp3_kbps=meta.get("stem_mp3_kbps")
+        if isinstance(meta.get("stem_mp3_kbps"), int)
+        else None,
         # Takes are files first: their folders survive whatever the registry
         # lost, so the lanes come back with the job.
         takes=recover_takes(job_dir),

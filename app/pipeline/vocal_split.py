@@ -25,6 +25,7 @@ from app.core.config import TIMEOUT_VOCAL_SPLIT
 from app.core.models import Job
 from app.core.registry import set_proc
 from app.core.settings import get_demucs_device
+from app.core.stem_files import decoded_wav, stem_path
 from app.pipeline.errors import SeparationError
 
 logger = logging.getLogger("stemdeck.pipeline")
@@ -50,9 +51,23 @@ def split_vocals(job: Job, stems_dir: Path) -> list[str]:
     responsible for catching failures and leaving the job's base stems
     untouched -- this function never mutates anything but stems_dir's
     contents, and never touches vocals.wav itself."""
-    vocals_path = stems_dir / "vocals.wav"
+    vocals_path = stem_path(stems_dir, "vocals")
     if not vocals_path.is_file():
         raise SeparationError("vocals.wav not found -- job has no vocals stem to split")
+    # audio-separator gets a WAV whatever the song keeps (#783): an MP3 vocals
+    # stem is decoded by ffmpeg first, so the model reads exactly the samples
+    # every other reader does.
+    try:
+        with decoded_wav(vocals_path) as wav_in:
+            return _split(job, wav_in, stems_dir)
+    except SeparationError:
+        raise
+    except RuntimeError as exc:
+        raise SeparationError("could not read the vocals stem") from exc
+
+
+def _split(job: Job, vocals_path: Path, stems_dir: Path) -> list[str]:
+    """split_vocals on a WAV vocals file."""
 
     device = get_demucs_device()
     env = os.environ.copy()

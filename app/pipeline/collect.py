@@ -26,6 +26,7 @@ from app.core.registry import deleted_ids as registry_deleted_ids
 from app.core.registry import persist as registry_persist
 from app.core.registry import remove as registry_remove
 from app.core.registry import set_proc
+from app.core.stem_files import is_stem_audio, stem_names_on_disk, stem_path
 from app.pipeline.audio_stats import scan_stem
 
 logger = logging.getLogger("stemdeck.collect")
@@ -294,7 +295,7 @@ def merge_stem_peaks(
     )
 
     for name in [*backfill, *new_names]:
-        wav = (sources or {}).get(name) or stems_dir / f"{name}.wav"
+        wav = (sources or {}).get(name) or stem_path(stems_dir, name)
         if not wav.is_file():
             continue
         try:
@@ -332,7 +333,8 @@ def merge_stem_peaks(
 
 
 def _stem_wav_names(stems_dir: Path) -> list[str]:
-    return sorted(p.stem for p in stems_dir.glob("*.wav") if p.is_file())
+    # WAV or MP3 (#783): an MP3-stored song has no WAVs left.
+    return stem_names_on_disk(stems_dir)
 
 
 def fill_missing_peaks(stems_dir: Path, sources: dict[str, Path] | None = None) -> bool:
@@ -353,7 +355,7 @@ def fill_missing_peaks(stems_dir: Path, sources: dict[str, Path] | None = None) 
     if path.is_file():
         return True
     wanted: dict[str, Path] = {
-        name: stems_dir / f"{name}.wav" for name in _stem_wav_names(stems_dir)
+        name: stem_path(stems_dir, name) for name in _stem_wav_names(stems_dir)
     }
     for name, wav in (sources or {}).items():
         if wav.is_file():
@@ -442,7 +444,9 @@ def _has_takes_on_disk(job_dir: Path) -> bool:
 def _has_stems_on_disk(job_dir: Path) -> bool:
     stems = job_dir / "stems"
     try:
-        return stems.is_dir() and any(p.suffix.lower() == ".wav" for p in stems.iterdir())
+        # An MP3-stored song (#783) holds stems too: missing it here would let
+        # the sweep delete an unregistered folder that still has a song in it.
+        return stems.is_dir() and any(is_stem_audio(p) for p in stems.iterdir())
     except OSError:
         return True
 
