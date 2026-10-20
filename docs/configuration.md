@@ -6,6 +6,7 @@
 |---|---|---|
 | `STEMDECK_DEMUCS_DEVICE` | auto | Force Torch device: `cuda`, `mps`, or `cpu`. |
 | `STEMDECK_DEMUCS_MODEL` | `htdemucs_6s` | Demucs model name. |
+| `STEMDECK_SEPARATION_MODEL` | `demucs` | `roformer` takes the vocals from a Mel-Band RoFormer and the rest from Demucs (~900 MB download on first use). A choice saved in Settings wins. |
 | `STEMDECK_JOBS_DIR` | `./jobs` | Where job directories land. |
 | `STEMDECK_DATA_DIR` | (none) | Portable mode root; sets all sub-dirs below to live inside it. |
 | `STEMDECK_CACHE_DIR` | `<data>/cache` | Torch model cache directory. |

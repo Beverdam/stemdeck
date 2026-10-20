@@ -9,6 +9,40 @@ license file are documented here.
 MIT, published by the `demucs` PyPI package (Meta/Facebook Research). No
 audit needed -- an unambiguous upstream license.
 
+## Mel-Band RoFormer vocals (separation_model "roformer")
+
+- **Checkpoint**: `MelBandRoformer.ckpt` by Kimberley Jensen, downloaded on
+  first use from its author's Hugging Face repository,
+  https://huggingface.co/KimberleyJSN/melbandroformer, into
+  `<models>/roformer/`. Pinned by SHA-256
+  (`87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e`,
+  913 MB) and kept only when it matches. Loaded with `weights_only=True`, so
+  the pickle cannot run code. Not bundled in StemDeck installers.
+- **License**: MIT. The repository's model card declares `license: mit`,
+  set by the author on 2026-04-22 (checked directly against the Hugging Face
+  API, not secondhand). Her separate GitHub repository with inference code
+  (`KimberleyJensen/Mel-Band-Roformer-Vocal-Model`) still has no license, so
+  none of its code is used.
+- **Architecture**: audio-separator's `MelBandRoformer` (MIT, already a
+  StemDeck dependency for the karaoke split), configured as the checkpoint's
+  training config in ZFTurbo/Music-Source-Separation-Training (MIT),
+  `configs/KimberleyJensen/config_vocals_mel_band_roformer_kj.yaml`. The
+  parameters are copied into `app/pipeline/vocals_roformer.py`; nothing else is
+  taken from that repository.
+- **Credit**: Kimberley Jensen, and the Mel-Band RoFormer paper (Wang et al.,
+  ByteDance, arXiv:2310.01809).
+
+Only the vocals come from it. Demucs separates the song minus those vocals
+for the other five stems, and "other" holds whatever Demucs leaves, so the six
+stems add up to the original.
+
+On ROCm (verified with torch 2.8.0+rocm6.4 on gfx1201) PyTorch's
+scaled_dot_product_attention returns wrong results when `v`'s memory layout
+differs from `k`'s, which this model's attention does. `vocals_roformer.py`
+makes the tensors contiguous for this model on ROCm only; with that, the GPU
+output matches the CPU's to 125 dB. Demucs and Whisper were checked the same
+way and are unaffected. torch 2.14.1+rocm7.2 no longer has the bug.
+
 ## All-In-One (automatic song sections)
 
 - **Runtime**: `all-in-one-infer` 3.x, the cross-platform inference fork of
@@ -72,7 +106,11 @@ directly verifying:
 
 A cleanly-licensed roformer alternative (Kimberley Jensen's
 `Mel-Band-Roformer-Vocal-Model`) was also checked and found to have no
-LICENSE file despite a claim to the contrary surfacing in a web search.
+LICENSE file despite a claim to the contrary surfacing in a web search. That
+was true of its GitHub repository and still is; the checkpoint itself has
+been MIT on Hugging Face since 2026-04-22, and is what the "roformer"
+separation model above uses. It is a vocals/instrumental model, not a
+lead/backing one, so it does not replace the karaoke model here.
 
 Since StemDeck is free/non-commercial, the practical risk of using an
 unlicensed-but-freely-shared community checkpoint is low -- but a
