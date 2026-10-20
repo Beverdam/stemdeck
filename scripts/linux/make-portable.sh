@@ -135,7 +135,9 @@ uv pip install --system --python "$BUNDLED_PYTHON" "$REPO_ROOT"
 # mirror what the Windows NVIDIA package actually does: ship CPU torch, and let
 # the desktop shell download the matching CUDA wheel at first run on GPU
 # machines (install_cuda_torch, gated cfg(not(macos)) so it covers Linux). The
-# NVIDIA variant differs only by omitting the cpu-only marker below.
+# NVIDIA variant differs only by omitting the cpu-only marker below. Despite the
+# name it serves AMD GPUs too: without an NVIDIA card the shell finds an AMD one
+# through KFD and installs the ROCm build instead (detect_amd_gpu).
 #
 # pip strips the local '+cpu' version when resolving, so the project install
 # pulls the CUDA wheel even if a CPU wheel was requested; --force-reinstall

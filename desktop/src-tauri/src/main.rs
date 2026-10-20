@@ -349,6 +349,10 @@ struct AssetStatus {
 struct GpuSetup {
     gpu_detected: bool,
     gpu_name: Option<String>,
+    /// "cuda" (NVIDIA) or "rocm" (AMD): which torch build serves the GPU. Both
+    /// run as torch's "cuda" device, so torch_device alone cannot tell them apart.
+    backend: Option<String>,
+    /// The driver's CUDA version, or the ROCm line of the torch build.
     cuda_version: Option<String>,
     torch_device: String,
     cuda_verified: bool,
@@ -1996,6 +2000,7 @@ fn ensure_torch_device(
         return Ok(GpuSetup {
             gpu_detected: false,
             gpu_name: None,
+            backend: None,
             cuda_version: None,
             torch_device: "cpu".to_string(),
             cuda_verified: false,
@@ -2026,6 +2031,7 @@ fn ensure_torch_device(
             } else {
                 None
             },
+            backend: None,
             cuda_version: None,
             torch_device: device.to_string(),
             cuda_verified: false,
@@ -2056,13 +2062,47 @@ fn ensure_torch_device(
                 ),
             }
         }
-        let setup = match detect_nvidia_gpu(&data_dir) {
-            Some((gpu_name, cuda_version, compute_cap)) => {
+        // NVIDIA first, then an AMD GPU a ROCm build of torch can drive (Linux
+        // only). Both end up as torch's "cuda" device, so everything after
+        // detection is the same for either.
+        let detected = detect_nvidia_gpu(&data_dir)
+            .map(|(name, cuda_version, compute_cap)| DetectedGpu {
+                candidates: wheel_candidates(compute_cap.as_deref(), &cuda_version),
+                name,
+                backend: "cuda",
+                version: cuda_version,
+                unusable: None,
+            })
+            .or_else(|| detect_amd_gpu(&data_dir));
+        let setup = match detected {
+            // Found, but no build can be installed for it: say why without
+            // touching the bundled torch.
+            Some(DetectedGpu {
+                name,
+                backend,
+                version,
+                unusable: Some(reason),
+                ..
+            }) => GpuSetup {
+                gpu_detected: true,
+                gpu_name: Some(name),
+                backend: Some(backend.to_string()),
+                cuda_version: Some(version),
+                torch_device: "cpu".to_string(),
+                cuda_verified: false,
+                reason: reason.to_string(),
+            },
+            Some(DetectedGpu {
+                name: gpu_name,
+                backend,
+                version: cuda_version,
+                candidates,
+                unusable: None,
+            }) => {
                 // Try each candidate wheel in turn. A build that installs but
                 // cannot launch a kernel is not a reason to give up on the GPU
                 // if another build might work -- that was the whole failure in
                 // #502, where cu128 was the only thing ever offered.
-                let candidates = wheel_candidates(compute_cap.as_deref(), &cuda_version);
                 let mut cuda_verified = false;
                 // Whether any candidate got far enough to be verified at all.
                 // Without this the reason below says "cuda-verify-failed" for a
@@ -2087,7 +2127,7 @@ fn ensure_torch_device(
                     append_to_setup_log(
                         &data_dir,
                         &format!(
-                            "trying CUDA wheel {tag} (torch {})",
+                            "trying GPU wheel {tag} (torch {})",
                             torch_version_for_tag(tag)
                         ),
                     );
@@ -2176,6 +2216,7 @@ fn ensure_torch_device(
                 GpuSetup {
                     gpu_detected: true,
                     gpu_name: Some(gpu_name),
+                    backend: Some(backend.to_string()),
                     cuda_version: Some(cuda_version),
                     torch_device: if cuda_verified { "cuda" } else { "cpu" }.to_string(),
                     cuda_verified,
@@ -2185,6 +2226,7 @@ fn ensure_torch_device(
             None => GpuSetup {
                 gpu_detected: false,
                 gpu_name: None,
+                backend: None,
                 cuda_version: None,
                 torch_device: "cpu".to_string(),
                 cuda_verified: false,
@@ -2436,6 +2478,186 @@ fn parse_cuda_version(smi_output: &str) -> Option<String> {
     None
 }
 
+/// A GPU that setup can install a torch build for.
+#[cfg(not(target_os = "macos"))]
+struct DetectedGpu {
+    name: String,
+    /// "cuda" or "rocm". Either build serves the GPU as torch's "cuda" device.
+    backend: &'static str,
+    /// The driver's CUDA version, or the ROCm line the AMD builds carry.
+    version: String,
+    /// Wheel tags to try, best first.
+    candidates: Vec<&'static str>,
+    /// Set when the GPU is there but no build can use it, as the setup reason.
+    unusable: Option<&'static str>,
+}
+
+/// The ROCm wheel line offered to AMD GPUs. torch 2.8.0 like cu128, the last
+/// line with torchaudio's soundfile backend (see `torch_version_for_tag`), on
+/// rocm6.4, the newest ROCm that line is published for. Its kernels include
+/// RDNA4 (gfx1200/gfx1201); see ROCM_GFX_TARGETS.
+#[cfg(any(not(target_os = "macos"), test))]
+const ROCM_TAG: &str = "rocm6.4";
+
+/// The gfx targets torch 2.8.0+rocm6.4 carries kernels for, from
+/// `torch.cuda.get_arch_list()` on that build. A card outside this list would
+/// install a 3 GB wheel only to fail verification with "invalid device
+/// function", so it is not offered one.
+#[cfg(any(target_os = "linux", test))]
+const ROCM_GFX_TARGETS: &[&str] = &[
+    "gfx900", "gfx906", "gfx908", "gfx90a", "gfx942", "gfx1030", "gfx1100", "gfx1101", "gfx1102",
+    "gfx1200", "gfx1201",
+];
+
+/// Wheel tags to try for an AMD GPU, by its gfx target. Empty when no ROCm
+/// build StemDeck installs has kernels for it.
+#[cfg(any(target_os = "linux", test))]
+fn rocm_wheel_candidates(gfx: &str) -> Vec<&'static str> {
+    if ROCM_GFX_TARGETS.contains(&gfx) {
+        vec![ROCM_TAG]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The gfx target name for a KFD `gfx_target_version`: major * 10000 +
+/// minor * 100 + stepping, with minor and stepping written in hex, so 120001
+/// is gfx1201 and 90010 is gfx90a.
+#[cfg(any(target_os = "linux", test))]
+fn gfx_target_name(version: u32) -> String {
+    format!(
+        "gfx{}{:x}{:x}",
+        version / 10000,
+        (version / 100) % 100,
+        version % 100
+    )
+}
+
+/// One KFD topology node's `properties` file, reduced to what detection
+/// needs: its gfx_target_version, PCI device id and DRM render minor. None for
+/// a CPU node, which reports a gfx_target_version of 0.
+#[cfg(any(target_os = "linux", test))]
+fn parse_kfd_node(properties: &str) -> Option<(u32, u32, u32)> {
+    let field = |key: &str| -> Option<u32> {
+        properties.lines().find_map(|line| {
+            let (k, v) = line.split_once(' ')?;
+            if k == key {
+                v.trim().parse().ok()
+            } else {
+                None
+            }
+        })
+    };
+    let gfx = field("gfx_target_version").filter(|v| *v != 0)?;
+    Some((
+        gfx,
+        field("device_id").unwrap_or(0),
+        field("drm_render_minor").unwrap_or(0),
+    ))
+}
+
+/// The marketing name for an AMD PCI device from a pci.ids database, e.g.
+/// "Radeon RX 9070/9070 XT/9070 GRE" out of
+/// "7550  Navi 48 [Radeon RX 9070/9070 XT/9070 GRE]". The bracketed part is the
+/// product name; without one the whole entry is used.
+#[cfg(any(target_os = "linux", test))]
+fn pci_ids_amd_name(pci_ids: &str, device_id: u32) -> Option<String> {
+    let wanted = format!("{device_id:04x}");
+    let mut in_amd = false;
+    for line in pci_ids.lines() {
+        // Comments sit inside vendor sections, and must not end one.
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !line.starts_with('\t') {
+            in_amd = line.starts_with("1002 ");
+            continue;
+        }
+        if !in_amd || line.starts_with("\t\t") {
+            continue;
+        }
+        let entry = line.trim_start_matches('\t');
+        if let Some(rest) = entry.strip_prefix(wanted.as_str()) {
+            let name = rest.trim();
+            let product = match (name.find('['), name.rfind(']')) {
+                (Some(open), Some(close)) if open < close => &name[open + 1..close],
+                _ => name,
+            };
+            return Some(product.to_string());
+        }
+    }
+    None
+}
+
+/// Finds an AMD GPU through the amdgpu driver's KFD topology in sysfs, the
+/// interface the ROCm runtime itself uses. No ROCm install and no rocm-smi
+/// are needed: the torch wheel carries the whole user-space runtime, so the
+/// kernel driver is all the machine has to provide.
+#[cfg(target_os = "linux")]
+fn detect_amd_gpu(data_dir: &Path) -> Option<DetectedGpu> {
+    let nodes = fs::read_dir("/sys/class/kfd/kfd/topology/nodes").ok()?;
+    let (gfx_version, device_id, render_minor) = nodes
+        .flatten()
+        .filter_map(|node| fs::read_to_string(node.path().join("properties")).ok())
+        .find_map(|props| parse_kfd_node(&props))?;
+    let gfx = gfx_target_name(gfx_version);
+    let device = Path::new("/sys/class/drm")
+        .join(format!("renderD{render_minor}"))
+        .join("device");
+    let name = fs::read_to_string(device.join("product_name"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            ["/usr/share/hwdata/pci.ids", "/usr/share/misc/pci.ids"]
+                .iter()
+                .find_map(|p| pci_ids_amd_name(&fs::read_to_string(p).ok()?, device_id))
+        })
+        .map(|product| format!("AMD {product} ({gfx})"))
+        .unwrap_or_else(|| format!("AMD GPU ({gfx})"));
+    append_to_setup_log(data_dir, &format!("AMD GPU found through KFD: {name}"));
+
+    let candidates = rocm_wheel_candidates(&gfx);
+    // The ROCm runtime talks to the GPU through /dev/kfd, which most
+    // distributions give to the render group. Without access every build
+    // would install and then fail to see a device.
+    let kfd_ok = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kfd")
+        .is_ok();
+    let unusable = if candidates.is_empty() {
+        append_to_setup_log(
+            data_dir,
+            &format!("no ROCm build StemDeck installs has kernels for {gfx}; staying on CPU"),
+        );
+        Some("rocm-unsupported-gpu")
+    } else if !kfd_ok {
+        append_to_setup_log(
+            data_dir,
+            "cannot open /dev/kfd; add your user to the render and video groups \
+             (sudo usermod -aG render,video $USER) and log in again",
+        );
+        Some("rocm-no-kfd-access")
+    } else {
+        None
+    };
+    Some(DetectedGpu {
+        name,
+        backend: "rocm",
+        version: ROCM_TAG.trim_start_matches("rocm").to_string(),
+        candidates,
+        unusable,
+    })
+}
+
+/// ROCm torch exists for Linux only, so elsewhere an AMD GPU is not one setup
+/// can install a build for.
+#[cfg(all(not(target_os = "macos"), not(target_os = "linux")))]
+fn detect_amd_gpu(_data_dir: &Path) -> Option<DetectedGpu> {
+    None
+}
+
 #[cfg(any(not(target_os = "macos"), test))]
 fn cuda_tag(cuda_version: &str) -> &'static str {
     let parts: Vec<u32> = cuda_version
@@ -2524,10 +2746,11 @@ fn wheel_candidates(compute_cap: Option<&str>, cuda_version: &str) -> Vec<&'stat
 /// because 2.7.1 shipped them incomplete (#239). 2.8.0 is also the last line
 /// that still carries torchaudio's soundfile backend, which is what demucs'
 /// `ta.save()` needs -- see `wheel_candidates` for why that rules out cu130.
+/// ROCm takes the same line, on rocm6.4: the newest ROCm index that has 2.8.0.
 #[cfg(any(not(target_os = "macos"), test))]
 fn torch_version_for_tag(tag: &str) -> &'static str {
     match tag {
-        "cu128" => "2.8.0",
+        "cu128" | ROCM_TAG => "2.8.0",
         _ => "2.6.0",
     }
 }
@@ -2554,7 +2777,7 @@ fn torch_version_for_tag(tag: &str) -> &'static str {
 #[cfg(not(target_os = "macos"))]
 fn torchvision_version_for_tag(tag: &str) -> &'static str {
     match tag {
-        "cu128" => "0.23.0",
+        "cu128" | ROCM_TAG => "0.23.0",
         _ => CPU_TORCHVISION_VERSION,
     }
 }
@@ -2839,14 +3062,17 @@ struct SetupProgress {
     total: Option<u64>,
 }
 
-/// Whether the CUDA torch wheel needs its `nvidia-*` runtime dependencies
-/// installed separately. Linux CUDA wheels do not bundle the CUDA runtime —
-/// they dlopen libcublas/libcudnn/... out of the `nvidia-*` PyPI packages at
-/// import time. Windows wheels ship those DLLs inside torch/lib and declare no
-/// such dependencies, so the leaner --no-deps swap stays correct there (#324).
+/// Whether the GPU torch wheel for `tag` needs its `nvidia-*` runtime
+/// dependencies installed separately. Linux CUDA wheels do not bundle the CUDA
+/// runtime — they dlopen libcublas/libcudnn/... out of the `nvidia-*` PyPI
+/// packages at import time. Windows wheels ship those DLLs inside torch/lib and
+/// declare no such dependencies, so the leaner --no-deps swap stays correct
+/// there (#324). ROCm wheels carry HIP, MIOpen and rocBLAS inside torch/lib
+/// too; their one dependency, pytorch-triton-rocm, is only for torch.compile,
+/// which StemDeck never calls.
 #[cfg(not(target_os = "macos"))]
-fn cuda_wheel_needs_runtime_deps() -> bool {
-    cfg!(target_os = "linux")
+fn cuda_wheel_needs_runtime_deps(tag: &str) -> bool {
+    cfg!(target_os = "linux") && tag.starts_with("cu")
 }
 
 /// Builds the per-line callback `run_pip_install` hands to the reader thread.
@@ -3214,7 +3440,7 @@ fn install_cuda_torch(
         &torchaudio_spec,
         &torchvision_spec,
         index_url,
-        cuda_wheel_needs_runtime_deps(),
+        cuda_wheel_needs_runtime_deps(tag),
     ) {
         run_pip_install(python, &args, state, app, label)?;
     }
@@ -3294,11 +3520,13 @@ enum CudaVerify {
 }
 
 /// Whether a failed verification was the "this build has no kernels for your
-/// GPU" error. Matched on CUDA's exact wording, because a looser match would
-/// settle a driver or install problem as permanent.
+/// GPU" error. Matched on CUDA's and HIP's exact wording, because a looser
+/// match would settle a driver or install problem as permanent.
 #[cfg(any(not(target_os = "macos"), test))]
 fn is_no_kernel_image(stderr: &str) -> bool {
     stderr.contains("no kernel image is available for execution on the device")
+        || stderr.contains("hipErrorNoBinaryForGpu")
+        || stderr.contains("HIP error: invalid device function")
 }
 
 /// The reason recorded when CUDA setup does not end on the GPU.
@@ -8195,9 +8423,98 @@ b6052160df96b31c9b1e33854a4dcda3d4b57641b880270f31736fb9f445d384  ffmpeg-n7.1-la
     #[test]
     fn cuda_runtime_deps_needed_on_linux_only() {
         assert_eq!(
-            super::cuda_wheel_needs_runtime_deps(),
+            super::cuda_wheel_needs_runtime_deps("cu124"),
             cfg!(target_os = "linux")
         );
+        // ROCm wheels carry their runtime inside torch/lib; the dependency
+        // pass would only add pytorch-triton-rocm, which nothing here uses.
+        assert!(!super::cuda_wheel_needs_runtime_deps(super::ROCM_TAG));
+    }
+
+    // --- AMD GPUs through ROCm ---
+
+    #[test]
+    fn kfd_gfx_target_versions_name_their_targets() {
+        // Minor and stepping are hex digits in the name, decimal pairs in the
+        // number: the MI200's 90010 is gfx90a, not gfx9010.
+        assert_eq!(super::gfx_target_name(120001), "gfx1201");
+        assert_eq!(super::gfx_target_name(110000), "gfx1100");
+        assert_eq!(super::gfx_target_name(100300), "gfx1030");
+        assert_eq!(super::gfx_target_name(90010), "gfx90a");
+    }
+
+    #[test]
+    fn a_kfd_gpu_node_is_read_and_a_cpu_node_skipped() {
+        // Trimmed from a real RX 9070 XT's /sys/class/kfd/kfd/topology/nodes.
+        let cpu =
+            "cpu_cores_count 16\nsimd_count 0\ngfx_target_version 0\nvendor_id 0\ndevice_id 0\n";
+        let gpu = "cpu_cores_count 0\nsimd_count 128\ngfx_target_version 120001\n\
+                   vendor_id 4098\ndevice_id 30032\nlocation_id 2304\ndrm_render_minor 128\n";
+        assert_eq!(super::parse_kfd_node(cpu), None);
+        assert_eq!(super::parse_kfd_node(gpu), Some((120001, 0x7550, 128)));
+    }
+
+    #[test]
+    fn pci_ids_give_the_product_name_of_amd_devices_only() {
+        // The comment is as real pci.ids has them, mid-section, before the
+        // RX 9070 entry: it must not end the AMD section.
+        let ids = "1002  Advanced Micro Devices, Inc. [AMD/ATI]\n\
+                   # Used in the Steam Deck OLED\n\
+                   \t7550  Navi 48 [Radeon RX 9070/9070 XT/9070 GRE]\n\
+                   \t\t1002 7550  Subsystem that must not match\n\
+                   \t73bf  Navi 21\n\
+                   10de  NVIDIA Corporation\n\
+                   \t7550  Not an AMD device\n";
+        assert_eq!(
+            super::pci_ids_amd_name(ids, 0x7550).as_deref(),
+            Some("Radeon RX 9070/9070 XT/9070 GRE")
+        );
+        // No brackets: the whole entry is the name.
+        assert_eq!(
+            super::pci_ids_amd_name(ids, 0x73bf).as_deref(),
+            Some("Navi 21")
+        );
+        assert_eq!(super::pci_ids_amd_name(ids, 0x1234), None);
+    }
+
+    #[test]
+    fn rocm_is_offered_only_to_gpus_its_build_has_kernels_for() {
+        for gfx in ["gfx1201", "gfx1200", "gfx1100", "gfx1030", "gfx90a"] {
+            assert_eq!(
+                super::rocm_wheel_candidates(gfx),
+                vec![super::ROCM_TAG],
+                "{gfx}"
+            );
+        }
+        // An RX 6600 (gfx1032) has no kernels in the official builds: it would
+        // download several GB only to fail verification.
+        assert!(super::rocm_wheel_candidates("gfx1032").is_empty());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn rocm_takes_the_torch_line_with_rdna4_kernels() {
+        assert_eq!(super::torch_version_for_tag(super::ROCM_TAG), "2.8.0");
+        assert_eq!(
+            super::torchvision_version_for_tag(super::ROCM_TAG),
+            "0.23.0"
+        );
+        // The tag is read back off the index URL by install_cuda_torch.
+        let url = format!("https://download.pytorch.org/whl/{}", super::ROCM_TAG);
+        assert_eq!(super::cuda_tag_from_url(&url), super::ROCM_TAG);
+    }
+
+    #[test]
+    fn a_rocm_build_without_kernels_for_the_gpu_is_recognised() {
+        assert!(super::is_no_kernel_image(
+            "RuntimeError: HIP error: invalid device function\nHIP kernel errors might be..."
+        ));
+        assert!(super::is_no_kernel_image(
+            "hipErrorNoBinaryForGpu: Unable to find code object for all current devices!"
+        ));
+        assert!(!super::is_no_kernel_image(
+            "RuntimeError: No HIP GPUs are available"
+        ));
     }
 
     // --- cpu-only marker precedence + self-heal (#247) ---

@@ -85,7 +85,7 @@ function startProgressStatus(messages) {
 }
 
 /**
- * Real progress for the pip passes that install CUDA acceleration.
+ * Real progress for the pip passes that install CUDA or ROCm acceleration.
  *
  * Those passes move several GB, and until the backend streamed pip's output
  * there was nothing to show but a timer counting up, which reads exactly like
@@ -336,7 +336,10 @@ async function runSetup() {
       runtime.torchDevice === "cuda" ||
       runtime.torchDevice === "mps" ||
       (runtime.torchDevice === "cpu" && runtime.torchDeviceReason === "cpu-only-package") ||
-      (runtime.torchDevice === "cpu" && runtime.torchDeviceReason === "cuda-unsupported-gpu");
+      (runtime.torchDevice === "cpu" && runtime.torchDeviceReason === "cuda-unsupported-gpu") ||
+      // The same for an AMD GPU no ROCm build has kernels for: nothing is
+      // downloaded for it, but there is nothing to re-check either.
+      (runtime.torchDevice === "cpu" && runtime.torchDeviceReason === "rocm-unsupported-gpu");
 
     if (runtime.pythonReady && runtime.ffmpegReady && torchDeviceSettled && !versionMismatch) {
       for (const step of steps) {
@@ -433,15 +436,15 @@ async function runSetup() {
           : [
               {
                 afterSeconds: 0,
-                text: "Checking NVIDIA GPU and compute support...",
+                text: "Checking for an NVIDIA or AMD GPU...",
               },
               {
                 afterSeconds: 20,
-                text: "Installing NVIDIA acceleration if needed... first run can take 5-15 minutes.",
+                text: "Installing GPU acceleration if needed... first run can take 5-15 minutes.",
               },
               {
                 afterSeconds: 120,
-                text: "Still installing NVIDIA acceleration... CUDA Torch packages are large.",
+                text: "Still installing GPU acceleration... CUDA and ROCm Torch packages are large.",
               },
               {
                 afterSeconds: 300,
@@ -460,20 +463,26 @@ async function runSetup() {
               ? `${gpu.gpuName} acceleration enabled`
               : "MPS acceleration unavailable - stem separation will use CPU";
         } else {
-          if (gpu.gpuDetected && !gpu.cudaVerified && gpu.reason === "cuda-unsupported-gpu") {
+          // NVIDIA through CUDA, or AMD through ROCm on Linux.
+          const api = gpu.backend === "rocm" ? "ROCm" : "CUDA";
+          if (gpu.gpuDetected && !gpu.cudaVerified && (gpu.reason === "cuda-unsupported-gpu" || gpu.reason === "rocm-unsupported-gpu")) {
             showError(
-              `GPU detected (${gpu.gpuName}), but none of the CUDA builds StemDeck can install support it - stem separation will use CPU. StemDeck will not try again until the next update.`
+              `GPU detected (${gpu.gpuName}), but none of the ${api} builds StemDeck can install support it - stem separation will use CPU. StemDeck will not try again until the next update.`
+            );
+          } else if (gpu.gpuDetected && !gpu.cudaVerified && gpu.reason === "rocm-no-kfd-access") {
+            showError(
+              `GPU detected (${gpu.gpuName}), but StemDeck cannot open /dev/kfd - stem separation will use CPU.\nAdd your user to the render and video groups (sudo usermod -aG render,video $USER), log out and in, and restart StemDeck.`
             );
           } else if (gpu.gpuDetected && !gpu.cudaVerified) {
             showError(
-              `GPU detected (${gpu.gpuName}) but CUDA setup failed - stem separation will use CPU.\nCheck logs/setup.log in the StemDeck data folder for details.`
+              `GPU detected (${gpu.gpuName}) but ${api} setup failed - stem separation will use CPU.\nCheck logs/setup.log in the StemDeck data folder for details.`
             );
           }
           gpuSummary = gpu.gpuDetected
             ? gpu.cudaVerified
-              ? `${gpu.gpuName} - CUDA ${gpu.cudaVersion} enabled`
-              : `${gpu.gpuName} found - falling back to CPU (CUDA unverified)`
-            : "No NVIDIA GPU - stem separation will use CPU";
+              ? `${gpu.gpuName} - ${api} ${gpu.cudaVersion} enabled`
+              : `${gpu.gpuName} found - falling back to CPU (${api} unverified)`
+            : "No NVIDIA or AMD GPU - stem separation will use CPU";
         }
         return gpu;
       } finally {
