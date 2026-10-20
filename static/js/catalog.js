@@ -7,11 +7,12 @@ import { trackFormat, formatIconSvg, paintNowPlayingArt } from "./formatIcon.js"
 import { formatKey } from "./keyLabel.js";
 import { showError, importFromUrl, detachForegroundJob, runVocalSplitIfWanted } from "./job.js";
 import {
-  cancelQueuedJob, currentIds, getQueueSnapshot, isPaused, onJobSettled, onQueueChange,
+  currentIds, getQueueSnapshot, isPaused, onJobSettled, onQueueChange,
   queueCount, queueRowStates, refreshQueue, reorderQueuedJob, runningLabel, startQueue,
-  startQueueStream,
+  startQueueStream, stopQueuedJob,
 } from "./queue.js";
 import { fmtTime, isReimportableSource, storeGet, storeSet } from "./utils.js";
+import { compareOldestFirst } from "./shared/jobs.js";
 import { takeStemsFromJob } from "./capture/takeLanes.js";
 import { inLibraryList, libraryDeleteTrackId } from "./libraryDeleteKey.js";
 import { notifyFailure, setReleasePending, dismissFailuresByJobId, dismissFailuresByKind } from "./notifications.js";
@@ -1933,6 +1934,13 @@ function folderThumbHtml(isTrash = false) {
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
 }
 
+/** Track ids in Library order (#772): oldest first by when each was added,
+ *  like the Queue, whatever order the folder stored them in. */
+function oldestFirst(ids) {
+  const key = (id) => ({ id, createdAt: tracks[id]?.createdAt });
+  return [...ids].sort((a, b) => compareOldestFirst(key(a), key(b)));
+}
+
 function makeStripItem({ className = "", id, title, html, color, trackId }) {
   const item = document.createElement("div");
   item.className = className ? `strip-thumb ${className}` : "strip-thumb";
@@ -2088,7 +2096,7 @@ function renderFolder(folder) {
   const body = document.createElement("div");
   body.className = "folder-body";
 
-  const visibleItems = folder.items.filter((id) => trackMatchesSearch(tracks[id]));
+  const visibleItems = oldestFirst(folder.items.filter((id) => trackMatchesSearch(tracks[id])));
   const childFolders = folders.filter((f) => f.parentId === folder.id);
 
   if (catalogSearchQuery && visibleItems.length === 0 && childFolders.length === 0) {
@@ -2321,10 +2329,9 @@ function render() {
 
   // ── Favorites view ──
   if (isFavoritesView) {
-    const favIds = Object.entries(tracks)
+    const favIds = oldestFirst(Object.entries(tracks)
       .filter(([id, t]) => !trashIds.has(id) && t.favorite && trackMatchesSearch(t))
-      .sort(([, a], [, b]) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
-      .map(([id]) => id);
+      .map(([id]) => id));
     if (!favIds.length) {
       list.innerHTML = `<span class="folder-empty trash-empty">${esc(catalogSearchQuery ? i18nT("favorites.noSearchMatch") : i18nT("favorites.empty"))}</span>`;
     } else {
@@ -2340,9 +2347,9 @@ function render() {
   // ── Library view — Stem Collections · Tags ──
   //
   // There was a Recent section above the folders: the three newest tracks,
-  // every one of which is also in its folder, where a new import already lands
-  // at the top. It showed the same track twice for no gain, and with two
-  // imports of one song, four times in one panel (#656). Tracks still being
+  // every one of which is also in its folder, where a new import is already
+  // listed (last, since #772). It showed the same track twice for no gain, and
+  // with two imports of one song, four times in one panel (#656). Tracks still being
   // processed show that in their own row, which is the useful part of it.
 
   // Stem Collections section
@@ -2553,8 +2560,8 @@ function queueRowHtml({ job, running }, place, { paused = false } = {}) {
           <path d="M12 19V5 M5 12l7-7 7 7"></path>
         </svg>
       </button>`}
-      <button class="queue-cancel" type="button" title="${esc(i18nT("queue.cancelImport"))}"
-              aria-label="${esc(i18nT("queue.cancelImportOf", { title: displayTitle(job.title || job.source_url) }))}">
+      <button class="queue-cancel" type="button" title="${esc(i18nT("queue.stopExtracting"))}"
+              aria-label="${esc(i18nT("queue.stopExtractingOf", { title: displayTitle(job.title || job.source_url) }))}">
         ${TRASH_ICON_SVG}
       </button>
     </div>`;
@@ -2588,7 +2595,7 @@ function wireQueueRow(el, listEl) {
     e.stopPropagation();
     const btn = e.currentTarget;
     btn.disabled = true;
-    await cancelQueuedJob(el.dataset.id);
+    await stopQueuedJob(el.dataset.id);
   });
 
   el.querySelector(".queue-top")?.addEventListener("click", async (e) => {

@@ -3,7 +3,7 @@
 // to match the rest of static/. Library + Mixer are wired to the real API
 // (GET /api/jobs, /api/jobs/{id}, the Web Audio engine, mixdown export).
 // Extract is still mock pending the SSE/upload wiring (next step).
-import { fetchJobs, jobToCard } from "../js/shared/jobs.js";
+import { compareOldestFirst, fetchJobs, jobToCard } from "../js/shared/jobs.js";
 import { createChunkedAudioEngine } from "../js/chunkedAudioEngine.js";
 import { PITCH_MAX, PITCH_MIN, clampPitch } from "../js/pitchBus.js";
 import { createPlaybackContext } from "../js/audioContext.js";
@@ -1115,14 +1115,14 @@ async function reimportTrack(card) {
   }
 }
 
-// Load the real library from /api/jobs (newest first). On success, seed the
-// Mixer with the most recent track if nothing is selected yet.
+// Load the real library from /api/jobs, oldest first like the desktop Library
+// and the Queue (#772).
 async function loadLibrary() {
   state.libState = "loading";
   render();
   try {
     const jobs = await fetchJobs();
-    state.tracks = jobs.map(jobToCard).sort((a, b) => b.createdAt - a.createdAt);
+    state.tracks = jobs.map(jobToCard).sort(compareOldestFirst);
     state.libState = state.tracks.length ? "ready" : "empty";
   } catch (e) {
     console.warn("[mobile] failed to load library:", e);

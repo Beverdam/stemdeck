@@ -73,7 +73,7 @@
     {
       "why": "The import queue view, its library rows, and the stage text a running import shows",
       "paths": ["static/js/queue.js", "static/js/phrases.js", "app/api/queue.py", "app/pipeline/jobqueue.py"],
-      "specs": ["queue-progress", "trash-queue", "import-background", "job-form-submit"]
+      "specs": ["queue-progress", "queue-remove", "trash-queue", "import-background", "job-form-submit"]
     },
     {
       "why": "The mode switch and the mode menu, the stem picker and the lane stems popover",
@@ -220,7 +220,7 @@
     {
       "why": "The phone page and the QR code that opens it",
       "paths": ["static/mobile/**", "static/js/shared/**", "app/api/qr.py"],
-      "specs": ["mobile-transpose", "mobile-vocal-mode", "network-transpose-warning"]
+      "specs": ["mobile-transpose", "mobile-vocal-mode", "network-transpose-warning", "library-order"]
     }
   ]
 }

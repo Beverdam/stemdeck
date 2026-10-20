@@ -86,6 +86,8 @@ const HELP = [
   ["#catalogList .folder-head", "help.folder"],
   ["#catalogList .cat-item .cat-del", "help.songTrash"],
   ["#catalogList .cat-item .cat-extract", "help.songExtract"],
+  // A Queue row's remove button (#772): stops the extraction, keeps the song.
+  ["#catalogList .queue-row .queue-cancel", "help.queueStop"],
   ["#catalogList .cat-item.in-trash", "help.trashedSong"],
   ["#catalogList .cat-item", "help.song"],
   // The Lyrics view of the sidebar (lyrics.js). Align and Sync lines come

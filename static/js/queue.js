@@ -162,11 +162,15 @@ export async function reorderQueuedJob(jobId, afterId) {
   }
 }
 
-export async function cancelQueuedJob(jobId) {
+/** Take a job out of the queue: stop its extraction and keep the song (#772).
+ *  Stop, never cancel: a cancel deletes the job's files, so the song left the
+ *  Library too and never reached the Trash. A stopped job stays in the Library
+ *  with Extract, which runs it again. */
+export async function stopQueuedJob(jobId) {
   try {
-    await fetch(`/api/jobs/${jobId}/cancel`, { method: "POST" });
+    await fetch(`/api/jobs/${encodeURIComponent(jobId)}/stop`, { method: "POST" });
   } catch (e) {
-    console.warn("[queue] cancel failed:", e);
+    console.warn("[queue] stop failed:", e);
   }
   // Do not wait for the next frame: the row should go the moment it is clicked.
   await refreshQueue();
