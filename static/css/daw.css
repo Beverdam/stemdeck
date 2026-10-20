@@ -3260,7 +3260,9 @@ input, textarea { font-family: inherit; }
 }
 .bg-check input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
 .bg-meter input[type="number"] {
-  width: 4ch; padding: 2px 4px;
+  /* Wide enough for two digits (1-32) beside the native spin button, which
+     keeps ~15px of the box even while it is not hovered (#803). */
+  width: 44px; padding: 2px 2px;
   background: var(--panel); border: 1px solid var(--border-strong);
   border-radius: 4px; color: var(--fg);
   font-family: inherit; font-size: 11px; font-weight: 600; text-align: center;
