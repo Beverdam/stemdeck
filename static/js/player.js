@@ -41,7 +41,7 @@ import { createAudioEngine, estimateDecodedBytes } from "./audioEngine.js";
 import { createChunkedAudioEngine } from "./chunkedAudioEngine.js";
 import { createPlaybackContext } from "./audioContext.js";
 import { effectivePitch } from "./pitchBus.js";
-import { addVisualOnlyStems, buildPlaybackStems, sumPeaks } from "./playbackStems.js";
+import { addVisualOnlyStems, buildPlaybackStems, hasCompressedStems, stemFileExt, sumPeaks } from "./playbackStems.js";
 import { layoutLanes, originalSource, jobOriginalSet, layoutSignature, baseLanes } from "./partChoice.js";
 import { applyAllLaneEq, exportFxParam } from "./eqEngine.js";
 import { exportMasterParam, setMixSource, resetForSong as resetMasterForSong } from "./masterEngine.js";
@@ -1520,7 +1520,7 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
     // A recording track with no take yet has nothing to download.
     if (dl && stem.url) {
       dl.href = stem.url;
-      dl.download = _stemFilename(stem.name);
+      dl.download = _stemFilename(stem.name, stemFileExt(stem.url));
     }
   }
 
@@ -1556,7 +1556,11 @@ export function wireUpAudio(jobId, stems, duration, thumbnail, mixUrl = null, ti
   // the 6-connection HTTP/1.1 limit and `canplay` stalls (the WebView2/WKWebView
   // freeze). Null URLs make the multitrack's <audio> elements ready instantly.
   const engineStemCount = fullDecodeStems.filter((s) => s.url).length;
-  const mode = engineMode();
+  // A song stored as MP3 (#783) cannot be streamed by the chunked engine,
+  // which reads PCM out of WAVs itself: it decodes in full instead, under the
+  // same RAM ceiling, and a song over it plays on the streaming path below.
+  const preferred = engineMode();
+  const mode = preferred === "chunked" && hasCompressedStems(fullDecodeStems) ? "fulldecode" : preferred;
   // Only the full-decode engine holds all PCM in RAM, so only it is size-capped;
   // the chunked engine streams and is never "too large".
   const engineTooLarge =

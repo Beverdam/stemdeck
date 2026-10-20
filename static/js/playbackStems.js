@@ -101,3 +101,29 @@ export function addVisualOnlyStems(playbackStems, visibleStems) {
       .map((stem) => ({ ...stem, controlName: stem.name, pitched: false, visualOnly: true })),
   ];
 }
+
+/**
+ * Whether any of these stems is stored compressed (MP3, #783), by the
+ * extension its URL ends in. The chunked engine streams PCM straight out of
+ * a WAV by Range request and cannot read an MP3, so a song stored as MP3
+ * opens on the full-decode engine instead, whose decodeAudioData honours the
+ * MP3's encoder delay and padding and lines the stems up to the sample (the
+ * server checks the same before it keeps an MP3).
+ *
+ * @param {{url?:string}[]} stems
+ */
+export function hasCompressedStems(stems) {
+  return (stems || []).some((stem) => stemFileExt(stem?.url) === "mp3");
+}
+
+/**
+ * The file extension a stem downloads with: "mp3" for a stem stored as MP3,
+ * else "wav". The desktop app saves a lane download under the name the page
+ * gives it, so the name has to say what the bytes are.
+ *
+ * @param {string|undefined} url
+ */
+export function stemFileExt(url) {
+  const path = String(url || "").split(/[?#]/)[0];
+  return /\.mp3$/i.test(path) ? "mp3" : "wav";
+}

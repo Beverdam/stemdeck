@@ -4,7 +4,9 @@
 // (GET /api/jobs, /api/jobs/{id}, the Web Audio engine, mixdown export).
 // Extract is still mock pending the SSE/upload wiring (next step).
 import { compareOldestFirst, fetchJobs, jobToCard } from "../js/shared/jobs.js";
+import { createAudioEngine } from "../js/audioEngine.js";
 import { createChunkedAudioEngine } from "../js/chunkedAudioEngine.js";
+import { hasCompressedStems } from "../js/playbackStems.js";
 import { PITCH_MAX, PITCH_MIN, clampPitch } from "../js/pitchBus.js";
 import { createPlaybackContext } from "../js/audioContext.js";
 // Per-stem label + color, keyed by the backend stem name. Unknown names fall
@@ -285,7 +287,11 @@ async function openTrack(card, { autoplay = false } = {}) {
     onEnded: () => { state.playing = false; render(); },
     context: ensureAudioCtx(),
   };
-  engine = createChunkedAudioEngine(laneList.map((l) => ({ name: l.name, url: l.url })), engineOpts);
+  // A song stored as MP3 (#783) is decoded in full: the chunked engine only
+  // streams WAV. Its stems are about a tenth of the download; the decoded
+  // audio takes the same memory as on the desktop's full-decode engine.
+  const createEngine = hasCompressedStems(laneList) ? createAudioEngine : createChunkedAudioEngine;
+  engine = createEngine(laneList.map((l) => ({ name: l.name, url: l.url })), engineOpts);
   engineTrackId = card.id;
   render();
 
