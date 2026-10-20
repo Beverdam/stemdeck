@@ -34,6 +34,29 @@ if [ -n "${STEMDECK_SSL_CERT:-}" ] && [ -n "${STEMDECK_SSL_KEY:-}" ]; then
   set -- "$@" --ssl-certfile "${STEMDECK_SSL_CERT}" --ssl-keyfile "${STEMDECK_SSL_KEY}"
 fi
 
+# An AMD GPU (the :rocm image, run with --device /dev/kfd --device /dev/dri) is
+# reached through device nodes owned by a group, usually render. Where they are
+# mode 0660, gosu with a numeric UID:GID drops every supplementary group, so the
+# app would lose the GPU it was handed. Keep the groups those nodes belong to.
+# 0 and 65534 are skipped: root's group is not one to hand out, and 65534 is
+# the overflow group of a rootless runtime, which setgroups refuses.
+gpu_groups=""
+for dev in /dev/kfd /dev/dri/renderD*; do
+  [ -e "$dev" ] || continue
+  gid="$(stat -c %g "$dev")"
+  case "$gid" in 0|65534) continue ;; esac
+  case ",${gpu_groups}," in
+    *",${gid},"*) ;;
+    *) gpu_groups="${gpu_groups:+${gpu_groups},}${gid}" ;;
+  esac
+done
+if [ -n "$gpu_groups" ]; then
+  # setpriv, unlike gosu, leaves HOME at root's; set it the way gosu would.
+  HOME="$(getent passwd "${PUID}" | cut -d: -f6)"
+  export HOME="${HOME:-/}"
+  exec setpriv --reuid="${PUID}" --regid="${PGID}" --groups="${gpu_groups}" -- "$@"
+fi
+
 # Drop to the target user and exec the CMD. gosu accepts a numeric UID:GID even
 # when no matching named user exists.
 exec gosu "${PUID}:${PGID}" "$@"

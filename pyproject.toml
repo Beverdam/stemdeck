@@ -22,7 +22,11 @@ dependencies = [
     # Pin torch/torchaudio to 2.6.x where available — torchaudio 2.7+ removed its built-in
     # audio writer and now requires the separate `torchcodec` package, which
     # has ABI issues with torch 2.11. Demucs 4.0.1 calls torchaudio.save() to
-    # write stems, so it breaks on 2.7+.
+    # write stems, so it breaks on 2.7+. GPU builds that need a newer line
+    # (Blackwell on cu128, AMD on rocm6.4) are swapped in at 2.8.0, the last
+    # torchaudio that still writes through soundfile, outside this resolution:
+    # by the desktop shell at first run, and by build/Dockerfile's
+    # TORCH_INDEX_URL for the :rocm image.
     "torch>=2.6,<2.7; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torchaudio>=2.6,<2.7; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     # PyTorch does not publish macOS x86_64 wheels for 2.6.x. Keep Intel macOS
