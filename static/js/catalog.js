@@ -4317,6 +4317,7 @@ async function wireGeneralSettings(overlay) {
   const deviceSel = overlay.querySelector(".set-demucs-device");
   const deviceDesc = overlay.querySelector(".set-demucs-desc");
   const qualitySel = overlay.querySelector(".set-separation-quality");
+  const modelSel = overlay.querySelector(".set-separation-model");
   const transcribeSel = overlay.querySelector(".set-transcribe-lyrics");
   const cookiesInput = overlay.querySelector(".set-cookies-file");
   const cookiesMsg = overlay.querySelector(".cookies-file-msg");
@@ -4327,7 +4328,7 @@ async function wireGeneralSettings(overlay) {
   const stemFormatSel = overlay.querySelector(".set-stem-format");
   const stemKbpsSel = overlay.querySelector(".set-stem-kbps");
   const stemKbpsRow = overlay.querySelector(".stem-bitrate-row");
-  if (!durInput && !playlistInput && !heightSel && !sampleRateSel && !portInput && !deviceSel && !qualitySel && !transcribeSel && !cookiesInput && !autoDeleteInput && !stemFormatSel) return;
+  if (!durInput && !playlistInput && !heightSel && !sampleRateSel && !portInput && !deviceSel && !qualitySel && !modelSel && !transcribeSel && !cookiesInput && !autoDeleteInput && !stemFormatSel) return;
 
   // The bitrate only means anything for MP3, so its row shows only then.
   const syncStemKbps = () => {
@@ -4361,6 +4362,13 @@ async function wireGeneralSettings(overlay) {
     if (sampleRateSel && d.export_sample_rate) sampleRateSel.value = String(d.export_sample_rate);
     if (portInput && d.port) portInput.value = String(d.port);
     if (qualitySel && d.separation_quality) qualitySel.value = d.separation_quality;
+    if (modelSel) {
+      // Hidden where the RoFormer cannot run (Intel macOS has no audio-separator):
+      // a choice with one option is not a choice.
+      const models = d.separation_models_available || ["demucs"];
+      modelSel.closest(".settings-row").hidden = !models.includes("roformer");
+      if (d.separation_model) modelSel.value = d.separation_model;
+    }
     if (transcribeSel && d.transcribe_lyrics) transcribeSel.value = d.transcribe_lyrics;
     if (stemFormatSel && d.stem_format) {
       stemFormatSel.value = d.stem_format;
@@ -4500,6 +4508,9 @@ async function wireGeneralSettings(overlay) {
   });
   qualitySel?.addEventListener("change", () => {
     post({ separation_quality: qualitySel.value });
+  });
+  modelSel?.addEventListener("change", () => {
+    post({ separation_model: modelSel.value });
   });
   transcribeSel?.addEventListener("change", () => {
     post({ transcribe_lyrics: transcribeSel.value });
@@ -4992,6 +5003,16 @@ function openLibraryEditor() {
               <select class="settings-select settings-select-wide set-separation-quality" aria-label="Separation quality" data-i18n-aria-label="settings.quality.title">
                 <option value="standard" data-i18n="settings.quality.standard">Standard</option>
                 <option value="best" data-i18n="settings.quality.best">Best (2× slower)</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.model.title">Separation model</div>
+                <div class="settings-row-desc" data-i18n="settings.model.desc">RoFormer takes the vocals from a dedicated vocals model and leaves the rest to Demucs: cleaner vocals, and a full mix that adds up to the original. The first time it downloads about 900 MB, and separating takes about 2.5 times as long. Without a GPU it is much slower. Applies to the next track.</div>
+              </div>
+              <select class="settings-select settings-select-wide set-separation-model" aria-label="Separation model" data-i18n-aria-label="settings.model.title">
+                <option value="demucs" data-i18n="settings.model.demucs">Demucs (default)</option>
+                <option value="roformer" data-i18n="settings.model.roformer">RoFormer vocals + Demucs (experimental)</option>
               </select>
             </div>
           </div>

@@ -385,6 +385,7 @@ def _write_metadata(job: Job, job_dir: Path) -> None:
         "has_video": job.has_video,
         "video_status": job.video_status,
         "compute_device": job.compute_device,
+        "separation_model": job.separation_model,
         "gpu_fallback": job.gpu_fallback,
         "stage_timings": job.stage_timings,
         "stem_format": job.stem_format,
@@ -533,10 +534,11 @@ async def _run_async(
     # regressions (and the CPU-vs-GPU question) answerable from logs (#293).
     t = job.stage_timings or {}
     logger.info(
-        "[%s] done device=%s model=%s %s total=%.1fs",
+        "[%s] done device=%s model=%s separation=%s %s total=%.1fs",
         job.id,
         job.compute_device or "n/a",
         DEMUCS_MODEL,
+        job.separation_model or "demucs",
         " ".join(f"{k}={v}s" for k, v in t.items()),
         sum(t.values()),
     )

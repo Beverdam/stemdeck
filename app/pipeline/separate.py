@@ -14,12 +14,21 @@ from pathlib import Path
 from app.core.config import DEMUCS_MODEL, TIMEOUT_DEMUCS_STALL
 from app.core.models import Job, JobCancelled, _set
 from app.core.registry import set_proc
-from app.core.settings import get_demucs_device, get_separation_quality
+from app.core.settings import get_demucs_device, get_separation_model, get_separation_quality
 from app.pipeline.errors import SeparationError, classify_failure
 
 logger = logging.getLogger("stemdeck.pipeline")
 
 _PCT_RE = re.compile(r"(\d{1,3})%")
+
+# A "roformer" job reports its phases (demucs_worker.py's protocol). Each maps
+# to its share of the separate stage's progress bar and its own stage line.
+_PHASES: dict[str | None, tuple[float, float, str]] = {
+    None: (0.0, 1.0, "Separating {pct}%"),
+    "download": (0.0, 0.0, "Downloading the vocals model {pct}%"),
+    "vocals": (0.0, 0.5, "Separating vocals {pct}%"),
+    "instruments": (0.5, 0.5, "Separating instruments {pct}%"),
+}
 # Terminate demucs if stderr produces no output for this many seconds.
 # GPU processing can be silent for minutes; 30 min covers legitimate pauses
 # while still catching genuine hangs (GPU deadlock, OOM stall, etc.).
@@ -121,7 +130,17 @@ def _run_demucs(job: Job, source: Path, job_dir: Path, device: str) -> tuple[int
     set_proc(job.id, proc)
 
     shifts = 2 if get_separation_quality() == "best" else 1
-    req = json.dumps({"source": str(source), "job_dir": str(job_dir), "shifts": shifts}) + "\n"
+    req = (
+        json.dumps(
+            {
+                "source": str(source),
+                "job_dir": str(job_dir),
+                "shifts": shifts,
+                "vocals_model": job.separation_model or "demucs",
+            }
+        )
+        + "\n"
+    )
     try:
         proc.stdin.write(req)
         proc.stdin.flush()
@@ -143,6 +162,7 @@ def _run_demucs(job: Job, source: Path, job_dir: Path, device: str) -> tuple[int
     # Keep the last few non-progress lines so we can surface them if the job
     # fails (otherwise the only signal would be a bare exit code).
     buf = ""
+    phase: str | None = None
     tail: list[str] = []
     last_output: list[float] = [time.monotonic()]
     job_ok: bool | None = None  # None while streaming; True/False once decided
@@ -191,9 +211,16 @@ def _run_demucs(job: Job, source: Path, job_dir: Path, device: str) -> tuple[int
                     tail.append(str(msg))
                     job_ok = False
                     break
+                if line.startswith("@@PHASE@@"):
+                    name = line[len("@@PHASE@@") :]
+                    phase = name if name in _PHASES else None
+                    start, _span, label = _PHASES[phase]
+                    _set(job, progress=start, stage=label.format(pct=0))
+                    continue
                 m = _PCT_RE.search(line)
                 if m:
-                    if not startup_recorded:
+                    # A first-use download is not worker startup.
+                    if not startup_recorded and phase != "download":
                         startup_recorded = True
                         if job.stage_timings is None:
                             job.stage_timings = {}
@@ -201,7 +228,8 @@ def _run_demucs(job: Job, source: Path, job_dir: Path, device: str) -> tuple[int
                             time.monotonic() - spawn_at, 1
                         )
                     pct = max(0, min(100, int(m.group(1))))
-                    _set(job, progress=pct / 100.0, stage=f"Separating {pct}%")
+                    start, span, label = _PHASES[phase]
+                    _set(job, progress=start + span * pct / 100.0, stage=label.format(pct=pct))
                 else:
                     tail.append(line)
                     if len(tail) > 40:
@@ -250,7 +278,10 @@ def separate(job: Job, source: Path, job_dir: Path) -> Path:
     # the completion summary / metadata / failure quarantine.
     device = get_demucs_device()
     job.compute_device = device
-    logger.info("[%s] separating on device=%s", job.id, device)
+    # Also read per job, and recorded: the CPU fallback below and the metadata
+    # must use the model this job started with.
+    job.separation_model = get_separation_model()
+    logger.info("[%s] separating on device=%s model=%s", job.id, device, job.separation_model)
 
     rc, tail = _run_demucs(job, source, job_dir, device)
 

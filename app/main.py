@@ -71,12 +71,14 @@ from app.core.settings import (
     get_max_duration_sec,
     get_playlist_max_items,
     get_port,
+    get_separation_model,
     get_separation_quality,
     get_stem_format,
     get_stem_mp3_kbps,
     get_transcribe_lyrics,
     get_video_encoder,
     get_video_max_height,
+    separation_models_available,
     set_acoustid_api_key,
     set_allow_network,
     set_auto_delete_days,
@@ -91,6 +93,7 @@ from app.core.settings import (
     set_max_duration_sec,
     set_playlist_max_items,
     set_port,
+    set_separation_model,
     set_separation_quality,
     set_stem_storage,
     set_transcribe_lyrics,
@@ -397,6 +400,10 @@ def _settings_payload() -> dict[str, object]:
         "video_max_height": get_video_max_height(),
         "export_sample_rate": get_export_sample_rate(),
         "separation_quality": get_separation_quality(),
+        # "demucs" | "roformer", and which of them this install can run (the
+        # RoFormer needs audio-separator, which Intel macOS does not have).
+        "separation_model": get_separation_model(),
+        "separation_models_available": separation_models_available(),
         # How new songs' stems are stored (#783). Read when a job finishes;
         # songs already in the library keep their own format.
         "stem_format": get_stem_format(),
@@ -556,6 +563,11 @@ async def update_settings(request: Request) -> dict[str, object]:
     if "separation_quality" in body:
         try:
             set_separation_quality(str(body["separation_quality"]))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+    if "separation_model" in body:
+        try:
+            set_separation_model(str(body["separation_model"]))
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from None
     if "stem_format" in body or "stem_mp3_kbps" in body:

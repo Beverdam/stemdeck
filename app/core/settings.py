@@ -11,6 +11,7 @@ at startup), so the Settings UI can change them without a restart:
 - `export_sample_rate` — sample rate for exported mixes/regions (WAV/FLAC/MP3).
 - `demucs_device`     — compute device for separation: auto | cuda | mps | cpu.
 - `separation_quality` — demucs shift-averaging: standard | best (2x slower).
+- `separation_model`  — demucs | roformer (RoFormer vocals, Demucs for the rest).
 - `cookies_file`      — optional cookies.txt handed to yt-dlp for YouTube.
 - `auto_delete_jobs`  — whether finished jobs are deleted after a while (off).
 - `auto_delete_days`  — how long they are kept when that is on.
@@ -636,6 +637,50 @@ def set_separation_quality(value: str) -> str:
         raise ValueError("separation_quality must be one of: " + ", ".join(_QUALITY_CHOICES))
     with _LOCK:
         _ensure()["separation_quality"] = choice
+        _save()
+        return choice
+
+
+# ── separation_model ──
+# "demucs" (default) separates all six stems with htdemucs_6s. "roformer" takes
+# the vocals from a Mel-Band RoFormer instead and gives Demucs the rest, with
+# "other" taking what Demucs leaves so the stems add up to the original
+# (app/pipeline/vocals_roformer.py). Cleaner vocals and a full mix that is not
+# hollow, for a ~900 MB download on first use and about 2.5 times the
+# separation time (27.6 s against 11.1 s for a 4 min song on an RX 9070 XT).
+# On a CPU the RoFormer is far slower than Demucs: about 3 minutes per minute
+# of audio, against Demucs' 10 seconds, measured on an 8-core Ryzen 7 5800X3D. Read per job. STEMDECK_SEPARATION_MODEL seeds the default.
+# Where the RoFormer cannot run (no audio-separator, Intel macOS) the choice
+# reads as "demucs" whatever was saved, and cannot be set.
+_MODEL_CHOICES = ("demucs", "roformer")
+
+
+def separation_models_available() -> list[str]:
+    from app.pipeline import vocals_roformer
+
+    return list(_MODEL_CHOICES) if vocals_roformer.available() else ["demucs"]
+
+
+def _default_separation_model() -> str:
+    env = os.environ.get("STEMDECK_SEPARATION_MODEL", "").strip().lower()
+    return env if env in _MODEL_CHOICES else "demucs"
+
+
+def get_separation_model() -> str:
+    with _LOCK:
+        v = _ensure().get("separation_model")
+        choice = v if isinstance(v, str) and v in _MODEL_CHOICES else _default_separation_model()
+    return choice if choice in separation_models_available() else "demucs"
+
+
+def set_separation_model(value: str) -> str:
+    choice = (value or "").strip().lower()
+    if choice not in _MODEL_CHOICES:
+        raise ValueError("separation_model must be one of: " + ", ".join(_MODEL_CHOICES))
+    if choice not in separation_models_available():
+        raise ValueError(f"{choice} is not available on this machine")
+    with _LOCK:
+        _ensure()["separation_model"] = choice
         _save()
         return choice
 

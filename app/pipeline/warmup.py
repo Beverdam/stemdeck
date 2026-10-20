@@ -3,7 +3,8 @@
 Run as `python -m app.pipeline.warmup`. Downloads/caches the ML
 checkpoint families StemDeck uses: Demucs (htdemucs_6s), beat-this,
 All-In-One song sections, the on-demand lead/backing vocal-split karaoke
-model, and Whisper for lyrics transcription when that would run. This keeps a user's first real job from paying for them mid-pipeline. Invoked by the Tauri
+model, the vocals RoFormer when separation_model is "roformer", and Whisper for
+lyrics transcription when that would run. This keeps a user's first real job from paying for them mid-pipeline. Invoked by the Tauri
 `warmup_models` command (desktop/src-tauri/src/main.rs) as one of the setup
 steps; Docker has no equivalent step and keeps the pre-existing
 lazy-download-on-first-use behavior (see docs/models.md).
@@ -90,6 +91,23 @@ def _warm_sections() -> None:
     load_pretrained_model(model_name=SECTION_MODEL, device="cpu")
 
 
+def _warm_roformer() -> None:
+    """The vocals RoFormer, only when it is the chosen separation model: it is
+    a ~900 MB download nobody on Demucs needs. Verified against its SHA-256
+    as it downloads, and loaded once to prove the file is the one the worker
+    will use."""
+    from app.core.model_cache import load_or_heal
+    from app.core.settings import get_separation_model
+    from app.pipeline import vocals_roformer
+
+    if get_separation_model() != "roformer":
+        return
+    load_or_heal(
+        lambda: vocals_roformer.load_model(MODELS_DIR),
+        lambda: [vocals_roformer.checkpoint_path(MODELS_DIR)],
+    )
+
+
 def _warm_whisper() -> None:
     """The Whisper model the lyrics stage would use here, and only when that
     stage would run: under "auto" only a CUDA install transcribes, and the
@@ -116,6 +134,7 @@ _STEPS = (
     ("beat_this", _warm_beat_this),
     ("sections", _warm_sections),
     ("vocal_split", _warm_vocal_split),
+    ("roformer", _warm_roformer),
     ("whisper", _warm_whisper),
 )
 
