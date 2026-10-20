@@ -8,7 +8,13 @@
 
 **First separation is very slow:** Demucs downloads `htdemucs_6s` weights (~170 MB) on first run; cached afterwards.
 
-**Demucs runs on CPU only:** check the startup log for `device=mps` or `device=cuda`. If you see `cpu`, your torch install may be CPU-only.
+**Demucs runs on CPU only:** check the startup log for `device=mps` or `device=cuda`. If you see `cpu`, your torch install may be CPU-only. On an AMD GPU, `device=cuda gpu=rocm` means the ROCm build is in use.
+
+**AMD GPU not used (Linux):**
+
+- `cannot open /dev/kfd` in `logs/setup.log`, or `No HIP GPUs are available`: your user cannot reach the GPU. `sudo usermod -aG render,video $USER`, then log out and in.
+- `no ROCm build StemDeck installs has kernels for gfxNNNN`: the official ROCm build of torch does not support that card (the RX 6600/6700 family, gfx1031/gfx1032, for example). `HSA_OVERRIDE_GFX_VERSION=10.3.0` makes some of those cards run the gfx1030 kernels with a source install, unsupported and at your own risk.
+- The first separation on a new AMD card pauses for a while before it moves: MIOpen, ROCm's cuDNN, is compiling and caching kernels for that card. Later separations start straight away.
 
 **Transpose is greyed out on another machine:** the pitch stage is built on `AudioWorklet`, which browsers only expose on a *secure context*. `https://` and `localhost` count. A plain `http://192.168.x.x` does not, so a client opening StemDeck over the network is never given the API and transpose cannot work there. Changing the speed still works on such a client, but it resamples instead, so the key moves with it.
 
