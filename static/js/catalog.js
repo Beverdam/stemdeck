@@ -4324,7 +4324,15 @@ async function wireGeneralSettings(overlay) {
   const autoDeleteDaysRow = overlay.querySelector(".auto-delete-days-row");
   const autoDeleteDays = overlay.querySelector(".set-auto-delete-days");
   const autoDeleteDaysDesc = overlay.querySelector(".auto-delete-days-desc");
-  if (!durInput && !playlistInput && !heightSel && !sampleRateSel && !portInput && !deviceSel && !qualitySel && !transcribeSel && !cookiesInput && !autoDeleteInput) return;
+  const stemFormatSel = overlay.querySelector(".set-stem-format");
+  const stemKbpsSel = overlay.querySelector(".set-stem-kbps");
+  const stemKbpsRow = overlay.querySelector(".stem-bitrate-row");
+  if (!durInput && !playlistInput && !heightSel && !sampleRateSel && !portInput && !deviceSel && !qualitySel && !transcribeSel && !cookiesInput && !autoDeleteInput && !stemFormatSel) return;
+
+  // The bitrate only means anything for MP3, so its row shows only then.
+  const syncStemKbps = () => {
+    if (stemKbpsRow) stemKbpsRow.hidden = stemFormatSel?.value !== "mp3";
+  };
 
   // Last server-confirmed device choice, to revert the select when the server
   // rejects a forced device (e.g. CUDA not available on this machine).
@@ -4354,6 +4362,11 @@ async function wireGeneralSettings(overlay) {
     if (portInput && d.port) portInput.value = String(d.port);
     if (qualitySel && d.separation_quality) qualitySel.value = d.separation_quality;
     if (transcribeSel && d.transcribe_lyrics) transcribeSel.value = d.transcribe_lyrics;
+    if (stemFormatSel && d.stem_format) {
+      stemFormatSel.value = d.stem_format;
+      syncStemKbps();
+    }
+    if (stemKbpsSel && d.stem_mp3_kbps) stemKbpsSel.value = String(d.stem_mp3_kbps);
     // Unset is the normal case, so read the key rather than truthiness --
     // clearing the field must survive the round trip and not be repopulated.
     if (cookiesInput && "cookies_file" in d) cookiesInput.value = d.cookies_file || "";
@@ -4490,6 +4503,14 @@ async function wireGeneralSettings(overlay) {
   });
   transcribeSel?.addEventListener("change", () => {
     post({ transcribe_lyrics: transcribeSel.value });
+  });
+  // Read when a song finishes, so the next one is stored this way: no restart.
+  stemFormatSel?.addEventListener("change", () => {
+    syncStemKbps();
+    post({ stem_format: stemFormatSel.value });
+  });
+  stemKbpsSel?.addEventListener("change", () => {
+    post({ stem_mp3_kbps: parseInt(stemKbpsSel.value, 10) });
   });
   autoDeleteInput?.addEventListener("change", () => {
     // Enable the days field immediately rather than waiting for the round
@@ -5031,6 +5052,30 @@ function openLibraryEditor() {
             </div>
           </div>
         </div>
+        <div class="settings-group settings-group-stem-files">
+          <h4 class="settings-group-title" data-i18n="settings.group.stemFiles">Stem files</h4>
+          <div class="settings-section">
+            <div class="settings-row stem-format-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.stemFormat.title">Stem storage format</div>
+                <div class="settings-row-desc" data-i18n="settings.stemFormat.desc">How the stems of songs you add from now on are stored. New songs are stored as MP3 unless you choose WAV. Songs you already have keep their format. MP3 takes about a tenth of the space but is lossy; WAV is lossless.</div>
+              </div>
+              <select class="settings-select settings-select-wide set-stem-format" aria-label="Stem storage format" data-i18n-aria-label="settings.stemFormat.title">
+                <option value="mp3" selected data-i18n="settings.stemFormat.mp3">MP3 (smaller)</option>
+                <option value="wav" data-i18n="settings.stemFormat.wav">WAV (lossless)</option>
+              </select>
+            </div>
+            <div class="settings-row stem-bitrate-row">
+              <div class="settings-row-text">
+                <div class="settings-row-title" data-i18n="settings.stemBitrate.title">MP3 bitrate</div>
+                <div class="settings-row-desc" data-i18n="settings.stemBitrate.desc">Higher sounds closer to the original and takes more space. Applies to songs added from now on.</div>
+              </div>
+              <select class="settings-select set-stem-kbps" aria-label="MP3 bitrate" data-i18n-aria-label="settings.stemBitrate.title">
+                ${[128, 192, 256].map((k) => `<option value="${k}"${k === 128 ? " selected" : ""}>${i18nT("settings.stemBitrate.option", { kbps: k })}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+        </div>
         <div class="settings-group">
           <h4 class="settings-group-title" data-i18n="settings.group.cleanup">Automatic cleanup</h4>
           <div class="settings-section">
@@ -5500,6 +5545,9 @@ function settingsSearchEntries(overlay) {
       continue;
     }
     for (const row of rows) {
+      // A row its own section is hiding (the MP3 bitrate while WAV is chosen)
+      // would be a result that opens on nothing.
+      if (row.hidden) continue;
       const title = row.querySelector(".settings-row-title")?.textContent.trim();
       if (!title) continue;
       const desc = [...row.querySelectorAll(".settings-row-desc")]
