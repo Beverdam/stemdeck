@@ -32,8 +32,10 @@ def _run(device: str, vocals_path: str, out_dir: str) -> None:
         # audio-separator/onnxruntime pick their execution provider mostly on
         # their own; hiding CUDA devices is the reliable way to force the CPU
         # provider when the caller explicitly resolved to "cpu" (matches the
-        # separation stage's own device policy in app.core.settings).
+        # separation stage's own device policy in app.core.settings). HIP's
+        # variable does the same for an AMD GPU under a ROCm build.
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        os.environ.setdefault("HIP_VISIBLE_DEVICES", "")
 
     from audio_separator.separator import Separator
 

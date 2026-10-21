@@ -40,6 +40,7 @@ from app.core.config import (
     available_torch_devices,
     configure_portable_environment,
     ensure_runtime_dirs,
+    torch_gpu_backend,
     torch_load_error,
 )
 from app.core.logging_setup import configure_logging
@@ -115,7 +116,10 @@ from app.pipeline.sections import sweep_orphaned_workspaces as sweep_orphaned_se
 # STEMDECK_LOG_LEVEL=DEBUG) to see them.
 configure_logging()
 logging.getLogger("stemdeck").info(
-    "demucs config: model=%s device=%s", DEMUCS_MODEL, get_demucs_device()
+    "demucs config: model=%s device=%s gpu=%s",
+    DEMUCS_MODEL,
+    get_demucs_device(),
+    torch_gpu_backend(),
 )
 
 configure_portable_environment()
@@ -425,6 +429,10 @@ def _settings_payload() -> dict[str, object]:
         "demucs_device": get_demucs_device_choice(),
         "demucs_device_resolved": get_demucs_device(),
         "demucs_devices_available": available_torch_devices(),
+        # What drives the "cuda" device: "cuda" (NVIDIA) | "rocm" (AMD) |
+        # None. A ROCm build serves an AMD GPU as "cuda", so the device name
+        # alone cannot tell the user which kind of GPU separation runs on.
+        "gpu_backend": torch_gpu_backend(),
         # Set when torch is installed but cannot load, which stops separation
         # on every device (#730). Read after the probe above refreshed it.
         "torch_error": torch_load_error(),

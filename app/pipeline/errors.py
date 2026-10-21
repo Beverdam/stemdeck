@@ -37,6 +37,7 @@ _CAUSE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "out-of-memory",
         (
             "cuda out of memory",
+            "hip out of memory",
             "mps backend out of memory",
             "not enough memory",
             "cannot allocate memory",
@@ -53,6 +54,13 @@ _CAUSE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "cudnn error",
             "not currently implemented for the mps device",
             "torch not compiled with cuda",
+            # ROCm: a torch build with no kernels for this GPU's gfx target
+            # ("invalid device function" is caught above), a HIP runtime that
+            # cannot reach the card (no /dev/kfd access), and MIOpen, ROCm's
+            # cuDNN.
+            "hiperrornobinaryforgpu",
+            "no hip gpus are available",
+            "miopenstatus",
         ),
     ),
     (

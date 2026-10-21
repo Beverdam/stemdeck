@@ -4413,7 +4413,9 @@ async function wireGeneralSettings(overlay) {
       }
     }
     if (deviceDesc) {
-      const resolved = d.demucs_device_resolved ? i18nT("settings.device.currently", { device: d.demucs_device_resolved }) : "";
+      // "cuda" is an AMD GPU too under a ROCm build, so say which it is.
+      const resolvedName = d.demucs_device_resolved === "cuda" && d.gpu_backend === "rocm" ? "cuda, ROCm" : d.demucs_device_resolved;
+      const resolved = resolvedName ? i18nT("settings.device.currently", { device: resolvedName }) : "";
       // torch installed but unloadable stops separation on every device, CPU
       // included, so this replaces the usual line rather than sitting under a
       // device list that looks healthy (#730).
@@ -4979,7 +4981,7 @@ function openLibraryEditor() {
               </div>
               <select class="settings-select settings-select-wide set-demucs-device" aria-label="Compute device" data-i18n-aria-label="settings.device.title">
                 <option value="auto" data-i18n="settings.device.auto">Auto</option>
-                <option value="cuda">CUDA (NVIDIA)</option>
+                <option value="cuda">GPU (NVIDIA CUDA / AMD ROCm)</option>
                 <option value="mps">MPS (Apple Silicon)</option>
                 <option value="cpu">CPU</option>
               </select>
@@ -5166,10 +5168,10 @@ function openLibraryEditor() {
           <div class="settings-row">
             <div class="settings-row-text">
               <div class="settings-row-title" data-i18n="settings.transcribe.title">Transcribe lyrics</div>
-              <div class="settings-row-desc" data-i18n="settings.transcribe.desc">When no lyrics are found for a track, transcribe them from its vocals locally with Whisper. Auto does this only on an NVIDIA GPU. The first run downloads a speech model (1.6 GB for an NVIDIA GPU, 0.5 GB otherwise). Applies to the next track.</div>
+              <div class="settings-row-desc" data-i18n="settings.transcribe.desc">When no lyrics are found for a track, transcribe them from its vocals locally with Whisper. Auto does this only on an NVIDIA/AMD GPU. The first run downloads a speech model (1.6 GB for an NVIDIA/AMD GPU, 0.5 GB otherwise). Applies to the next track.</div>
             </div>
             <select class="settings-select settings-select-wide set-transcribe-lyrics" aria-label="Transcribe lyrics" data-i18n-aria-label="settings.transcribe.title">
-              <option value="auto" data-i18n="settings.transcribe.auto">Auto (NVIDIA GPU only)</option>
+              <option value="auto" data-i18n="settings.transcribe.auto">Auto (NVIDIA/AMD GPU only)</option>
               <option value="on" data-i18n="settings.transcribe.on">On</option>
               <option value="off" data-i18n="settings.transcribe.off">Off</option>
             </select>

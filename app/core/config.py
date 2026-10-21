@@ -41,7 +41,8 @@ def torch_load_error() -> str | None:
 
 def available_torch_devices() -> list[str]:
     """Compute devices this machine can actually use, best-first. CPU is always
-    present; cuda/mps depend on the hardware + installed torch build. The
+    present; cuda/mps depend on the hardware + installed torch build ("cuda"
+    is an AMD GPU too on a ROCm build, see torch_gpu_backend). The
     Settings UI uses this to disable options that aren't available/detected so
     a user can't pick an impossible device."""
     global _torch_load_error
@@ -70,6 +71,23 @@ def available_torch_devices() -> list[str]:
         _torch_load_error = reason
     devices.append("cpu")
     return devices
+
+
+def torch_gpu_backend() -> str | None:
+    """What drives torch's "cuda" device: "cuda" (NVIDIA), "rocm" (AMD), or
+    None when there is no such device.
+
+    A ROCm build of torch serves an AMD GPU through the same torch.cuda API, so
+    the device is "cuda" either way and every device check, setting and job
+    record stays as it is. Only what the user is shown, and the logs, need to
+    say which it is. Read off the build (torch.version.hip is set on ROCm
+    only) rather than by asking the card: it needs nothing beyond the
+    availability check above, and GPU work belongs to the worker processes."""
+    if "cuda" not in available_torch_devices():
+        return None
+    import torch
+
+    return "rocm" if getattr(torch.version, "hip", None) else "cuda"
 
 
 def detect_torch_device() -> str:
